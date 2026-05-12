@@ -8,6 +8,9 @@ export default defineConfig({
   vite: {
     environments: {
       ssr: {
+        resolve: {
+          noExternal: true,
+        },
         build: {
           rollupOptions: {
             output: {
