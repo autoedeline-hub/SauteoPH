@@ -8,14 +8,9 @@ export function Header() {
           Sautéo<span className="text-primary">.</span>
         </Link>
         <nav className="flex items-center gap-6 text-sm">
-          <a href="/#guidelines" className="hidden sm:inline text-muted-foreground hover:text-foreground transition">Guidelines</a>
-          <a href="/#visit" className="hidden sm:inline text-muted-foreground hover:text-foreground transition">Visit</a>
-          <Link
-            to="/book"
-            className="inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:opacity-90 transition"
-          >
-            Book a Table
-          </Link>
+          <a href="#visit" className="hidden sm:inline text-muted-foreground hover:text-foreground transition">
+            Visit
+          </a>
         </nav>
       </div>
     </header>

@@ -6,7 +6,7 @@ export function Footer() {
       <div className="max-w-6xl mx-auto px-6 py-16 grid md:grid-cols-3 gap-10">
         <div>
           <h3 className="font-display text-3xl mb-3">Sautéo<span className="text-primary">.</span></h3>
-          <p className="text-cream/70 text-sm leading-relaxed">A small kitchen serving big flavors. Reservations only — Wed through Sun.</p>
+          <p className="text-cream/70 text-sm leading-relaxed">A small kitchen serving big flavors.</p>
         </div>
         <div>
           <h4 className="font-display text-xl mb-3">Visit Us</h4>
