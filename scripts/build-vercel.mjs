@@ -25,9 +25,33 @@ cpSync(path.join(root, "dist", "server"), funcDir, { recursive: true });
 writeFileSync(
   path.join(funcDir, "index.mjs"),
   `import { Readable } from "node:stream";
-import server from "./server.js";
+
+let serverPromise;
+function loadServer() {
+  if (!serverPromise) {
+    serverPromise = import("./server.js").then((m) => m.default);
+  }
+  return serverPromise;
+}
+
+function writeError(res, error, where) {
+  console.error("[ssr] failed at " + where + ":", error);
+  if (!res.headersSent) {
+    res.statusCode = 500;
+    res.setHeader("content-type", "text/plain; charset=utf-8");
+  }
+  const detail = error && typeof error === "object" && error.stack ? error.stack : String(error);
+  res.end("SSR error (" + where + "): " + detail);
+}
 
 export default async function handler(req, res) {
+  let server;
+  try {
+    server = await loadServer();
+  } catch (error) {
+    return writeError(res, error, "module-load");
+  }
+
   try {
     const protocol = req.headers["x-forwarded-proto"] || "https";
     const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
@@ -43,10 +67,7 @@ export default async function handler(req, res) {
     }
 
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
-    const init = {
-      method: req.method,
-      headers,
-    };
+    const init = { method: req.method, headers };
     if (hasBody) {
       init.body = Readable.toWeb(req);
       init.duplex = "half";
@@ -72,13 +93,7 @@ export default async function handler(req, res) {
     }
     res.end();
   } catch (error) {
-    console.error("[ssr] failed:", error);
-    if (!res.headersSent) {
-      res.statusCode = 500;
-      res.setHeader("content-type", "text/plain; charset=utf-8");
-    }
-    const detail = error && typeof error === "object" && "stack" in error ? error.stack : String(error);
-    res.end("SSR error: " + detail);
+    return writeError(res, error, "ssr-handler");
   }
 }
 `,
