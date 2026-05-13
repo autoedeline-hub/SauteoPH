@@ -16,6 +16,12 @@ dist-ssr
 .nitro
 *.local
 
+# Environment variables — never commit real keys.
+# Use .env.example as the template.
+.env
+.env.*
+!.env.example
+
 # Vercel
 .vercel
 
