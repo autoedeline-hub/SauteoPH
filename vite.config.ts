@@ -1,6 +1,6 @@
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   cloudflare: false,
   tanstackStart: {
     server: { entry: "server" },
@@ -9,7 +9,7 @@ export default defineConfig({
     environments: {
       ssr: {
         resolve: {
-          noExternal: true,
+          noExternal: command === "build" ? true : undefined,
         },
         build: {
           rollupOptions: {
@@ -21,4 +21,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));
