@@ -1249,11 +1249,11 @@ function CartSidePanel({
       aria-label="Your order"
       className="
         hidden lg:flex flex-col
-        fixed top-24 bottom-6 z-30
+        fixed top-24 bottom-16 z-30
         w-[320px] xl:w-[340px]
         left-[calc(50%+24rem+1.5rem)]
         xl:left-[calc(50%+24rem+2rem)]
-        max-h-[calc(100vh-7.5rem)]
+        max-h-[calc(100vh-10rem)]
       "
     >
       <div className="flex flex-col h-full bg-card text-foreground border border-border rounded-2xl shadow-sm overflow-hidden">
