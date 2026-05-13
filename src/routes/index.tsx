@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Header } from "@/components/Header";
+import { Footer } from "@/components/Footer";
 import {
   Check,
   ChevronLeft,
@@ -192,6 +193,7 @@ function MenuPage() {
           />
         )}
       </main>
+      <Footer />
     </div>
   );
 }

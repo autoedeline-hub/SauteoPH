@@ -1,38 +1,54 @@
-import { Facebook, Instagram, MapPin } from "lucide-react";
+import { Facebook, Instagram } from "lucide-react";
 
 export function Footer() {
   return (
-    <footer id="visit" className="bg-charcoal text-cream mt-24">
-      <div className="max-w-6xl mx-auto px-6 py-16 grid md:grid-cols-3 gap-10">
-        <div>
-          <h3 className="font-display text-3xl mb-3">Sautéo<span className="text-primary">.</span></h3>
-          <p className="text-cream/70 text-sm leading-relaxed">A small kitchen serving big flavors.</p>
-        </div>
-        <div>
-          <h4 className="font-display text-xl mb-3">Visit Us</h4>
+    <footer
+      id="visit"
+      className="shrink-0 border-t border-border/50 bg-background/95 backdrop-blur-sm"
+    >
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4 text-xs text-muted-foreground">
+        <span>
+          Power pop{" "}
+          <span className="font-semibold text-foreground">Edz</span>
+        </span>
+        <div className="flex items-center gap-1">
           <a
-            href="https://maps.google.com/?q=Sauteo+Restaurant"
-            target="_blank" rel="noreferrer"
-            className="flex items-start gap-2 text-cream/80 hover:text-mustard transition text-sm"
+            href="https://facebook.com"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Facebook"
+            className="h-7 w-7 rounded-full flex items-center justify-center hover:bg-muted hover:text-foreground transition"
           >
-            <MapPin className="h-4 w-4 mt-0.5 shrink-0" />
-            <span>123 Maginhawa St,<br />Quezon City, Philippines<br /><span className="underline">Open in Maps →</span></span>
+            <Facebook className="h-3.5 w-3.5" />
+          </a>
+          <a
+            href="https://instagram.com"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Instagram"
+            className="h-7 w-7 rounded-full flex items-center justify-center hover:bg-muted hover:text-foreground transition"
+          >
+            <Instagram className="h-3.5 w-3.5" />
+          </a>
+          <a
+            href="https://tiktok.com"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="TikTok"
+            className="h-7 w-7 rounded-full flex items-center justify-center hover:bg-muted hover:text-foreground transition"
+          >
+            {/* lucide-react has no TikTok glyph (trademark); inline SVG keeps
+                the dep list clean and the icon weight consistent. */}
+            <svg
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              className="h-3.5 w-3.5"
+              aria-hidden="true"
+            >
+              <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5.8 20.1a6.34 6.34 0 0 0 10.86-4.43V8.41a8.16 8.16 0 0 0 4.77 1.52V6.69h-1.84Z" />
+            </svg>
           </a>
         </div>
-        <div>
-          <h4 className="font-display text-xl mb-3">Follow</h4>
-          <div className="flex gap-3">
-            <a href="https://facebook.com" target="_blank" rel="noreferrer" className="h-10 w-10 rounded-full bg-cream/10 hover:bg-mustard hover:text-charcoal flex items-center justify-center transition">
-              <Facebook className="h-4 w-4" />
-            </a>
-            <a href="https://instagram.com" target="_blank" rel="noreferrer" className="h-10 w-10 rounded-full bg-cream/10 hover:bg-mustard hover:text-charcoal flex items-center justify-center transition">
-              <Instagram className="h-4 w-4" />
-            </a>
-          </div>
-        </div>
-      </div>
-      <div className="border-t border-cream/10 py-5 text-center text-cream/50 text-xs">
-        © {new Date().getFullYear()} Sautéo. All rights reserved.
       </div>
     </footer>
   );
