@@ -1,5 +1,11 @@
 import { execSync } from "node:child_process";
-import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
@@ -99,9 +105,46 @@ export default async function handler(req, res) {
 `,
 );
 
+// The Vite SSR build leaves a number of runtime deps as bare-specifier
+// imports (h3-v2, react, @tanstack/*, @supabase/supabase-js, etc.) — the
+// TanStack Start plugin externalizes them despite ssr.noExternal=true.
+// For the Vercel Build Output API the function is expected to be
+// self-contained, so we ship a copy of the project's *production*
+// dependencies inside the function directory.
+console.log("→ writing function package.json (prod deps only)");
+const rootPkg = JSON.parse(
+  readFileSync(path.join(root, "package.json"), "utf8"),
+);
 writeFileSync(
   path.join(funcDir, "package.json"),
-  JSON.stringify({ type: "module" }, null, 2),
+  JSON.stringify(
+    {
+      name: "sauteo-vercel-fn",
+      private: true,
+      type: "module",
+      dependencies: rootPkg.dependencies ?? {},
+    },
+    null,
+    2,
+  ),
+);
+
+// Copy the root lockfile so the function install picks the exact versions
+// the local build resolved against. Falls back to a fresh resolve if the
+// lockfile isn't compatible after a subset of deps.
+try {
+  cpSync(
+    path.join(root, "package-lock.json"),
+    path.join(funcDir, "package-lock.json"),
+  );
+} catch {
+  /* no lockfile — npm install will resolve fresh */
+}
+
+console.log("→ installing function runtime dependencies (omit dev)");
+execSync(
+  "npm install --omit=dev --omit=optional --no-audit --no-fund --ignore-scripts",
+  { stdio: "inherit", cwd: funcDir, shell: true },
 );
 
 writeFileSync(
