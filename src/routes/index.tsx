@@ -1490,6 +1490,11 @@ function PaymentView({
         </div>
       </div>
 
+      <p className="text-sm text-muted-foreground leading-relaxed mb-4">
+        Kindly send your proof of payment through Messenger. Once we confirm
+        the payment, your reservation will be processed.
+      </p>
+
       <button
         onClick={onConfirm}
         className="w-full px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition"
