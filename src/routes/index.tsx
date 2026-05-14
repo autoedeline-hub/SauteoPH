@@ -11,7 +11,6 @@ import {
   Minus,
   Pencil,
   Plus,
-  Printer,
   Search,
   ShoppingBag,
   X,
@@ -1560,21 +1559,6 @@ function ReceiptView({
           <span className="font-medium">Total Paid</span>
           <span className="text-primary text-2xl font-display">₱{receipt.total.toFixed(0)}</span>
         </div>
-      </div>
-
-      <div className="flex flex-col sm:flex-row gap-3">
-        <button
-          onClick={() => window.print()}
-          className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full border border-border bg-background hover:bg-accent font-medium transition"
-        >
-          <Printer className="h-4 w-4" /> Print receipt
-        </button>
-        <button
-          onClick={onNewOrder}
-          className="flex-1 px-6 py-3 rounded-full bg-foreground text-background font-medium hover:opacity-90 transition"
-        >
-          Place another order
-        </button>
       </div>
 
       <style>{`
