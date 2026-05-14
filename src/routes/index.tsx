@@ -1480,13 +1480,11 @@ function PaymentView({
       </p>
 
       <div className="bg-charcoal text-cream rounded-2xl p-6 mb-8">
-        <div className="text-mustard text-xs uppercase tracking-wider mb-2">Send payment to</div>
-        <div className="font-display text-2xl mb-1">Sautéo Kitchen</div>
+        <div className="text-mustard text-xs uppercase tracking-wider mb-2">Send payment to Sautéo PH</div>
         <div className="text-cream/80 text-sm space-y-1">
           <div>
-            Maya / InstaPay: <span className="font-mono text-mustard">+63 917 555 0123</span>
+            Maya / InstaPay: <span className="font-mono text-mustard">+63 123 456 789</span>
           </div>
-          <div>Account name: Sautéo Kitchen Co.</div>
           <div className="pt-2 text-cream/60">
             Amount: <span className="text-cream font-semibold">₱{total.toFixed(0)}</span>
           </div>
@@ -1497,7 +1495,7 @@ function PaymentView({
         onClick={onConfirm}
         className="w-full px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition"
       >
-        I've paid · Generate receipt
+        Pay Now
       </button>
     </div>
   );
