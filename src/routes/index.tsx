@@ -1499,7 +1499,7 @@ function PaymentView({
         onClick={onConfirm}
         className="w-full px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition"
       >
-        Pay Now
+        Check my receipt
       </button>
     </div>
   );
@@ -1527,7 +1527,6 @@ function ReceiptView({
         <div className="flex items-start justify-between mb-6 pb-6 border-b border-border">
           <div>
             <div className="font-display text-2xl">Sautéo<span className="text-primary">.</span></div>
-            <div className="text-xs text-muted-foreground mt-1">Sautéo Kitchen Co.</div>
           </div>
           <div className="text-right">
             <div className="text-xs uppercase tracking-wider text-muted-foreground">Reference</div>
