@@ -5,12 +5,14 @@ import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import {
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
   Minus,
   Pencil,
   Plus,
+  QrCode,
   Search,
   ShoppingBag,
   X,
@@ -72,10 +74,45 @@ function getVariantName(item: MenuItem, variantIndex: number | null): string | n
   return null;
 }
 
+// Split a variant display name on the " with " connector so we can group
+// rows like "Savory Sauce with Coke Zero" under a "Savory Sauce" accordion
+// header. Names without the connector are returned with group=null and the
+// full name as the option (rendered flat).
+function parseVariantName(name: string): { group: string | null; option: string } {
+  const idx = name.indexOf(" with ");
+  if (idx === -1) return { group: null, option: name };
+  return {
+    group: name.slice(0, idx).trim(),
+    option: name.slice(idx + " with ".length).trim(),
+  };
+}
+
+type VariantGroupEntry = { variant: MenuItemVariant; index: number; option: string };
+type VariantGroup = { name: string; entries: VariantGroupEntry[] };
+
+// Build groups in first-encounter order. The entry.index MUST remain the
+// original flat-array index — that's what selectedIndex and the cart-key
+// scheme reference downstream.
+function buildVariantGroups(variants: MenuItemVariant[]): VariantGroup[] {
+  const groups: VariantGroup[] = [];
+  const byName = new Map<string, VariantGroup>();
+  variants.forEach((v, index) => {
+    const { group, option } = parseVariantName(v.name);
+    if (group == null) return;
+    let g = byName.get(group);
+    if (!g) {
+      g = { name: group, entries: [] };
+      byName.set(group, g);
+      groups.push(g);
+    }
+    g.entries.push({ variant: v, index, option });
+  });
+  return groups;
+}
+
 function MenuPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<MenuItem[]>([]);
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [cart, setCart] = useState<Cart>({});
   const [view, setView] = useState<View>("menu");
   const [receipt, setReceipt] = useState<{ ref: string; total: number; items: { name: string; qty: number; price: number }[]; at: Date } | null>(null);
@@ -91,7 +128,6 @@ function MenuPage() {
       // include the recently-added `variants` jsonb column. The runtime row
       // shape matches MenuItem.
       setItems(((i ?? []) as unknown as MenuItem[]).map((it) => ({ ...it, price: Number(it.price) })));
-      if (c && c.length) setActiveCategory(c[0].id);
     })();
   }, []);
 
@@ -168,8 +204,6 @@ function MenuPage() {
           <MenuView
             categories={categories}
             items={items}
-            activeCategory={activeCategory}
-            setActiveCategory={setActiveCategory}
             cart={cart}
             updateQty={updateQty}
             addToCart={addToCart}
@@ -201,8 +235,6 @@ function MenuPage() {
 function MenuView({
   categories,
   items,
-  activeCategory,
-  setActiveCategory,
   cart,
   updateQty,
   addToCart,
@@ -212,8 +244,6 @@ function MenuView({
 }: {
   categories: Category[];
   items: MenuItem[];
-  activeCategory: string | null;
-  setActiveCategory: (id: string) => void;
   cart: Cart;
   updateQty: (key: string, delta: number) => void;
   addToCart: (itemId: string, variantIndex: number | null, qty: number) => void;
@@ -221,14 +251,18 @@ function MenuView({
   cartCount: number;
   onCheckout: () => void;
 }) {
-  const pillScrollerRef = useRef<HTMLDivElement | null>(null);
-  const pillRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-  const isProgrammaticScroll = useRef(false);
-  const [canScrollLeft, setCanScrollLeft] = useState(false);
-  const [canScrollRight, setCanScrollRight] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  // Accordion expansion state.
+  //   - In normal (non-search) mode: at most ONE id is expanded (radio-style).
+  //     The id stored here is the currently expanded category, or null if all
+  //     are collapsed. We seed it lazily with the first category id once
+  //     categories arrive (see effect below).
+  //   - In search mode this state is ignored; every category with matches is
+  //     auto-expanded instead (computed inline in the render).
+  // All categories start collapsed by default — the customer chooses which
+  // category to browse first.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   // Cross-viewport "Added!" toast state (formerly mobile-only).
   // `variantIndex` lets the toast subtitle render the chosen variant name.
@@ -340,103 +374,10 @@ function MenuView({
     (c) => (itemsByCategory[c.id] ?? []).length > 0,
   );
 
-  // Update chevron enabled state based on scroll position
-  const updateChevronState = useCallback(() => {
-    const el = pillScrollerRef.current;
-    if (!el) return;
-    setCanScrollLeft(el.scrollLeft > 4);
-    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
-  }, []);
-
-  useEffect(() => {
-    const el = pillScrollerRef.current;
-    if (!el) return;
-    updateChevronState();
-    el.addEventListener("scroll", updateChevronState, { passive: true });
-    const ro = new ResizeObserver(updateChevronState);
-    ro.observe(el);
-    return () => {
-      el.removeEventListener("scroll", updateChevronState);
-      ro.disconnect();
-    };
-  }, [updateChevronState, categories.length]);
-
-  // Scrollspy: observe each section inside the menu scroll container,
-  // set active category to the one most in view.
-  useEffect(() => {
-    if (!categories.length) return;
-    const scrollRoot = scrollContainerRef.current;
-    if (!scrollRoot) return;
-
-    const visibility = new Map<string, number>();
-
-    const pickTop = () => {
-      let best: { id: string; ratio: number } | null = null;
-      for (const [id, ratio] of visibility.entries()) {
-        if (!best || ratio > best.ratio) best = { id, ratio };
-      }
-      if (best && best.ratio > 0) {
-        setActiveCategory(best.id);
-      }
-    };
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          const id = (e.target as HTMLElement).dataset.categoryId;
-          if (!id) continue;
-          visibility.set(id, e.isIntersecting ? e.intersectionRatio : 0);
-        }
-        if (!isProgrammaticScroll.current) pickTop();
-      },
-      {
-        root: scrollRoot,
-        // trigger when the section heading crosses ~20% from the top
-        rootMargin: "-20% 0px -60% 0px",
-        threshold: [0, 0.25, 0.5, 0.75, 1],
-      },
-    );
-
-    for (const c of categories) {
-      const node = sectionRefs.current[c.id];
-      if (node) observer.observe(node);
-    }
-    return () => {
-      observer.disconnect();
-    };
-  }, [categories, setActiveCategory]);
-
-  // Auto-scroll active pill into the horizontal center
-  useEffect(() => {
-    if (!activeCategory) return;
-    const pill = pillRefs.current[activeCategory];
-    const scroller = pillScrollerRef.current;
-    if (!pill || !scroller) return;
-    const target =
-      pill.offsetLeft - scroller.clientWidth / 2 + pill.clientWidth / 2;
-    scroller.scrollTo({
-      left: Math.max(0, target),
-      behavior: "smooth",
-    });
-  }, [activeCategory]);
-
-  const handlePillClick = (id: string) => {
-    setActiveCategory(id);
-    const node = sectionRefs.current[id];
-    if (node) {
-      isProgrammaticScroll.current = true;
-      node.scrollIntoView({ behavior: "smooth", block: "start" });
-      // release the lock once the smooth scroll settles
-      window.setTimeout(() => {
-        isProgrammaticScroll.current = false;
-      }, 800);
-    }
-  };
-
-  const scrollPills = (dir: -1 | 1) => {
-    const el = pillScrollerRef.current;
-    if (!el) return;
-    el.scrollBy({ left: dir * 200, behavior: "smooth" });
+  // Toggle a category. Radio-style: opening a new one closes the previously
+  // open one; tapping the open one again collapses it (null).
+  const handleToggle = (id: string) => {
+    setExpandedId((prev) => (prev === id ? null : id));
   };
 
   return (
@@ -470,64 +411,13 @@ function MenuView({
         </div>
       </div>
 
-      {/* Scrollable menu area — only this scrolls; the page does not. */}
+      {/* Scrollable menu area — only this scrolls; the page does not.
+          The accordion headers act as the navigation now (no sticky pill bar). */}
       <div
         ref={scrollContainerRef}
         className="flex-1 overflow-y-auto -mx-4 sm:-mx-6 px-4 sm:px-6 min-h-0"
       >
-        {/* Sticky category pill bar, anchored to top of the scroll container */}
-        <div className="sticky top-0 z-30 -mx-4 sm:-mx-6 px-4 sm:px-6 py-3 bg-background/90 backdrop-blur-md border-b border-border/60">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => scrollPills(-1)}
-              disabled={!canScrollLeft}
-              aria-label="Scroll categories left"
-              className="shrink-0 h-8 w-8 rounded-full flex items-center justify-center text-foreground/70 hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-
-            <div
-              ref={pillScrollerRef}
-              className="flex-1 overflow-x-auto scrollbar-none"
-              style={{ scrollbarWidth: "none" }}
-            >
-              <div className="flex items-center gap-2 w-max px-1">
-                {categories.map((c) => {
-                  const active = activeCategory === c.id;
-                  return (
-                    <button
-                      key={c.id}
-                      ref={(el) => {
-                        pillRefs.current[c.id] = el;
-                      }}
-                      onClick={() => handlePillClick(c.id)}
-                      className={`whitespace-nowrap rounded-full text-xs sm:text-sm font-medium uppercase tracking-wide transition px-4 sm:px-5 py-2 sm:py-2.5 ${
-                        active
-                          ? "bg-foreground text-background shadow-sm"
-                          : "bg-transparent text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {c.name}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <button
-              onClick={() => scrollPills(1)}
-              disabled={!canScrollRight}
-              aria-label="Scroll categories right"
-              className="shrink-0 h-8 w-8 rounded-full flex items-center justify-center text-foreground/70 hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Vertical sections */}
-        <div className={`pt-8 ${cartCount > 0 ? "pb-32 lg:pb-12" : "pb-12"}`}>
+        <div className={`pt-4 ${cartCount > 0 ? "pb-32 lg:pb-12" : "pb-12"}`}>
           {isSearching && !hasResults && (
             <div className="text-center py-20 text-muted-foreground">
               <p className="text-sm">
@@ -538,39 +428,85 @@ function MenuView({
               </p>
             </div>
           )}
-          {categories.map((c) => {
-            const list = itemsByCategory[c.id] ?? [];
-            // When searching, hide sections that have no matches.
-            if (isSearching && list.length === 0) return null;
-            return (
-              <section
-                key={c.id}
-                ref={(el) => {
-                  sectionRefs.current[c.id] = el;
-                }}
-                data-category-id={c.id}
-                style={{ scrollMarginTop: "5rem" }}
-                className="mb-14"
-              >
-                <h2 className="font-display text-2xl md:text-3xl font-semibold mb-6">
-                  {c.name}
-                </h2>
-                {list.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No items yet</p>
-                ) : (
-                  <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-                    {list.map((it) => (
-                      <MenuItemCard
-                        key={it.id}
-                        item={it}
-                        onAdd={() => handleCardTap(it)}
+
+          <div className="divide-y divide-border border-y border-border">
+            {categories.map((c) => {
+              const list = itemsByCategory[c.id] ?? [];
+              // When searching, hide categories with zero matches entirely.
+              if (isSearching && list.length === 0) return null;
+
+              // Search mode auto-expands every visible category (override
+              // single-expansion). Otherwise honor the radio-style expandedId.
+              const isOpen = isSearching ? true : expandedId === c.id;
+              const panelId = `category-panel-${c.id}`;
+              const itemCount = list.length;
+
+              return (
+                <section key={c.id} data-category-id={c.id}>
+                  {/* Header — full-width tappable button, min 44px tall */}
+                  <h2 className="m-0">
+                    <button
+                      type="button"
+                      onClick={() => handleToggle(c.id)}
+                      aria-expanded={isOpen}
+                      aria-controls={panelId}
+                      className="group w-full flex items-center justify-between gap-4 min-h-[56px] py-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    >
+                      <span className="flex items-baseline gap-2 min-w-0">
+                        <span className="font-display text-xl md:text-2xl font-semibold text-foreground tracking-tight truncate">
+                          {c.name}
+                        </span>
+                        <span className="text-sm text-muted-foreground shrink-0">
+                          · {itemCount} {itemCount === 1 ? "item" : "items"}
+                        </span>
+                      </span>
+                      <ChevronDown
+                        aria-hidden="true"
+                        className={`h-5 w-5 shrink-0 text-muted-foreground transition-transform duration-300 ${
+                          isOpen ? "rotate-180" : "rotate-0"
+                        }`}
                       />
-                    ))}
+                    </button>
+                  </h2>
+
+                  {/* Body — CSS grid trick: animate grid-template-rows from
+                      0fr → 1fr so the inner content's natural height drives
+                      the open height with a smooth transition. */}
+                  <div
+                    id={panelId}
+                    aria-hidden={!isOpen}
+                    className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+                      isOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+                    }`}
+                  >
+                    <div className="overflow-hidden">
+                      <div
+                        className={`pb-6 transition-opacity duration-200 ${
+                          isOpen ? "opacity-100" : "opacity-0"
+                        }`}
+                      >
+                        {list.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">
+                            No items yet
+                          </p>
+                        ) : (
+                          <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+                            {list.map((it) => (
+                              <MenuItemCard
+                                key={it.id}
+                                item={it}
+                                onAdd={() => handleCardTap(it)}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                )}
-              </section>
-            );
-          })}
+                </section>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -764,19 +700,27 @@ function VariantSelectModal({
   // Keep mounted for one render after close so the fade-out animates.
   const [mounted, setMounted] = useState(!!item);
   const [displayed, setDisplayed] = useState<MenuItem | null>(item);
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  // Multi-select: tick multiple variants, then a single "Add to cart" adds
+  // `qty` of each ticked variant to the cart.
+  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(
+    () => new Set(),
+  );
   const [qty, setQty] = useState(1);
   // Set-menu mode only: nonce-driven in-modal "Added!" pill. We bump the
   // nonce on each successful add so a fast double-add restarts the timer
   // rather than flickering the pill off briefly.
   const [addedNonce, setAddedNonce] = useState(0);
   const [showAdded, setShowAdded] = useState(false);
+  // Which accordion group is currently expanded. Only meaningful when the
+  // current item's variants build 2+ distinct groups (otherwise we render
+  // the flat radio list and ignore this entirely).
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
 
   useEffect(() => {
     if (item) {
       setDisplayed(item);
       setMounted(true);
-      setSelectedIndex(null);
+      setSelectedIndices(new Set());
       setQty(1);
       setShowAdded(false);
       return;
@@ -795,23 +739,70 @@ function VariantSelectModal({
     return () => window.clearTimeout(t);
   }, [showAdded, addedNonce]);
 
+  // When a new item is opened, default the accordion to its first group
+  // (only relevant for items whose variants build 2+ groups; otherwise
+  // openGroup is unused).
+  useEffect(() => {
+    if (!item) return;
+    const vs = item.variants ?? [];
+    const gs = buildVariantGroups(vs);
+    setOpenGroup(gs.length >= 2 ? gs[0].name : null);
+  }, [item]);
+
+  // Toggle a variant's selection. As a side effect, opens the accordion
+  // group containing the just-toggled variant so the user can see what they
+  // just picked. Inline (not in an effect) so manual accordion header taps
+  // are NEVER fought by selection state.
+  const toggleSelection = (idx: number) => {
+    setSelectedIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+    const v = displayed?.variants?.[idx];
+    if (v) {
+      const { group } = parseVariantName(v.name);
+      if (group) setOpenGroup(group);
+    }
+  };
+
   if (!mounted || !displayed) return null;
 
   const variants = displayed.variants ?? [];
   const hasVariants = variants.length > 0;
   const open = !!item;
+
+  // Decide flat vs accordion. We only switch to accordion when there are
+  // 2+ distinct "X with …" groups; one-group or zero-group items render
+  // as the existing flat radio list (Coke, Iced Tea, à la carte burgers).
+  const groups = buildVariantGroups(variants);
+  const useAccordion = groups.length >= 2;
   // When the item has no variants, no selection is required — Add is always
-  // armed (subject to qty). When variants exist, a selection is required.
-  const canAdd = qty > 0 && (!hasVariants || selectedIndex != null);
+  // armed (subject to qty). When variants exist, at least one must be ticked.
+  const canAdd =
+    qty > 0 && (!hasVariants || selectedIndices.size > 0);
 
   const handleAddClick = () => {
     if (!canAdd) return;
-    const variantIndex = hasVariants ? selectedIndex : null;
-    onAdd(displayed, variantIndex, qty, quickAdd);
+    if (!hasVariants) {
+      onAdd(displayed, null, qty, quickAdd);
+    } else {
+      // Multi-add: every ticked variant gets `qty` units added to the cart.
+      // We pass keepOpen=true for all but the last call so the parent
+      // doesn't close the modal mid-loop in classic mode. After the loop,
+      // the final call respects the real quickAdd flag.
+      const indices = Array.from(selectedIndices);
+      indices.forEach((variantIndex, i) => {
+        const isLast = i === indices.length - 1;
+        const keepOpen = quickAdd || !isLast;
+        onAdd(displayed, variantIndex, qty, keepOpen);
+      });
+    }
     if (quickAdd) {
-      // Set-menu: keep the modal open, show the in-place pill, and reset
-      // selection + qty so the next add starts from a clean slate.
-      setSelectedIndex(null);
+      // Set-menu / multi-variant: keep the modal open, show the in-place
+      // pill, and reset selections + qty so the next batch starts clean.
+      setSelectedIndices(new Set());
       setQty(1);
       setAddedNonce((n) => n + 1);
       setShowAdded(true);
@@ -881,59 +872,152 @@ function VariantSelectModal({
             )}
           </div>
 
-          {/* Variant list — only rendered when variants exist */}
-          {hasVariants && (
-          <div className="px-5 pt-3 pb-2">
-            {quickAdd && (
-              <p className="text-xs text-muted-foreground mb-2">
-                Pick a combo, then add it. The modal stays open so you can mix
-                and match.
-              </p>
-            )}
-            <ul className="space-y-2">
-              {variants.map((v, idx) => {
-                // Both modes use the same select-then-confirm flow now.
-                // Set-menu mode differs only in that the confirm step keeps
-                // the modal open and renders an in-place "Added!" pill.
-                const isSel = selectedIndex === idx;
-                return (
-                  <li key={idx}>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedIndex(idx)}
-                      aria-pressed={isSel}
-                      className={`w-full flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition duration-200 active:scale-[0.98] ${
+          {/* Variant list — only rendered when variants exist.
+              Items whose variant names share a "X with Y" prefix get
+              grouped into single-expansion accordion sections. Items
+              with one (or zero) such groups render flat as before. */}
+          {hasVariants && (() => {
+            // Renders one selectable radio row for the variant at the given
+            // original index. `label` lets the accordion mode strip the
+            // shared "<group> with " prefix; flat mode passes the full name.
+            const renderRow = (idx: number, label: string) => {
+              const v = variants[idx];
+              const isSel = selectedIndices.has(idx);
+              return (
+                <li key={idx}>
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={isSel}
+                    onClick={() => toggleSelection(idx)}
+                    className={`w-full flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition duration-200 active:scale-[0.98] ${
+                      isSel
+                        ? "border-foreground bg-muted"
+                        : "border-border bg-background hover:bg-muted"
+                    }`}
+                  >
+                    {/* Checkbox indicator (left) — filled square with check
+                        icon when selected, empty bordered square otherwise. */}
+                    <span
+                      aria-hidden="true"
+                      className={`relative h-5 w-5 shrink-0 rounded-md border-2 flex items-center justify-center transition-colors ${
                         isSel
-                          ? "border-foreground bg-muted ring-2 ring-foreground"
-                          : "border-border bg-background hover:bg-muted"
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-border bg-transparent"
                       }`}
                     >
-                      <div className="h-10 w-10 rounded-lg bg-muted overflow-hidden flex items-center justify-center shrink-0">
-                        {displayed.image_url ? (
-                          <img
-                            src={displayed.image_url}
-                            alt=""
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <ShoppingBag className="h-4 w-4 text-muted-foreground" />
-                        )}
+                      <Check
+                        className={`h-3 w-3 transition-transform duration-150 ${
+                          isSel ? "scale-100" : "scale-0"
+                        }`}
+                        strokeWidth={3}
+                      />
+                    </span>
+                    <div className="h-10 w-10 rounded-lg bg-muted overflow-hidden flex items-center justify-center shrink-0">
+                      {displayed.image_url ? (
+                        <img
+                          src={displayed.image_url}
+                          alt=""
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <ShoppingBag className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-foreground leading-tight line-clamp-1">
+                        {label}
                       </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-semibold text-foreground leading-tight line-clamp-1">
-                          {v.name}
+                    </div>
+                    <div className="text-sm font-semibold text-foreground tabular-nums shrink-0 pl-2">
+                      ₱{Number(v.price).toFixed(0)}
+                    </div>
+                  </button>
+                </li>
+              );
+            };
+
+            return (
+              <div className="px-5 pt-3 pb-2">
+                {quickAdd && (
+                  <p className="text-xs text-muted-foreground mb-2">
+                    Pick a combo, then add it. The modal stays open so you can mix
+                    and match.
+                  </p>
+                )}
+                {useAccordion ? (
+                  <div className="space-y-2">
+                    {groups.map((g) => {
+                      const isOpen = openGroup === g.name;
+                      const minPrice = g.entries.reduce(
+                        (m, e) => Math.min(m, Number(e.variant.price)),
+                        Number.POSITIVE_INFINITY,
+                      );
+                      const bodyId = `variant-group-${g.name.replace(/\s+/g, "-").toLowerCase()}`;
+                      return (
+                        <div
+                          key={g.name}
+                          className="rounded-xl border border-border bg-background overflow-hidden"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setOpenGroup(isOpen ? null : g.name)}
+                            aria-expanded={isOpen}
+                            aria-controls={bodyId}
+                            className="w-full flex items-center justify-between gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20 focus-visible:ring-inset"
+                          >
+                            <span className="flex items-baseline gap-2 min-w-0">
+                              <span className="font-display text-sm sm:text-base font-semibold text-foreground truncate">
+                                {g.name}
+                              </span>
+                              <span className="text-muted-foreground text-xs shrink-0 tabular-nums">
+                                from ₱{minPrice.toFixed(0)}
+                              </span>
+                            </span>
+                            <ChevronDown
+                              aria-hidden="true"
+                              className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-300 ${
+                                isOpen ? "rotate-180" : "rotate-0"
+                              }`}
+                            />
+                          </button>
+                          {/* Body — same grid-rows 0fr/1fr trick used by the
+                              menu category accordion so the two feel consistent. */}
+                          <div
+                            id={bodyId}
+                            aria-hidden={!isOpen}
+                            className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+                              isOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+                            }`}
+                          >
+                            <div className="overflow-hidden">
+                              <ul
+                                className={`px-2 pb-2 pt-1 space-y-2 transition-opacity duration-200 ${
+                                  isOpen ? "opacity-100" : "opacity-0"
+                                }`}
+                                role="group"
+                                aria-label={`${g.name} options`}
+                              >
+                                {g.entries.map((e) => renderRow(e.index, e.option))}
+                              </ul>
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                      <div className="text-sm font-semibold text-foreground tabular-nums shrink-0 pl-2">
-                        ₱{Number(v.price).toFixed(0)}
-                      </div>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-          )}
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <ul
+                    className="space-y-2"
+                    role="group"
+                    aria-label="Variant options"
+                  >
+                    {variants.map((v, idx) => renderRow(idx, v.name))}
+                  </ul>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Optional description — only render when present */}
           {displayed.description && (
@@ -1464,6 +1548,8 @@ function PaymentView({
   onBack: () => void;
   onConfirm: () => void;
 }) {
+  const [imgError, setImgError] = useState(false);
+
   return (
     <div className="max-w-2xl mx-auto">
       <button
@@ -1479,13 +1565,52 @@ function PaymentView({
       </p>
 
       <div className="bg-charcoal text-cream rounded-2xl p-6 mb-8">
-        <div className="text-mustard text-xs uppercase tracking-wider mb-2">Send payment to Sautéo PH</div>
-        <div className="text-cream/80 text-sm space-y-1">
-          <div>
-            Maya / InstaPay: <span className="font-mono text-mustard">+63 123 456 789</span>
+        <div className="flex flex-col md:flex-row md:items-center gap-4 md:gap-6">
+          {/* Left column — payment instructions. flex-1 takes the remaining
+              width left of the QR; md:text-center centers each line within
+              that space so the block sits in the middle of the left half. */}
+          <div className="flex-1 min-w-0 md:text-center">
+            <div className="text-cream text-xs uppercase tracking-wider mb-2">
+              Send payment to Sautéo PH
+            </div>
+            <div className="text-cream/80 text-sm space-y-1">
+              <div className="break-words">
+                Maya / InstaPay:{" "}
+                <span className="font-mono text-cream">+63 123 456 789</span>
+              </div>
+              <div className="pt-2 text-cream/60">
+                Amount:{" "}
+                <span className="text-cream font-semibold break-words">
+                  ₱{total.toFixed(0)}
+                </span>
+              </div>
+            </div>
           </div>
-          <div className="pt-2 text-cream/60">
-            Amount: <span className="text-cream font-semibold">₱{total.toFixed(0)}</span>
+
+          {/* Right column — QR card.
+              Drop the QR image at /public/maya-qr.png and it renders here.
+              If the image is missing or fails to load, a placeholder
+              (QrCode icon + caption) occupies the same space. */}
+          <div className="flex flex-col items-center md:items-end shrink-0">
+            <div className="bg-white p-3 rounded-xl shadow-lg ring-1 ring-cream/10 w-44 sm:w-52 md:w-48 lg:w-52">
+              <div className="w-full aspect-square flex items-center justify-center">
+                {imgError ? (
+                  <div className="flex flex-col items-center justify-center text-center gap-2 text-gray-400">
+                    <QrCode className="h-16 w-16" aria-hidden="true" />
+                    <span className="text-xs font-medium text-gray-500">
+                      QR coming soon
+                    </span>
+                  </div>
+                ) : (
+                  <img
+                    src="/maya-qr.png"
+                    alt="Scan to pay via Maya or any QR Ph–compatible app"
+                    className="w-full h-full object-contain"
+                    onError={() => setImgError(true)}
+                  />
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>
