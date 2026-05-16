@@ -28,6 +28,13 @@ import {
   Pencil,
   Inbox,
   CalendarPlus,
+  Users,
+  Mail,
+  Phone,
+  Facebook,
+  Instagram,
+  BookOpen,
+  EyeOff,
 } from "lucide-react";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
@@ -36,26 +43,64 @@ type Booking = {
   id: string; reference_code: string; customer_name: string; customer_email: string;
   customer_phone: string; group_size: number; total_amount: number; status: string;
   created_at: string; slot_id: string;
+  source?: string | null;
+  pickup_mode?: string | null;
+  courier_address?: string | null;
+  allergy_notes?: string | null;
+  credit_remaining?: number | null;
+  refund_status?: string | null;
+  confirmed_at?: string | null;
+  platform_id?: string | null;
   time_slots?: { slot_date: string; slot_time: string };
   booking_items?: { item_name: string; quantity: number }[];
   payments?: { id: string; status: string; reference_number: string | null; screenshot_url: string | null }[];
 };
 
-type TabKey = "overview" | "bookings" | "menu" | "slots";
+const SOURCE_LABEL: Record<string, string> = {
+  web: "Web",
+  messenger: "Messenger",
+  instagram: "Instagram",
+  manual: "Manual",
+};
+
+const PICKUP_LABEL: Record<string, string> = {
+  dine_in: "Dine-in",
+  personal_pickup: "Personal pickup",
+  lalamove: "Lalamove",
+  grab: "Grab",
+};
+
+const REFUND_LABEL: Record<string, string> = {
+  available: "Credit available",
+  partially_redeemed: "Partially redeemed",
+  fully_redeemed: "Fully redeemed",
+  forfeited: "Forfeited",
+};
+
+type TabKey = "overview" | "bookings" | "contacts" | "menu" | "slots" | "knowledge";
 
 const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "overview", label: "Overview", icon: LayoutDashboard },
   { key: "bookings", label: "Orders", icon: ShoppingBag },
+  { key: "contacts", label: "Contacts", icon: Users },
   { key: "menu", label: "Menu", icon: UtensilsCrossed },
   { key: "slots", label: "Slots", icon: CalendarClock },
+  { key: "knowledge", label: "Knowledge", icon: BookOpen },
 ];
 
 const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   overview: { title: "Overview", subtitle: "A calm summary of what's happening at Sautéo today." },
   bookings: { title: "Orders", subtitle: "Verify payments and manage incoming reservations." },
+  contacts: { title: "Contacts", subtitle: "Every guest who has booked, waitlisted, or messaged Sautéo." },
   menu: { title: "Menu", subtitle: "Curate the dishes available to guests." },
   slots: { title: "Time Slots", subtitle: "Open, close, and adjust capacity for each service." },
+  knowledge: { title: "Knowledge", subtitle: "FAQ answers the chatbot uses when guests message Sautéo." },
 };
+
+const FAQ_TOPICS = [
+  "Welcome","Hours","Location","Payment","Refund","Waitlist",
+  "Pickup","Allergies","Dress Code","Escalation","Other",
+] as const;
 
 function AdminPage() {
   const [session, setSession] = useState<any>(null);
@@ -152,8 +197,10 @@ function AdminPage() {
 
           {tab === "overview" && <OverviewTab onJumpToOrders={() => setTab("bookings")} />}
           {tab === "bookings" && <BookingsTab />}
+          {tab === "contacts" && <ContactsTab />}
           {tab === "menu" && <MenuTab />}
           {tab === "slots" && <SlotsTab />}
+          {tab === "knowledge" && <KnowledgeTab />}
         </div>
       </main>
     </div>
@@ -580,6 +627,7 @@ function NotAuthorized({ email }: { email?: string }) {
 function BookingsTab() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
   const [query, setQuery] = useState<string>("");
@@ -600,23 +648,41 @@ function BookingsTab() {
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return bookings;
-    return bookings.filter(b =>
-      b.customer_name?.toLowerCase().includes(needle) ||
-      b.customer_email?.toLowerCase().includes(needle) ||
-      b.customer_phone?.toLowerCase().includes(needle) ||
-      b.reference_code?.toLowerCase().includes(needle)
-    );
-  }, [bookings, query]);
+    return bookings.filter(b => {
+      if (sourceFilter !== "all" && (b.source ?? "web") !== sourceFilter) return false;
+      if (!needle) return true;
+      return (
+        b.customer_name?.toLowerCase().includes(needle) ||
+        b.customer_email?.toLowerCase().includes(needle) ||
+        b.customer_phone?.toLowerCase().includes(needle) ||
+        b.reference_code?.toLowerCase().includes(needle) ||
+        b.platform_id?.toLowerCase().includes(needle)
+      );
+    });
+  }, [bookings, query, sourceFilter]);
 
   const verify = async (b: Booking) => {
+    const now = new Date().toISOString();
     const pid = b.payments?.[0]?.id;
-    if (pid) await supabase.from("payments").update({ status: "verified", verified_at: new Date().toISOString() }).eq("id", pid);
-    await supabase.from("bookings").update({ status: "confirmed" }).eq("id", b.id);
+    if (pid) await supabase.from("payments").update({ status: "verified", verified_at: now }).eq("id", pid);
+    await supabase.from("bookings").update({ status: "confirmed", confirmed_at: now }).eq("id", b.id);
     load();
   };
 
-  const hasFilters = !!(from || to || statusFilter !== "all" || query);
+  const hasFilters = !!(from || to || statusFilter !== "all" || sourceFilter !== "all" || query);
+
+  const sourceCounts = useMemo(() => {
+    const m: Record<string, number> = { all: bookings.length };
+    for (const b of bookings) {
+      const s = b.source ?? "web";
+      m[s] = (m[s] ?? 0) + 1;
+    }
+    return m;
+  }, [bookings]);
+  const sourceKeys = useMemo(
+    () => Object.keys(sourceCounts).filter(k => k !== "all"),
+    [sourceCounts]
+  );
   const inputCls = "bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition";
 
   return (
@@ -655,13 +721,33 @@ function BookingsTab() {
           </div>
           {hasFilters && (
             <button
-              onClick={() => { setFrom(""); setTo(""); setStatusFilter("all"); setQuery(""); }}
+              onClick={() => { setFrom(""); setTo(""); setStatusFilter("all"); setSourceFilter("all"); setQuery(""); }}
               className="text-xs text-muted-foreground hover:text-foreground ml-auto"
             >
               Reset
             </button>
           )}
         </div>
+
+        {sourceKeys.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            <CategoryChip
+              label="All channels"
+              count={sourceCounts.all ?? 0}
+              active={sourceFilter === "all"}
+              onClick={() => setSourceFilter("all")}
+            />
+            {sourceKeys.map(k => (
+              <CategoryChip
+                key={k}
+                label={SOURCE_LABEL[k] ?? k}
+                count={sourceCounts[k] ?? 0}
+                active={sourceFilter === k}
+                onClick={() => setSourceFilter(k)}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Table (desktop) */}
@@ -694,23 +780,48 @@ function BookingsTab() {
                 </td></tr>
               ) : filtered.map(b => (
                 <tr key={b.id} className="border-t border-border align-top hover:bg-muted/30 transition">
-                  <td className="px-5 py-4 font-mono text-xs text-muted-foreground">{b.reference_code}</td>
+                  <td className="px-5 py-4 font-mono text-xs text-muted-foreground">
+                    {b.reference_code}
+                    {b.source && b.source !== "web" && (
+                      <div className="mt-1 inline-flex items-center px-1.5 py-0.5 rounded-full bg-muted text-[10px] uppercase tracking-wider font-medium text-muted-foreground">
+                        {SOURCE_LABEL[b.source] ?? b.source}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-5 py-4">
                     <div className="font-medium">{b.customer_name}</div>
                     <div className="text-xs text-muted-foreground">{b.customer_email}</div>
                     <div className="text-xs text-muted-foreground">{b.customer_phone}</div>
+                    {b.allergy_notes && (
+                      <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-destructive/10 text-destructive text-[10px] font-medium" title={b.allergy_notes}>
+                        <AlertCircle className="h-3 w-3" /> Allergy
+                      </div>
+                    )}
                   </td>
                   <td className="px-5 py-4">
                     {b.time_slots && <>
                       <div>{format(new Date(b.time_slots.slot_date), "EEE, MMM d")}</div>
                       <div className="text-xs text-muted-foreground">{b.time_slots.slot_time.slice(0,5)}</div>
                     </>}
+                    {b.pickup_mode && b.pickup_mode !== "dine_in" && (
+                      <div className="mt-1 text-[11px] text-muted-foreground">
+                        {PICKUP_LABEL[b.pickup_mode] ?? b.pickup_mode}
+                      </div>
+                    )}
                   </td>
                   <td className="px-5 py-4">{b.group_size}</td>
                   <td className="px-5 py-4 text-xs max-w-xs">
                     {b.booking_items?.map((bi, i) => <div key={i}>{bi.quantity}× {bi.item_name}</div>)}
                   </td>
-                  <td className="px-5 py-4 font-medium">₱{Number(b.total_amount).toFixed(0)}</td>
+                  <td className="px-5 py-4 font-medium">
+                    <div>₱{Number(b.total_amount).toFixed(0)}</div>
+                    {b.credit_remaining != null && b.credit_remaining > 0 && (
+                      <div className="text-[11px] text-muted-foreground mt-0.5">
+                        Credit ₱{Number(b.credit_remaining).toFixed(0)}
+                        {b.refund_status && <> · {REFUND_LABEL[b.refund_status] ?? b.refund_status}</>}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-5 py-4 text-xs">
                     {b.payments?.[0]?.reference_number && <div>Ref: {b.payments[0].reference_number}</div>}
                     {b.payments?.[0]?.screenshot_url && (
@@ -757,7 +868,14 @@ function BookingsTab() {
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="font-medium truncate">{b.customer_name}</div>
-                <div className="text-xs text-muted-foreground font-mono">{b.reference_code}</div>
+                <div className="text-xs text-muted-foreground font-mono flex items-center gap-1.5">
+                  {b.reference_code}
+                  {b.source && b.source !== "web" && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-muted text-[10px] uppercase tracking-wider font-medium">
+                      {SOURCE_LABEL[b.source] ?? b.source}
+                    </span>
+                  )}
+                </div>
               </div>
               <StatusBadge status={b.status} />
             </div>
@@ -769,16 +887,38 @@ function BookingsTab() {
                     ? <>{format(new Date(b.time_slots.slot_date), "EEE, MMM d")} · {b.time_slots.slot_time.slice(0,5)}</>
                     : <span className="text-muted-foreground">—</span>}
                 </div>
+                {b.pickup_mode && b.pickup_mode !== "dine_in" && (
+                  <div className="text-muted-foreground mt-0.5">{PICKUP_LABEL[b.pickup_mode] ?? b.pickup_mode}</div>
+                )}
               </div>
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Total</div>
                 <div className="mt-0.5 font-medium">₱{Number(b.total_amount).toFixed(0)} · {b.group_size} guest{b.group_size === 1 ? "" : "s"}</div>
+                {b.credit_remaining != null && b.credit_remaining > 0 && (
+                  <div className="text-muted-foreground mt-0.5">
+                    Credit ₱{Number(b.credit_remaining).toFixed(0)}
+                  </div>
+                )}
               </div>
               <div className="col-span-2">
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Contact</div>
                 <div className="mt-0.5 truncate">{b.customer_email}</div>
                 <div className="text-muted-foreground truncate">{b.customer_phone}</div>
               </div>
+              {b.courier_address && (
+                <div className="col-span-2">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Courier address</div>
+                  <div className="mt-0.5 whitespace-pre-line">{b.courier_address}</div>
+                </div>
+              )}
+              {b.allergy_notes && (
+                <div className="col-span-2">
+                  <div className="text-[10px] uppercase tracking-wider text-destructive inline-flex items-center gap-1">
+                    <AlertCircle className="h-3 w-3" /> Allergy notes
+                  </div>
+                  <div className="mt-0.5 whitespace-pre-line">{b.allergy_notes}</div>
+                </div>
+              )}
               {b.booking_items?.length ? (
                 <div className="col-span-2">
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Items</div>
@@ -2399,6 +2539,938 @@ function SlotCreator({
           >
             {busy ? "Creating…" : `Create ${planned.length} slot${planned.length === 1 ? "" : "s"}`}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============ Contacts ============ */
+type ContactRow = {
+  id: string;
+  full_name: string;
+  email: string | null;
+  phone: string | null;
+  facebook_handle: string | null;
+  instagram_handle: string | null;
+  source: string | null;
+  tags: string[];
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  total_bookings: number;
+  confirmed_bookings: number;
+  lifetime_spend: number;
+  last_visit_date: string | null;
+  first_booking_at: string | null;
+  channels: string[];
+};
+
+function ContactsTab() {
+  const [contacts, setContacts] = useState<ContactRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+  const [tagFilter, setTagFilter] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<"recent" | "spend" | "visits" | "name">("recent");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from("crm_contacts_with_stats")
+      .select("*")
+      .order("updated_at", { ascending: false });
+    setContacts((data ?? []) as ContactRow[]);
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const tagCounts = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const c of contacts) for (const t of c.tags) m[t] = (m[t] ?? 0) + 1;
+    return m;
+  }, [contacts]);
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    let rows = contacts.filter(c => {
+      if (tagFilter !== "all" && !c.tags.includes(tagFilter)) return false;
+      if (!needle) return true;
+      return (
+        c.full_name?.toLowerCase().includes(needle) ||
+        c.email?.toLowerCase().includes(needle) ||
+        c.phone?.toLowerCase().includes(needle) ||
+        c.facebook_handle?.toLowerCase().includes(needle) ||
+        c.instagram_handle?.toLowerCase().includes(needle)
+      );
+    });
+    rows = [...rows].sort((a, b) => {
+      switch (sortBy) {
+        case "spend": return Number(b.lifetime_spend) - Number(a.lifetime_spend);
+        case "visits": return b.confirmed_bookings - a.confirmed_bookings;
+        case "name": return a.full_name.localeCompare(b.full_name);
+        case "recent":
+        default:
+          return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+      }
+    });
+    return rows;
+  }, [contacts, query, tagFilter, sortBy]);
+
+  const totalSpend = useMemo(
+    () => contacts.reduce((s, c) => s + Number(c.lifetime_spend || 0), 0),
+    [contacts]
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* Summary strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <MiniStat label="Contacts" value={String(contacts.length)} icon={Users} loading={loading} />
+        <MiniStat label="Lifetime spend" value={`₱${totalSpend.toLocaleString("en-PH", { maximumFractionDigits: 0 })}`} icon={TrendingUp} loading={loading} />
+        <MiniStat label="With email" value={String(contacts.filter(c => c.email).length)} icon={Mail} loading={loading} />
+        <MiniStat label="From chat" value={String(contacts.filter(c => c.channels.some(ch => ch === "messenger" || ch === "instagram")).length)} icon={Facebook} loading={loading} />
+      </div>
+
+      {/* Filters */}
+      <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-3">
+        <div className="relative">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input
+            type="search"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search by name, email, phone, FB or IG handle…"
+            className="w-full bg-background border border-border rounded-lg pl-10 pr-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2 justify-between">
+          <div className="flex flex-wrap gap-1.5">
+            <CategoryChip
+              label="All tags"
+              count={contacts.length}
+              active={tagFilter === "all"}
+              onClick={() => setTagFilter("all")}
+            />
+            {Object.entries(tagCounts).map(([t, n]) => (
+              <CategoryChip
+                key={t}
+                label={t}
+                count={n}
+                active={tagFilter === t}
+                onClick={() => setTagFilter(t)}
+              />
+            ))}
+          </div>
+          <select
+            value={sortBy}
+            onChange={e => setSortBy(e.target.value as typeof sortBy)}
+            className="bg-background border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+          >
+            <option value="recent">Recently updated</option>
+            <option value="spend">Top spenders</option>
+            <option value="visits">Most visits</option>
+            <option value="name">Name A–Z</option>
+          </select>
+        </div>
+      </div>
+
+      {/* List */}
+      {loading ? (
+        <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">Loading contacts…</div>
+      ) : filtered.length === 0 ? (
+        <div className="bg-card border border-border rounded-2xl shadow-sm">
+          <EmptyState
+            icon={contacts.length === 0 ? Users : Search}
+            title={contacts.length === 0 ? "No contacts yet" : "No matches"}
+            hint={contacts.length === 0 ? "Contacts auto-populate from confirmed bookings." : "Try a different search or clear the tag filter."}
+          />
+        </div>
+      ) : (
+        <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+          <ul className="divide-y divide-border">
+            {filtered.map(c => (
+              <li key={c.id}>
+                <button
+                  onClick={() => setSelectedId(c.id)}
+                  className="w-full text-left px-5 py-4 flex items-center justify-between gap-4 hover:bg-muted/30 transition"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium truncate">{c.full_name}</span>
+                      {c.tags.map(t => (
+                        <span key={t} className="px-2 py-0.5 rounded-full bg-mustard/25 text-charcoal text-[10px] font-medium">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5 truncate flex items-center gap-3 flex-wrap">
+                      {c.email && <span className="inline-flex items-center gap-1"><Mail className="h-3 w-3" /> {c.email}</span>}
+                      {c.phone && <span className="inline-flex items-center gap-1"><Phone className="h-3 w-3" /> {c.phone}</span>}
+                      {c.facebook_handle && <span className="inline-flex items-center gap-1"><Facebook className="h-3 w-3" /> {c.facebook_handle.slice(0, 14)}{c.facebook_handle.length > 14 ? "…" : ""}</span>}
+                      {c.instagram_handle && <span className="inline-flex items-center gap-1"><Instagram className="h-3 w-3" /> {c.instagram_handle}</span>}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="font-display font-semibold tabular-nums">₱{Number(c.lifetime_spend).toLocaleString("en-PH", { maximumFractionDigits: 0 })}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {c.confirmed_bookings} visit{c.confirmed_bookings === 1 ? "" : "s"}
+                      {c.last_visit_date && <> · last {format(new Date(c.last_visit_date), "MMM d")}</>}
+                    </div>
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {selectedId && (
+        <ContactDrawer
+          id={selectedId}
+          onClose={() => setSelectedId(null)}
+          onSaved={() => { setSelectedId(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function MiniStat({
+  label, value, icon: Icon, loading,
+}: { label: string; value: string; icon: React.ComponentType<{ className?: string }>; loading: boolean }) {
+  return (
+    <div className="bg-card border border-border rounded-2xl px-4 py-3 shadow-sm flex items-center gap-3">
+      <div className="bg-muted rounded-lg p-2 text-muted-foreground shrink-0">
+        <Icon className="h-3.5 w-3.5" />
+      </div>
+      <div className="min-w-0">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium truncate">{label}</div>
+        <div className="text-lg font-display font-semibold tracking-tight truncate">
+          {loading ? <span className="text-muted-foreground/40">—</span> : value}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============ Contact detail drawer ============ */
+function ContactDrawer({
+  id, onClose, onSaved,
+}: { id: string; onClose: () => void; onSaved: () => void }) {
+  const [contact, setContact] = useState<ContactRow | null>(null);
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<{ full_name: string; email: string; phone: string; facebook_handle: string; instagram_handle: string; notes: string; tagsCsv: string }>({
+    full_name: "", email: "", phone: "", facebook_handle: "", instagram_handle: "", notes: "", tagsCsv: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data: c } = await supabase
+      .from("crm_contacts_with_stats")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+    const cast = c as ContactRow | null;
+    setContact(cast);
+    if (cast) {
+      setDraft({
+        full_name: cast.full_name ?? "",
+        email: cast.email ?? "",
+        phone: cast.phone ?? "",
+        facebook_handle: cast.facebook_handle ?? "",
+        instagram_handle: cast.instagram_handle ?? "",
+        notes: cast.notes ?? "",
+        tagsCsv: (cast.tags ?? []).join(", "),
+      });
+
+      // Pull this contact's bookings — match across email/phone/fb_handle.
+      const filters: string[] = [];
+      if (cast.email) filters.push(`customer_email.ilike.${cast.email}`);
+      if (cast.phone) filters.push(`customer_phone.eq.${cast.phone}`);
+      if (cast.facebook_handle) filters.push(`facebook_handle.eq.${cast.facebook_handle}`);
+
+      if (filters.length > 0) {
+        const { data: bk } = await supabase
+          .from("bookings")
+          .select("*, time_slots(slot_date, slot_time), booking_items(item_name, quantity), payments(id, status, reference_number, screenshot_url)")
+          .or(filters.join(","))
+          .order("created_at", { ascending: false });
+        setBookings(((bk ?? []) as unknown) as Booking[]);
+      } else {
+        setBookings([]);
+      }
+    }
+    setLoading(false);
+  }, [id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busy) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, busy]);
+
+  const save = async () => {
+    setErr(null);
+    const trimmedName = draft.full_name.trim();
+    if (!trimmedName) { setErr("Name is required."); return; }
+    setBusy(true);
+    try {
+      const tags = draft.tagsCsv
+        .split(",")
+        .map(t => t.trim().toLowerCase())
+        .filter(Boolean)
+        .filter((t, i, arr) => arr.indexOf(t) === i);
+      const { error } = await supabase
+        .from("crm_contacts")
+        .update({
+          full_name: trimmedName,
+          email: draft.email.trim() || null,
+          phone: draft.phone.trim() || null,
+          facebook_handle: draft.facebook_handle.trim() || null,
+          instagram_handle: draft.instagram_handle.trim() || null,
+          notes: draft.notes.trim() || null,
+          tags,
+        })
+        .eq("id", id);
+      if (error) throw new Error(error.message);
+      onSaved();
+    } catch (e: any) {
+      setErr(e?.message ?? "Could not save contact.");
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!contact) return;
+    if (!confirm(`Delete ${contact.full_name}? Their bookings stay, but they will reappear here on the next booking sync.`)) return;
+    setBusy(true);
+    const { error } = await supabase.from("crm_contacts").delete().eq("id", id);
+    if (error) { setErr(error.message); setBusy(false); return; }
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex" role="dialog" aria-modal="true" aria-label="Contact detail">
+      <div className="absolute inset-0 bg-black/40" onClick={busy ? undefined : onClose} />
+      <aside className="relative ml-auto w-full sm:w-[32rem] bg-card border-l border-border shadow-2xl flex flex-col">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <h3 className="font-display text-lg">Contact</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            aria-label="Close"
+            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 disabled:opacity-50"
+          >
+            <XIcon className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-6">
+          {loading || !contact ? (
+            <div className="py-12 text-center text-muted-foreground text-sm">Loading…</div>
+          ) : (
+            <>
+              {/* Header */}
+              <div>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-display text-2xl tracking-tight">{contact.full_name}</div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {contact.tags.map(t => (
+                        <span key={t} className="px-2 py-0.5 rounded-full bg-mustard/25 text-charcoal text-[10px] font-medium">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEditing(e => !e)}
+                    className="inline-flex items-center gap-1.5 text-xs bg-muted/60 hover:bg-muted text-foreground rounded-full px-3 py-1.5 font-medium transition"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    {editing ? "Cancel" : "Edit"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Lifetime stats */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-muted/30 border border-border rounded-xl p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Lifetime</div>
+                  <div className="font-display text-lg font-semibold tabular-nums">
+                    ₱{Number(contact.lifetime_spend).toLocaleString("en-PH", { maximumFractionDigits: 0 })}
+                  </div>
+                </div>
+                <div className="bg-muted/30 border border-border rounded-xl p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Visits</div>
+                  <div className="font-display text-lg font-semibold tabular-nums">{contact.confirmed_bookings}</div>
+                </div>
+                <div className="bg-muted/30 border border-border rounded-xl p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Last visit</div>
+                  <div className="font-display text-lg font-semibold">
+                    {contact.last_visit_date ? format(new Date(contact.last_visit_date), "MMM d") : <span className="text-muted-foreground">—</span>}
+                  </div>
+                </div>
+              </div>
+
+              {/* Edit form OR read view */}
+              {editing ? (
+                <div className="space-y-3">
+                  <ContactField label="Full name" value={draft.full_name} onChange={v => setDraft(d => ({ ...d, full_name: v }))} />
+                  <ContactField label="Email" type="email" value={draft.email} onChange={v => setDraft(d => ({ ...d, email: v }))} />
+                  <ContactField label="Phone" value={draft.phone} onChange={v => setDraft(d => ({ ...d, phone: v }))} />
+                  <ContactField label="Facebook handle" value={draft.facebook_handle} onChange={v => setDraft(d => ({ ...d, facebook_handle: v }))} />
+                  <ContactField label="Instagram handle" value={draft.instagram_handle} onChange={v => setDraft(d => ({ ...d, instagram_handle: v }))} />
+                  <ContactField label="Tags (comma-separated)" value={draft.tagsCsv} onChange={v => setDraft(d => ({ ...d, tagsCsv: v }))} />
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Notes</label>
+                    <textarea
+                      rows={4}
+                      value={draft.notes}
+                      onChange={e => setDraft(d => ({ ...d, notes: e.target.value }))}
+                      className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition resize-y whitespace-pre-line"
+                    />
+                  </div>
+                  {err && <div className="text-xs text-destructive">{err}</div>}
+                </div>
+              ) : (
+                <div className="space-y-2 text-sm">
+                  <ContactLine icon={Mail} value={contact.email} />
+                  <ContactLine icon={Phone} value={contact.phone} />
+                  <ContactLine icon={Facebook} value={contact.facebook_handle} />
+                  <ContactLine icon={Instagram} value={contact.instagram_handle} />
+                  {contact.notes && (
+                    <div className="pt-3 border-t border-border">
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Notes</div>
+                      <div className="whitespace-pre-line">{contact.notes}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Linked bookings */}
+              <div className="border-t border-border pt-5">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-display text-base">Bookings</h4>
+                  <span className="text-xs text-muted-foreground">{bookings.length}</span>
+                </div>
+                {bookings.length === 0 ? (
+                  <div className="text-xs text-muted-foreground">No linked bookings yet.</div>
+                ) : (
+                  <ul className="space-y-2">
+                    {bookings.map(b => (
+                      <li key={b.id} className="bg-muted/30 border border-border rounded-xl px-3 py-2 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium flex items-center gap-2">
+                            <span className="font-mono text-xs text-muted-foreground">{b.reference_code}</span>
+                            <StatusBadge status={b.status} />
+                          </div>
+                          <div className="text-[11px] text-muted-foreground mt-0.5">
+                            {b.time_slots
+                              ? <>{format(new Date(b.time_slots.slot_date), "EEE, MMM d")} · {b.time_slots.slot_time.slice(0, 5)}</>
+                              : "—"}
+                            {" · "}{b.group_size} guest{b.group_size === 1 ? "" : "s"}
+                          </div>
+                        </div>
+                        <div className="text-sm font-semibold tabular-nums shrink-0">
+                          ₱{Number(b.total_amount).toFixed(0)}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        {editing && (
+          <div className="border-t border-border bg-card px-5 py-4 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={remove}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 text-destructive hover:bg-destructive/10 rounded-lg px-3 py-2 text-sm disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" /> Delete
+            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                disabled={busy}
+                className="rounded-full px-4 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={save}
+                disabled={busy}
+                className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
+              >
+                {busy ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function ContactField({
+  label, value, onChange, type,
+}: { label: string; value: string; onChange: (v: string) => void; type?: string }) {
+  return (
+    <div>
+      <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">{label}</label>
+      <input
+        type={type ?? "text"}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+      />
+    </div>
+  );
+}
+
+function ContactLine({
+  icon: Icon, value,
+}: { icon: React.ComponentType<{ className?: string }>; value: string | null }) {
+  if (!value) return null;
+  return (
+    <div className="flex items-center gap-2 text-foreground">
+      <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
+      <span className="truncate">{value}</span>
+    </div>
+  );
+}
+
+/* ============ Knowledge / FAQ ============ */
+type FaqEntry = {
+  id: string;
+  question: string;
+  answer: string;
+  topic: string | null;
+  tags: string[];
+  priority: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+function KnowledgeTab() {
+  const [items, setItems] = useState<FaqEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [topicFilter, setTopicFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
+  const [showInactive, setShowInactive] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editing, setEditing] = useState<FaqEntry | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from("faq")
+      .select("*")
+      .order("priority", { ascending: false })
+      .order("topic")
+      .order("question");
+    setItems((data ?? []) as FaqEntry[]);
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const topicCounts = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const f of items) {
+      const t = f.topic ?? "Other";
+      m[t] = (m[t] ?? 0) + 1;
+    }
+    return m;
+  }, [items]);
+
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return items.filter(f => {
+      if (!showInactive && !f.active) return false;
+      if (topicFilter !== "all" && (f.topic ?? "Other") !== topicFilter) return false;
+      if (!needle) return true;
+      return (
+        f.question.toLowerCase().includes(needle) ||
+        f.answer.toLowerCase().includes(needle) ||
+        f.tags.some(t => t.toLowerCase().includes(needle))
+      );
+    });
+  }, [items, topicFilter, search, showInactive]);
+
+  const toggleActive = async (entry: FaqEntry, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setItems(prev => prev.map(p => (p.id === entry.id ? { ...p, active: !p.active } : p)));
+    const { error } = await supabase.from("faq").update({ active: !entry.active }).eq("id", entry.id);
+    if (error) setItems(prev => prev.map(p => (p.id === entry.id ? { ...p, active: entry.active } : p)));
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="font-display text-xl">Chatbot FAQ</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {loading
+              ? "Loading…"
+              : `${items.filter(f => f.active).length} active entr${items.filter(f => f.active).length === 1 ? "y" : "ies"} · used by the Messenger / Instagram bot.`}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowInactive(s => !s)}
+            className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-medium transition ${
+              showInactive
+                ? "bg-foreground text-background hover:opacity-90"
+                : "bg-muted/60 hover:bg-muted text-foreground"
+            }`}
+          >
+            <EyeOff className="h-4 w-4" />
+            {showInactive ? "Showing inactive" : "Hide inactive"}
+          </button>
+          <button
+            onClick={() => { setEditing(null); setEditorOpen(true); }}
+            className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition"
+          >
+            <Plus className="h-4 w-4" />
+            New entry
+          </button>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-3">
+        <div className="relative">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input
+            type="search"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search questions, answers, or tags…"
+            className="w-full bg-background border border-border rounded-lg pl-10 pr-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+          />
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <CategoryChip
+            label="All topics"
+            count={items.length}
+            active={topicFilter === "all"}
+            onClick={() => setTopicFilter("all")}
+          />
+          {FAQ_TOPICS.filter(t => topicCounts[t]).map(t => (
+            <CategoryChip
+              key={t}
+              label={t}
+              count={topicCounts[t] ?? 0}
+              active={topicFilter === t}
+              onClick={() => setTopicFilter(t)}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* List */}
+      {loading ? (
+        <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">Loading FAQ…</div>
+      ) : filtered.length === 0 ? (
+        <div className="bg-card border border-border rounded-2xl shadow-sm">
+          <EmptyState
+            icon={items.length === 0 ? BookOpen : Search}
+            title={items.length === 0 ? "No FAQ entries yet" : "No matches"}
+            hint={items.length === 0 ? 'Click "New entry" to add the first answer the chatbot can use.' : "Try a different search or topic filter."}
+            action={items.length === 0 ? (
+              <button
+                onClick={() => { setEditing(null); setEditorOpen(true); }}
+                className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition"
+              >
+                <Plus className="h-4 w-4" /> New entry
+              </button>
+            ) : undefined}
+          />
+        </div>
+      ) : (
+        <ul className="space-y-3">
+          {filtered.map(f => (
+            <li
+              key={f.id}
+              className={`bg-card border border-border rounded-2xl p-5 shadow-sm hover:shadow-md transition cursor-pointer ${
+                f.active ? "" : "opacity-60"
+              }`}
+              onClick={() => { setEditing(f); setEditorOpen(true); }}
+            >
+              <div className="flex items-start justify-between gap-3 mb-2 flex-wrap">
+                <div className="min-w-0 flex-1">
+                  <div className="font-display text-base leading-snug">{f.question}</div>
+                  <div className="mt-2 flex items-center gap-2 flex-wrap">
+                    {f.topic && (
+                      <span className="px-2 py-0.5 rounded-full bg-mustard/25 text-charcoal text-[10px] font-medium">
+                        {f.topic}
+                      </span>
+                    )}
+                    {f.priority > 0 && (
+                      <span className="px-2 py-0.5 rounded-full bg-muted text-[10px] font-medium text-muted-foreground">
+                        Priority {f.priority}
+                      </span>
+                    )}
+                    {f.tags.slice(0, 5).map(t => (
+                      <span key={t} className="text-[10px] text-muted-foreground">
+                        #{t}
+                      </span>
+                    ))}
+                    {f.tags.length > 5 && (
+                      <span className="text-[10px] text-muted-foreground">+{f.tags.length - 5}</span>
+                    )}
+                  </div>
+                </div>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={f.active}
+                  onClick={(e) => toggleActive(f, e)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      toggleActive(f, e as unknown as React.MouseEvent);
+                    }
+                  }}
+                  className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium cursor-pointer transition ${
+                    f.active
+                      ? "bg-mustard/30 text-charcoal hover:bg-mustard/40"
+                      : "bg-muted text-muted-foreground hover:bg-muted/80"
+                  }`}
+                >
+                  {f.active ? "Active" : "Inactive"}
+                </span>
+              </div>
+              <p className="text-sm text-muted-foreground whitespace-pre-line line-clamp-3">{f.answer}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {editorOpen && (
+        <FaqEditor
+          entry={editing}
+          onClose={() => { setEditorOpen(false); setEditing(null); }}
+          onSaved={() => { setEditorOpen(false); setEditing(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function FaqEditor({
+  entry, onClose, onSaved,
+}: { entry: FaqEntry | null; onClose: () => void; onSaved: () => void }) {
+  const isEdit = !!entry;
+  const [question, setQuestion] = useState(entry?.question ?? "");
+  const [answer, setAnswer] = useState(entry?.answer ?? "");
+  const [topic, setTopic] = useState<string>(entry?.topic ?? "Other");
+  const [priority, setPriority] = useState<string>(entry ? String(entry.priority) : "0");
+  const [active, setActive] = useState<boolean>(entry?.active ?? true);
+  const [tagsCsv, setTagsCsv] = useState<string>((entry?.tags ?? []).join(", "));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !busy) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, busy]);
+
+  const cls = "w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition";
+
+  const save = async () => {
+    setErr(null);
+    const q = question.trim();
+    const a = answer.trim();
+    if (!q) { setErr("Question is required."); return; }
+    if (!a) { setErr("Answer is required."); return; }
+    setBusy(true);
+    try {
+      const tags = tagsCsv
+        .split(",")
+        .map(t => t.trim().toLowerCase())
+        .filter(Boolean)
+        .filter((t, i, arr) => arr.indexOf(t) === i);
+      const payload = {
+        question: q,
+        answer: a,
+        topic: topic || null,
+        tags,
+        priority: Number(priority) || 0,
+        active,
+      };
+      if (isEdit && entry) {
+        const { error } = await supabase.from("faq").update(payload).eq("id", entry.id);
+        if (error) throw new Error(error.message);
+      } else {
+        const { error } = await supabase.from("faq").insert(payload);
+        if (error) throw new Error(error.message);
+      }
+      onSaved();
+    } catch (e: any) {
+      setErr(e?.message ?? "Could not save.");
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!entry) return;
+    if (!confirm(`Delete "${entry.question}"?`)) return;
+    setBusy(true);
+    const { error } = await supabase.from("faq").delete().eq("id", entry.id);
+    if (error) { setErr(error.message); setBusy(false); return; }
+    onSaved();
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-stretch sm:items-center sm:justify-center"
+      role="dialog"
+      aria-modal="true"
+      aria-label={isEdit ? "Edit FAQ entry" : "New FAQ entry"}
+    >
+      <div className="absolute inset-0 bg-black/40" onClick={busy ? undefined : onClose} />
+      <div className="relative z-10 w-full sm:max-w-2xl sm:my-8 mx-0 sm:mx-auto bg-card sm:rounded-2xl shadow-2xl border border-border max-h-[100vh] sm:max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-b border-border">
+          <h3 className="font-display text-lg">{isEdit ? "Edit FAQ" : "New FAQ"}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            aria-label="Close"
+            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 disabled:opacity-50"
+          >
+            <XIcon className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 sm:px-6 py-5 space-y-4">
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Question</label>
+            <input
+              type="text"
+              value={question}
+              onChange={e => setQuestion(e.target.value)}
+              placeholder="e.g. What are your hours?"
+              className={cls}
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Answer</label>
+            <textarea
+              rows={6}
+              value={answer}
+              onChange={e => setAnswer(e.target.value)}
+              placeholder="The exact reply the chatbot will send."
+              className={`${cls} resize-y whitespace-pre-line`}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Topic</label>
+              <select value={topic} onChange={e => setTopic(e.target.value)} className={cls}>
+                {FAQ_TOPICS.map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Priority</label>
+              <input
+                type="number"
+                value={priority}
+                onChange={e => setPriority(e.target.value)}
+                className={`${cls} tabular-nums`}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Tags (comma-separated)</label>
+            <input
+              type="text"
+              value={tagsCsv}
+              onChange={e => setTagsCsv(e.target.value)}
+              placeholder="e.g. refund, cancel, credit"
+              className={cls}
+            />
+          </div>
+
+          <div className="flex items-center justify-between bg-muted/30 border border-border rounded-xl px-4 py-3">
+            <div>
+              <div className="text-sm font-medium">Active</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Inactive entries are hidden from the chatbot.
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={active}
+              onClick={() => setActive(a => !a)}
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-foreground/20 ${
+                active ? "bg-foreground" : "bg-muted"
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-background shadow transition ${
+                  active ? "translate-x-6" : "translate-x-1"
+                }`}
+              />
+            </button>
+          </div>
+        </div>
+
+        <div className="border-t border-border bg-card px-5 sm:px-6 py-4 flex items-center justify-between gap-2">
+          <div>
+            {isEdit && (
+              <button
+                type="button"
+                onClick={remove}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 text-destructive hover:bg-destructive/10 rounded-lg px-3 py-2 text-sm disabled:opacity-50"
+              >
+                <Trash2 className="h-4 w-4" /> Delete
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {err && <span className="text-xs text-destructive mr-2">{err}</span>}
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={busy}
+              className="rounded-full px-4 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={busy}
+              className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
+            >
+              {busy ? "Saving…" : isEdit ? "Save changes" : "Create entry"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

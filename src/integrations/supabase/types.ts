@@ -61,7 +61,11 @@ export type Database = {
       }
       bookings: {
         Row: {
+          allergy_notes: string | null
+          confirmed_at: string | null
+          courier_address: string | null
           created_at: string
+          credit_remaining: number
           customer_email: string
           customer_name: string
           customer_phone: string
@@ -70,13 +74,21 @@ export type Database = {
           id: string
           instagram_handle: string | null
           notes: string | null
+          pickup_mode: string | null
+          platform_id: string | null
           reference_code: string
+          refund_status: string | null
           slot_id: string
+          source: string | null
           status: string
           total_amount: number
         }
         Insert: {
+          allergy_notes?: string | null
+          confirmed_at?: string | null
+          courier_address?: string | null
           created_at?: string
+          credit_remaining?: number
           customer_email: string
           customer_name: string
           customer_phone: string
@@ -85,13 +97,21 @@ export type Database = {
           id?: string
           instagram_handle?: string | null
           notes?: string | null
+          pickup_mode?: string | null
+          platform_id?: string | null
           reference_code?: string
+          refund_status?: string | null
           slot_id: string
+          source?: string | null
           status?: string
           total_amount?: number
         }
         Update: {
+          allergy_notes?: string | null
+          confirmed_at?: string | null
+          courier_address?: string | null
           created_at?: string
+          credit_remaining?: number
           customer_email?: string
           customer_name?: string
           customer_phone?: string
@@ -100,8 +120,12 @@ export type Database = {
           id?: string
           instagram_handle?: string | null
           notes?: string | null
+          pickup_mode?: string | null
+          platform_id?: string | null
           reference_code?: string
+          refund_status?: string | null
           slot_id?: string
+          source?: string | null
           status?: string
           total_amount?: number
         }
@@ -275,9 +299,108 @@ export type Database = {
         }
         Relationships: []
       }
+      faq: {
+        Row: {
+          id: string
+          question: string
+          answer: string
+          topic: string | null
+          tags: string[]
+          priority: number
+          active: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          question: string
+          answer: string
+          topic?: string | null
+          tags?: string[]
+          priority?: number
+          active?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          question?: string
+          answer?: string
+          topic?: string | null
+          tags?: string[]
+          priority?: number
+          active?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      crm_contacts: {
+        Row: {
+          id: string
+          full_name: string
+          email: string | null
+          phone: string | null
+          facebook_handle: string | null
+          instagram_handle: string | null
+          source: string | null
+          tags: string[]
+          notes: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          full_name: string
+          email?: string | null
+          phone?: string | null
+          facebook_handle?: string | null
+          instagram_handle?: string | null
+          source?: string | null
+          tags?: string[]
+          notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          full_name?: string
+          email?: string | null
+          phone?: string | null
+          facebook_handle?: string | null
+          instagram_handle?: string | null
+          source?: string | null
+          tags?: string[]
+          notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
-      [_ in never]: never
+      crm_contacts_with_stats: {
+        Row: {
+          id: string
+          full_name: string
+          email: string | null
+          phone: string | null
+          facebook_handle: string | null
+          instagram_handle: string | null
+          source: string | null
+          tags: string[]
+          notes: string | null
+          created_at: string
+          updated_at: string
+          total_bookings: number
+          confirmed_bookings: number
+          lifetime_spend: number
+          last_visit_date: string | null
+          first_booking_at: string | null
+          channels: string[]
+        }
+        Relationships: []
+      }
     }
     Functions: {
       has_role: {
