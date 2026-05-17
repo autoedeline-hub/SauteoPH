@@ -4,19 +4,42 @@ import { supabase } from "@/integrations/supabase/client";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import {
+  AlertTriangle,
+  CalendarClock,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
+  Image as ImageIcon,
+  Loader2,
   Minus,
   Pencil,
   Plus,
   QrCode,
   Search,
   ShoppingBag,
+  Sparkles,
+  Trash2,
+  Truck,
+  Upload,
+  User as UserIcon,
   X,
 } from "lucide-react";
+import {
+  SENIOR_PWD_DISCOUNT_RATE,
+  type CartUnit,
+  type Claimant,
+  type DiscountSummary,
+  makeBlankClaimant,
+  summarizeDiscount,
+} from "@/lib/seniorDiscount";
+import { extractIdFromPhoto, type ExtractIdResult } from "@/lib/extractId";
+import {
+  friendlyBookingError,
+  useInvite,
+  type LoadedInvite,
+} from "@/lib/invite";
 
 export const Route = createFileRoute("/")({
   component: MenuPage,
@@ -110,12 +133,72 @@ function buildVariantGroups(variants: MenuItemVariant[]): VariantGroup[] {
   return groups;
 }
 
-function MenuPage() {
+type ReceiptLine = { name: string; qty: number; price: number };
+type ReceiptDiscountLine = {
+  itemName: string;
+  claimantKind: "senior" | "pwd";
+  claimantName: string;
+  idNumber: string;
+  dateOfBirth: string;
+  age: string;
+  sex: string;
+  dateOfIssue: string;
+  discountAmount: number;
+};
+type ReceiptShape = {
+  ref: string;
+  items: ReceiptLine[];
+  gross: number;
+  discount: number;
+  total: number;
+  discountLines: ReceiptDiscountLine[];
+  at: Date;
+  slotDate: string;
+  slotTime: string;
+  customerName: string;
+  groupSize: number;
+  // Pickup-specific. For dine-in bookings these stay null.
+  pickupMode: "dine_in" | "personal_pickup" | "lalamove" | "grab";
+  courierAddress: string | null;
+  paymentReference: string | null;
+};
+
+type AvailableSlot = {
+  id: string;
+  slot_date: string;
+  slot_time: string;
+  capacity: number;
+  seats_taken: number;
+};
+
+// Per-claimant ID-extraction status. Shared by ReservationView (state)
+// and ClaimantCard (rendered hint), so it lives at module scope.
+type AutoFillStatus =
+  | { state: "idle" }
+  | { state: "loading" }
+  | { state: "filled"; confidence: number }
+  | { state: "off" }
+  | { state: "failed" };
+
+// Exported for the /book/$token route, which renders this same page
+// wrapped in InviteContext.Provider so customer-info fields prefill + lock
+// and the create_booking RPC receives the invite_token.
+export function MenuPage() {
+  // When rendered under InviteContext.Provider (the /book/$token route),
+  // this returns the loaded invite. Plain `/` returns null — meaning the
+  // page is in "menu browse" mode and the checkout button is disabled.
+  const invite = useInvite();
+
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<MenuItem[]>([]);
   const [cart, setCart] = useState<Cart>({});
   const [view, setView] = useState<View>("menu");
-  const [receipt, setReceipt] = useState<{ ref: string; total: number; items: { name: string; qty: number; price: number }[]; at: Date } | null>(null);
+  const [receipt, setReceipt] = useState<ReceiptShape | null>(null);
+  // Senior/PWD claims survive going back to the menu so the guest doesn't
+  // have to re-enter IDs if they tweak the cart. Reset when an order is
+  // placed (after the receipt renders) or when the receipt → new order
+  // transition fires.
+  const [claimants, setClaimants] = useState<Claimant[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -131,15 +214,49 @@ function MenuPage() {
     })();
   }, []);
 
-  const total = useMemo(
-    () =>
-      Object.entries(cart).reduce((sum, [key, qty]) => {
-        const { itemId, variantIndex } = parseCartKey(key);
-        const it = items.find((x) => x.id === itemId);
-        return sum + (it ? getLinePrice(it, variantIndex) * qty : 0);
-      }, 0),
-    [cart, items],
+  // Expand the cart into per-unit rows so the discount engine can pick the
+  // N highest-priced units for N claimants. Each (cart key × qty) becomes
+  // qty distinct CartUnit entries.
+  const cartUnits = useMemo<CartUnit[]>(() => {
+    const out: CartUnit[] = [];
+    for (const [key, qty] of Object.entries(cart)) {
+      const { itemId, variantIndex } = parseCartKey(key);
+      const it = items.find((x) => x.id === itemId);
+      if (!it) continue;
+      const unitPrice = getLinePrice(it, variantIndex);
+      const variantName = getVariantName(it, variantIndex);
+      const displayName = variantName ? `${it.name} — ${variantName}` : it.name;
+      for (let n = 0; n < qty; n += 1) {
+        out.push({
+          key: `${key}#${n}`,
+          cartKey: key,
+          itemId,
+          variantIndex,
+          displayName,
+          unitPrice,
+        });
+      }
+    }
+    return out;
+  }, [cart, items]);
+
+  const gross = useMemo(
+    () => cartUnits.reduce((s, u) => s + u.unitPrice, 0),
+    [cartUnits],
   );
+
+  // Live discount summary based on however many claimants are currently
+  // staged. Used in PaymentView for the live-updating total. Even partly-
+  // filled claimant rows count toward the discount preview — the form
+  // gates the actual checkout with a per-row validity check.
+  const discountSummary: DiscountSummary = useMemo(
+    () => summarizeDiscount(cartUnits, claimants.length),
+    [cartUnits, claimants.length],
+  );
+
+  // The menu-view "Total" button still shows the sticker total (no claim
+  // form on that screen). PaymentView and ReceiptView use discountSummary.net.
+  const total = gross;
   const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
 
   // Generic stepper — operates on a composite cart key (id or id::variantIndex).
@@ -161,24 +278,67 @@ function MenuPage() {
     setCart((prev) => ({ ...prev, [key]: (prev[key] || 0) + qty }));
   };
 
-  const placeOrder = () => {
-    const ref = "STO-" + Date.now().toString(36).toUpperCase().slice(-6);
-    const lineItems = Object.entries(cart)
+  // placeOrder is the post-RPC step. ReservationView calls create_booking
+  // and, on success, passes the returned reference_code and the chosen
+  // slot back here so we can render the receipt with real data.
+  const placeOrder = (args: {
+    referenceCode: string;
+    slot: AvailableSlot;
+    customerName: string;
+    groupSize: number;
+    pickupMode?: "dine_in" | "personal_pickup" | "lalamove" | "grab";
+    courierAddress?: string | null;
+    paymentReference?: string | null;
+  }) => {
+    const lineItems: ReceiptLine[] = Object.entries(cart)
       .map(([key, qty]) => {
         const { itemId, variantIndex } = parseCartKey(key);
         const it = items.find((x) => x.id === itemId);
         if (!it) return null;
         const variantName = getVariantName(it, variantIndex);
-        // Receipt line name includes variant suffix so the printout reads cleanly.
-        // NOTE: stubbed — the future booking RPC may want a structured
-        //   { item_id, variant_index, variant_name, qty, unit_price } payload
-        //   instead of a flattened display name. Revisit when wiring real orders.
         const displayName = variantName ? `${it.name} — ${variantName}` : it.name;
         return { name: displayName, qty, price: getLinePrice(it, variantIndex) };
       })
-      .filter(Boolean) as { name: string; qty: number; price: number }[];
-    setReceipt({ ref, total, items: lineItems, at: new Date() });
+      .filter(Boolean) as ReceiptLine[];
+
+    // Snapshot the per-claimant discount picks at the time of order so the
+    // receipt matches what the guest just authorized — even if they later
+    // re-open the menu in this session.
+    const discountLines: ReceiptDiscountLine[] = discountSummary.discountedUnits.map(
+      (du) => {
+        const c = claimants[du.claimantIndex];
+        return {
+          itemName: du.unit.displayName,
+          claimantKind: c?.kind ?? "senior",
+          claimantName: c?.fullName ?? "",
+          idNumber: c?.idNumber ?? "",
+          dateOfBirth: c?.dateOfBirth ?? "",
+          age: c?.age ?? "",
+          sex: c?.sex ?? "",
+          dateOfIssue: c?.dateOfIssue ?? "",
+          discountAmount: du.discountAmount,
+        };
+      },
+    );
+
+    setReceipt({
+      ref: args.referenceCode,
+      items: lineItems,
+      gross: discountSummary.gross,
+      discount: discountSummary.discount,
+      total: discountSummary.net,
+      discountLines,
+      at: new Date(),
+      slotDate: args.slot.slot_date,
+      slotTime: args.slot.slot_time,
+      customerName: args.customerName,
+      groupSize: args.groupSize,
+      pickupMode: args.pickupMode ?? "dine_in",
+      courierAddress: args.courierAddress ?? null,
+      paymentReference: args.paymentReference ?? null,
+    });
     setCart({});
+    setClaimants([]);
     setView("receipt");
   };
 
@@ -212,18 +372,36 @@ function MenuPage() {
             onCheckout={() => setView("payment")}
           />
         )}
-        {view === "payment" && (
-          <PaymentView
-            total={total}
-            onBack={() => setView("menu")}
-            onConfirm={placeOrder}
-          />
-        )}
+        {view === "payment" &&
+          (invite?.channel === "pickup" ? (
+            <PickupReservationView
+              invite={invite}
+              cart={cart}
+              items={items}
+              gross={gross}
+              cartUnitCount={cartUnits.length}
+              claimants={claimants}
+              setClaimants={setClaimants}
+              discountSummary={discountSummary}
+              onBack={() => setView("menu")}
+              onConfirm={placeOrder}
+            />
+          ) : (
+            <DineInReservationView
+              invite={invite}
+              cart={cart}
+              items={items}
+              gross={gross}
+              cartUnitCount={cartUnits.length}
+              claimants={claimants}
+              setClaimants={setClaimants}
+              discountSummary={discountSummary}
+              onBack={() => setView("menu")}
+              onConfirm={placeOrder}
+            />
+          ))}
         {view === "receipt" && receipt && (
-          <ReceiptView
-            receipt={receipt}
-            onNewOrder={() => setView("menu")}
-          />
+          <ReceiptView receipt={receipt} />
         )}
       </main>
       <Footer />
@@ -1538,17 +1716,392 @@ function MenuItemCard({
   );
 }
 
-/* ============ Payment View ============ */
-function PaymentView({
-  total,
+/* ============ Dine-In Reservation View ============
+   Customers reach this screen via a dine-in invite link from Sautéo
+   management after they've cleared the Messenger waitlist + paid. So this
+   is the "confirm your slot" step — no QR / payment proof, but the booking
+   row still gets created with status='pending' and payment row as
+   'submitted' (admin flips both to 'verified' / 'confirmed' from the
+   Orders tab once they reconcile the upstream payment).
+
+   Pickup customers get a separate view (PickupReservationView) — that flow
+   collects payment on the web via Maya QR, plus pickup-mode + courier
+   address. The Senior/PWD claim section is shared in shape but lives in
+   each view's body so the two flows stay independently editable.        */
+// Shared shape between DineIn and Pickup onConfirm — optional pickup fields
+// are populated only by the pickup view.
+type ConfirmArgs = {
+  referenceCode: string;
+  slot: AvailableSlot;
+  customerName: string;
+  groupSize: number;
+  pickupMode?: "dine_in" | "personal_pickup" | "lalamove" | "grab";
+  courierAddress?: string | null;
+  paymentReference?: string | null;
+};
+
+function DineInReservationView({
+  invite,
+  cart,
+  items,
+  gross,
+  cartUnitCount,
+  claimants,
+  setClaimants,
+  discountSummary,
   onBack,
   onConfirm,
 }: {
-  total: number;
+  invite: LoadedInvite | null;
+  cart: Cart;
+  items: MenuItem[];
+  gross: number;
+  cartUnitCount: number;
+  claimants: Claimant[];
+  setClaimants: React.Dispatch<React.SetStateAction<Claimant[]>>;
+  discountSummary: DiscountSummary;
   onBack: () => void;
-  onConfirm: () => void;
+  onConfirm: (args: ConfirmArgs) => void;
 }) {
-  const [imgError, setImgError] = useState(false);
+  const claimFormOpen = claimants.length > 0;
+  const payable = discountSummary.net;
+
+  // Slot picker state.
+  const [slots, setSlots] = useState<AvailableSlot[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(true);
+  const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
+
+  // Customer info — prefilled from the invite when available so the customer
+  // only has to pick a slot. Fields stay editable (in case the waitlist had
+  // typos) BUT we surface a hint that the name/email/phone match what
+  // Sautéo collected on Messenger.
+  const [customerName, setCustomerName] = useState(invite?.customerName ?? "");
+  const [customerEmail, setCustomerEmail] = useState(invite?.customerEmail ?? "");
+  const [customerPhone, setCustomerPhone] = useState(invite?.customerPhone ?? "");
+  const [groupSize, setGroupSize] = useState<number>(invite?.groupSize ?? 2);
+  const [notes, setNotes] = useState("");
+
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Load upcoming, open slots with remaining capacity. The RLS policy on
+  // time_slots permits public SELECT, so this works with the anon key.
+  useEffect(() => {
+    (async () => {
+      setSlotsLoading(true);
+      const today = new Date().toISOString().slice(0, 10);
+      const { data, error } = await supabase
+        .from("time_slots")
+        .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
+        .gte("slot_date", today)
+        .eq("is_open", true)
+        .order("slot_date")
+        .order("slot_time");
+      if (error) {
+        console.warn("[slots] load failed:", error);
+        setSlots([]);
+      } else {
+        setSlots(
+          ((data ?? []) as AvailableSlot[]).filter(
+            (s) => s.seats_taken < s.capacity,
+          ),
+        );
+      }
+      setSlotsLoading(false);
+    })();
+  }, []);
+
+  const slotsByDate = useMemo(() => {
+    const m: Record<string, AvailableSlot[]> = {};
+    for (const s of slots) (m[s.slot_date] ||= []).push(s);
+    return m;
+  }, [slots]);
+
+  const selectedSlot = useMemo(
+    () => slots.find((s) => s.id === selectedSlotId) ?? null,
+    [slots, selectedSlotId],
+  );
+
+  // ---- Validation -----------------------------------------------------
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail.trim());
+  const nameValid =
+    customerName.trim().length >= 1 && customerName.trim().length <= 120;
+  const phoneTrimmed = customerPhone.trim();
+  const phoneValid = phoneTrimmed.length >= 7 && phoneTrimmed.length <= 32;
+  const groupSizeValid = groupSize >= 1 && groupSize <= 50;
+  const slotCapacityOk =
+    !selectedSlot ||
+    selectedSlot.seats_taken + groupSize <= selectedSlot.capacity;
+
+  // Required-field set, in priority order per Sautéo:
+  //   1. Full name
+  //   2. Age (verifies senior status, must be 60+ per RA 9994)
+  //   3. Date of birth (cross-checks age)
+  //   4. Date of issue (proves the ID is current)
+  //   5. ID photo (admin verification)
+  // ID number and address are still collected (and shown on the receipt
+  // when present) but don't block submit — many LGU SC IDs have a short
+  // ID number or no street address that would fail strict validation.
+  const allClaimsValid = useMemo(
+    () =>
+      claimants.every(
+        (c) =>
+          c.fullName.trim().length >= 2 &&
+          c.age.trim().length >= 1 &&
+          c.dateOfBirth.trim().length >= 4 &&
+          c.dateOfIssue.trim().length >= 4 &&
+          !!c.idPhotoFile,
+      ),
+    [claimants],
+  );
+
+  const canSubmit =
+    !submitting &&
+    !!selectedSlot &&
+    cartUnitCount > 0 &&
+    nameValid &&
+    emailValid &&
+    phoneValid &&
+    groupSizeValid &&
+    slotCapacityOk &&
+    (!claimFormOpen || allClaimsValid);
+
+  // Trim claimants to cart size as before.
+  useEffect(() => {
+    if (claimants.length > cartUnitCount) {
+      setClaimants((prev) => prev.slice(0, Math.max(cartUnitCount, 0)));
+    }
+  }, [cartUnitCount, claimants.length, setClaimants]);
+
+  // Per-claimant ID autofill state. `idle`/`off`/`failed` render nothing
+  // disruptive; `loading` shows a spinner; `filled` shows a "please verify"
+  // hint with the model's confidence. The abort map cancels stale OCR
+  // requests when the same row's photo is replaced quickly.
+  const [autoFillByIdx, setAutoFillByIdx] = useState<Record<number, AutoFillStatus>>(
+    {},
+  );
+  const extractAbortByIdx = useRef<Record<number, AbortController>>({});
+
+  const toggleClaim = () => {
+    setClaimants((prev) => (prev.length > 0 ? [] : [makeBlankClaimant("senior")]));
+  };
+
+  const addClaimant = () => {
+    if (claimants.length >= cartUnitCount) return;
+    setClaimants((prev) => [...prev, makeBlankClaimant("senior")]);
+  };
+
+  const removeClaimant = (idx: number) => {
+    setClaimants((prev) => {
+      // Revoke any preview URLs we created so we don't leak.
+      const removed = prev[idx];
+      if (removed?.idPhotoUrl) URL.revokeObjectURL(removed.idPhotoUrl);
+      const next = prev.filter((_, i) => i !== idx);
+      // Always keep at least one row open while the toggle is on. If the
+      // last row was removed, close the form by emptying the array (the
+      // toggle reads claimants.length > 0).
+      return next;
+    });
+  };
+
+  const updateClaimant = (idx: number, patch: Partial<Claimant>) => {
+    setClaimants((prev) =>
+      prev.map((c, i) => (i === idx ? { ...c, ...patch } : c)),
+    );
+  };
+
+  const onPhotoChange = (idx: number, file: File | null) => {
+    setClaimants((prev) => {
+      const next = [...prev];
+      const cur = next[idx];
+      if (cur?.idPhotoUrl) URL.revokeObjectURL(cur.idPhotoUrl);
+      next[idx] = {
+        ...cur,
+        idPhotoFile: file,
+        idPhotoUrl: file ? URL.createObjectURL(file) : null,
+      };
+      return next;
+    });
+
+    // Abort any in-flight extraction for this slot — the photo just
+    // changed, so the previous result is stale.
+    extractAbortByIdx.current[idx]?.abort();
+    if (!file) {
+      setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "idle" } }));
+      return;
+    }
+
+    const ac = new AbortController();
+    extractAbortByIdx.current[idx] = ac;
+    setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "loading" } }));
+
+    (async () => {
+      let result: ExtractIdResult;
+      try {
+        result = await extractIdFromPhoto(file, ac.signal);
+      } catch (e) {
+        if ((e as DOMException)?.name === "AbortError") return;
+        setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "failed" } }));
+        return;
+      }
+      if (ac.signal.aborted) return;
+
+      if (!result.available) {
+        // Key not set yet, or function unreachable — fall back silently to
+        // manual entry. Use "off" so we don't flash an error.
+        setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "off" } }));
+        return;
+      }
+
+      // Autofill — but only fill empty fields, so we don't stomp anything
+      // the user already typed before the OCR returned. The 'kind' field
+      // gets adjusted if the model is highly confident.
+      setClaimants((prev) =>
+        prev.map((c, i) => {
+          if (i !== idx) return c;
+          return {
+            ...c,
+            kind:
+              result.kind === "senior" || result.kind === "pwd"
+                ? result.kind
+                : c.kind,
+            fullName: c.fullName.trim() ? c.fullName : result.full_name,
+            idNumber: c.idNumber.trim() ? c.idNumber : result.id_number,
+            address: c.address.trim() ? c.address : result.address,
+            dateOfBirth: c.dateOfBirth.trim() ? c.dateOfBirth : result.date_of_birth,
+            age: c.age.trim() ? c.age : result.age,
+            sex: c.sex.trim() ? c.sex : result.sex,
+            dateOfIssue: c.dateOfIssue.trim() ? c.dateOfIssue : result.date_of_issue,
+          };
+        }),
+      );
+      setAutoFillByIdx((m) => ({
+        ...m,
+        [idx]: { state: "filled", confidence: result.confidence },
+      }));
+    })();
+  };
+
+  // ---- Submit: call create_booking RPC --------------------------------
+  // The RPC takes items as [{ menu_item_id, quantity }]. The cart can hold
+  // multiple variants of the same menu_item_id at different prices, but
+  // the RPC doesn't yet know about variants — it looks up the base price
+  // from menu_items.price. We aggregate cart units by menu_item_id so the
+  // RPC inserts one booking_items row per menu item with summed qty. Variant
+  // info gets packed into the notes field for the admin's awareness.
+  const handleSubmit = async () => {
+    if (!canSubmit || !selectedSlot) return;
+    setSubmitError(null);
+    setSubmitting(true);
+
+    // Aggregate by menu_item_id and collect variant detail for notes.
+    const qtyByMenuItemId: Record<string, number> = {};
+    const variantDetailLines: string[] = [];
+    for (const [key, qty] of Object.entries(cart)) {
+      const { itemId, variantIndex } = parseCartKey(key);
+      qtyByMenuItemId[itemId] = (qtyByMenuItemId[itemId] || 0) + qty;
+      if (variantIndex != null) {
+        const it = items.find((x) => x.id === itemId);
+        const vName = it ? getVariantName(it, variantIndex) : null;
+        if (it && vName) variantDetailLines.push(`${qty}× ${it.name} — ${vName}`);
+      }
+    }
+
+    const userNote = notes.trim();
+    const variantNote = variantDetailLines.length
+      ? `Variants: ${variantDetailLines.join("; ")}`
+      : "";
+    const combinedNotes = [userNote, variantNote]
+      .filter(Boolean)
+      .join(" | ")
+      .slice(0, 500);
+
+    const payload: Record<string, unknown> = {
+      slot_id: selectedSlot.id,
+      customer_name: customerName.trim(),
+      customer_email: customerEmail.trim().toLowerCase(),
+      customer_phone: customerPhone.trim(),
+      group_size: groupSize,
+      notes: combinedNotes || null,
+      pickup_mode: invite?.channel === "pickup" ? "personal_pickup" : "dine_in",
+      items: Object.entries(qtyByMenuItemId).map(([menu_item_id, quantity]) => ({
+        menu_item_id,
+        quantity,
+      })),
+    };
+
+    // Attaching the invite token causes create_booking() to atomically
+    // validate + mark it used in the same transaction. Without this, anon
+    // callers are rejected with 'invite_required'.
+    if (invite?.token) payload.invite_token = invite.token;
+
+    // create_booking returns jsonb { booking_id, reference_code, total_amount }.
+    // The generated types are stale (the migration hasn't been re-introspected
+    // since the RPC was added), so we cast through `as any` here and
+    // re-validate the shape below.
+    const { data, error } = await (supabase.rpc as any)("create_booking", {
+      payload,
+    });
+    setSubmitting(false);
+    if (error) {
+      setSubmitError(friendlyBookingError(error.message));
+      return;
+    }
+    const result = (data ?? {}) as { reference_code?: string };
+    if (!result.reference_code) {
+      setSubmitError("Booking didn't return a reference code. Contact us in Messenger.");
+      return;
+    }
+    onConfirm({
+      referenceCode: result.reference_code,
+      slot: selectedSlot,
+      customerName: customerName.trim(),
+      groupSize,
+    });
+  };
+
+  // No invite = "/" visitor who tapped Review order. Booking is only
+  // available through a one-time invite link sent by Sautéo after the
+  // Messenger waitlist clears — show that explanation here instead of the
+  // form. Keeps the menu page browsable for SEO / casual visitors without
+  // leaking a way to bypass the waitlist.
+  if (!invite) {
+    return (
+      <div className="max-w-2xl mx-auto">
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-6"
+        >
+          <ChevronLeft className="h-4 w-4" /> Back to menu
+        </button>
+
+        <div className="bg-card border border-border rounded-2xl p-6 md:p-8 shadow-sm text-center">
+          <div className="mx-auto h-14 w-14 rounded-full bg-mustard/30 flex items-center justify-center mb-5">
+            <Sparkles className="h-6 w-6 text-primary" />
+          </div>
+          <h2 className="font-display text-2xl md:text-3xl mb-2">
+            Booking is invite-only
+          </h2>
+          <p className="text-muted-foreground text-sm leading-relaxed mb-6">
+            Sautéo runs a Messenger-based waitlist. When you reach the front
+            of the line, our team will send you a one-time booking link
+            (good for {/* keep token expiry copy in sync with migration */}
+            <span className="text-foreground font-medium">72 hours</span>)
+            that brings you straight to this screen with your details
+            pre-filled.
+          </p>
+          <a
+            href="https://m.me/sauteo"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-3 text-sm font-semibold hover:opacity-90 transition"
+          >
+            Message us on Messenger
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -1559,85 +2112,1626 @@ function PaymentView({
         <ChevronLeft className="h-4 w-4" /> Back to menu
       </button>
 
-      <h2 className="font-display text-3xl md:text-4xl mb-2">Payment</h2>
+      <h2 className="font-display text-3xl md:text-4xl mb-2">
+        Confirm your reservation
+      </h2>
       <p className="text-muted-foreground mb-8">
-        Send <span className="font-semibold text-primary">₱{total.toFixed(0)}</span> via Maya / InstaPay, then confirm to generate your receipt.
+        Pick a date and time, share your contact details, and we'll lock in
+        your seat. Your total comes to{" "}
+        <span className="font-semibold text-primary">
+          ₱{payable.toFixed(0)}
+        </span>
+        .
       </p>
 
-      <div className="bg-charcoal text-cream rounded-2xl p-6 mb-8">
-        <div className="flex flex-col md:flex-row md:items-center gap-4 md:gap-6">
-          {/* Left column — payment instructions. flex-1 takes the remaining
-              width left of the QR; md:text-center centers each line within
-              that space so the block sits in the middle of the left half. */}
-          <div className="flex-1 min-w-0 md:text-center">
-            <div className="text-cream text-xs uppercase tracking-wider mb-2">
-              Send payment to Sautéo PH
+      {/* Senior/PWD claim section. Renders the toggle by default; when on,
+          expands into N claim rows (one per cardholder). Each row collects
+          the fields RA 9994 requires for the OR: full name, ID number,
+          address, ID photo. The number of rows is capped at the number of
+          cart units so we can't promise more discount than there's items. */}
+      <div className="bg-card border border-border rounded-2xl p-5 mb-8 shadow-sm">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary shrink-0" />
+              <h3 className="font-display text-lg font-semibold">
+                Senior / PWD discount
+              </h3>
             </div>
-            <div className="text-cream/80 text-sm space-y-1">
-              <div className="break-words">
-                Maya / InstaPay:{" "}
-                <span className="font-mono text-cream">+63 123 456 789</span>
-              </div>
-              <div className="pt-2 text-cream/60">
-                Amount:{" "}
-                <span className="text-cream font-semibold break-words">
-                  ₱{total.toFixed(0)}
-                </span>
-              </div>
-            </div>
+            <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+              Per RA 9994 / RA 10754 — {Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% off
+              and VAT-exempt on one qualifying bundle per ID. Upload one ID per claimant.
+            </p>
           </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={claimFormOpen}
+            onClick={toggleClaim}
+            className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors ${
+              claimFormOpen ? "bg-foreground" : "bg-muted"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-background shadow transition-transform ${
+                claimFormOpen ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </button>
+        </div>
 
-          {/* Right column — QR card.
-              Drop the QR image at /public/maya-qr.png and it renders here.
-              If the image is missing or fails to load, a placeholder
-              (QrCode icon + caption) occupies the same space. */}
-          <div className="flex flex-col items-center md:items-end shrink-0">
-            <div className="bg-white p-3 rounded-xl shadow-lg ring-1 ring-cream/10 w-44 sm:w-52 md:w-48 lg:w-52">
-              <div className="w-full aspect-square flex items-center justify-center">
-                {imgError ? (
-                  <div className="flex flex-col items-center justify-center text-center gap-2 text-gray-400">
-                    <QrCode className="h-16 w-16" aria-hidden="true" />
-                    <span className="text-xs font-medium text-gray-500">
-                      QR coming soon
-                    </span>
-                  </div>
-                ) : (
-                  <img
-                    src="/maya-qr.png"
-                    alt="Scan to pay via Maya or any QR Ph–compatible app"
-                    className="w-full h-full object-contain"
-                    onError={() => setImgError(true)}
-                  />
-                )}
+        {claimFormOpen && (
+          <div className="mt-5 space-y-4">
+            {cartUnitCount === 0 && (
+              <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-3">
+                Add at least one item to the cart before claiming a discount.
               </div>
+            )}
+
+            <div className="text-[11px] text-muted-foreground bg-muted/40 border border-border rounded-lg p-3 leading-relaxed">
+              Uploaded ID photos are sent to our verification provider to read
+              the name, ID number, and address — to save you typing. Fields
+              remain editable. By proceeding you consent to this processing
+              under the Data Privacy Act of 2012.
+            </div>
+
+            {claimants.map((c, idx) => (
+              <ClaimantCard
+                key={idx}
+                index={idx}
+                claimant={c}
+                autoFill={autoFillByIdx[idx] ?? { state: "idle" }}
+                onChange={(patch) => updateClaimant(idx, patch)}
+                onPhotoChange={(file) => onPhotoChange(idx, file)}
+                onRemove={() => removeClaimant(idx)}
+              />
+            ))}
+
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+              <button
+                type="button"
+                onClick={addClaimant}
+                disabled={claimants.length >= cartUnitCount}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground bg-muted hover:bg-muted/70 rounded-full px-3 py-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add another ID
+              </button>
+              <div className="text-[11px] text-muted-foreground">
+                {claimants.length} of max {cartUnitCount} qualifying bundles
+              </div>
+            </div>
+
+            {/* Live total breakdown */}
+            <div className="border-t border-border/60 pt-4 mt-2 space-y-1.5 text-sm">
+              <div className="flex justify-between text-muted-foreground">
+                <span>Subtotal</span>
+                <span className="tabular-nums">₱{gross.toFixed(0)}</span>
+              </div>
+              {discountSummary.discount > 0 && (
+                <div className="flex justify-between text-primary">
+                  <span>
+                    Discount ({Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% × {discountSummary.effectiveClaimants})
+                  </span>
+                  <span className="tabular-nums">
+                    −₱{discountSummary.discount.toFixed(0)}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between font-semibold text-foreground pt-1">
+                <span>Amount due</span>
+                <span className="tabular-nums">₱{payable.toFixed(0)}</span>
+              </div>
+            </div>
+
+            {!allClaimsValid && (
+              <p className="text-xs text-muted-foreground italic">
+                Fill name, age, date of birth, date of issue, and upload an ID photo for every claimant to proceed.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Slot picker — dates grouped, time chips per date. RLS lets anon
+          read time_slots; we filter to is_open=true and seats remaining. */}
+      <div className="bg-card border border-border rounded-2xl p-5 mb-8 shadow-sm">
+        <div className="flex items-center gap-2 mb-1">
+          <CalendarClock className="h-4 w-4 text-primary" />
+          <h3 className="font-display text-lg font-semibold">Pick your slot</h3>
+        </div>
+        <p className="text-xs text-muted-foreground mb-4">
+          Only the dates and times Sautéo has opened are shown.
+        </p>
+
+        {slotsLoading ? (
+          <div className="text-sm text-muted-foreground">Loading slots…</div>
+        ) : slots.length === 0 ? (
+          <div className="text-sm text-muted-foreground bg-muted/40 border border-border rounded-lg p-3">
+            No open slots right now — please reply on Messenger and we'll get you another invite.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {Object.entries(slotsByDate).map(([date, daySlots]) => {
+              const d = new Date(date + "T00:00:00");
+              const dayLabel = d.toLocaleDateString(undefined, {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              });
+              return (
+                <div key={date}>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                    {dayLabel}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {daySlots.map((s) => {
+                      const remaining = s.capacity - s.seats_taken;
+                      const tooSmall = remaining < groupSize;
+                      const selected = s.id === selectedSlotId;
+                      const t = s.slot_time.slice(0, 5);
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => setSelectedSlotId(s.id)}
+                          disabled={tooSmall}
+                          aria-pressed={selected}
+                          className={`inline-flex flex-col items-center px-3 py-2 rounded-xl border text-xs font-semibold transition ${
+                            selected
+                              ? "border-foreground bg-foreground text-background"
+                              : tooSmall
+                              ? "border-border bg-muted/40 text-muted-foreground opacity-50 cursor-not-allowed"
+                              : "border-border bg-background hover:bg-muted"
+                          }`}
+                        >
+                          <span className="tabular-nums">{t}</span>
+                          <span className={`text-[10px] font-normal ${selected ? "text-background/70" : "text-muted-foreground"}`}>
+                            {remaining} seat{remaining === 1 ? "" : "s"} left
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Customer info — fields mirror create_booking() server validation. */}
+      <div className="bg-card border border-border rounded-2xl p-5 mb-8 shadow-sm">
+        <div className="flex items-center gap-2 mb-4">
+          <UserIcon className="h-4 w-4 text-primary" />
+          <h3 className="font-display text-lg font-semibold">Your details</h3>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="sm:col-span-2">
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Full name
+            </label>
+            <input
+              type="text"
+              value={customerName}
+              onChange={(e) => setCustomerName(e.target.value)}
+              placeholder="Juan Dela Cruz"
+              maxLength={120}
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Email
+            </label>
+            <input
+              type="email"
+              value={customerEmail}
+              onChange={(e) => setCustomerEmail(e.target.value)}
+              placeholder="juan@example.com"
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Phone
+            </label>
+            <input
+              type="tel"
+              value={customerPhone}
+              onChange={(e) => setCustomerPhone(e.target.value)}
+              placeholder="+63 917 000 0000"
+              maxLength={32}
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Group size
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={groupSize}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                setGroupSize(Number.isFinite(n) ? Math.max(1, Math.min(50, Math.floor(n))) : 1);
+              }}
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Notes (optional)
+            </label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value.slice(0, 500))}
+              placeholder="Allergies, special requests, dietary notes…"
+              rows={2}
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition resize-none"
+            />
+            <div className="mt-1 text-[10px] text-muted-foreground text-right tabular-nums">
+              {notes.length} / 500
             </div>
           </div>
         </div>
+
+        {selectedSlot && !slotCapacityOk && (
+          <div className="mt-3 text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-2.5">
+            That slot only has {selectedSlot.capacity - selectedSlot.seats_taken} seat
+            {selectedSlot.capacity - selectedSlot.seats_taken === 1 ? "" : "s"} left — pick a smaller group or another slot.
+          </div>
+        )}
       </div>
 
+      {submitError && (
+        <div className="mb-4 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-3 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+          <span>{submitError}</span>
+        </div>
+      )}
+
       <p className="text-sm text-muted-foreground leading-relaxed mb-4">
-        Kindly send your proof of payment through Messenger. Once we confirm
-        the payment, your reservation will be processed.
+        Your payment was already confirmed with our team — this step just
+        locks in your slot.
+        {claimFormOpen &&
+          " Your uploaded ID(s) go to our admin for verification — if a photo can't be verified, we'll ask for a re-upload within 24 hours."}
       </p>
 
       <button
-        onClick={onConfirm}
-        className="w-full px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition"
+        onClick={handleSubmit}
+        disabled={!canSubmit}
+        className="w-full inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
       >
-        Check my receipt
+        {submitting ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Confirming reservation…
+          </>
+        ) : (
+          "Confirm reservation"
+        )}
       </button>
     </div>
   );
 }
 
+/* ============ Pickup Reservation View ============
+   Customers reach this screen via a pickup invite link. Unlike dine-in,
+   payment happens HERE (Maya QR + reference number or screenshot upload),
+   and the guest picks how the food gets to them (personal pickup,
+   Lalamove, or Grab). When a courier is selected, an address is required.
+
+   The Senior/PWD claim section is shared in shape with dine-in but lives
+   in this component's body so the two flows stay independently editable
+   per Sautéo's request.                                                   */
+type PickupMode = "personal_pickup" | "lalamove" | "grab";
+
+const PICKUP_MODE_OPTIONS: Array<{
+  value: PickupMode;
+  label: string;
+  hint: string;
+}> = [
+  {
+    value: "personal_pickup",
+    label: "Personal pickup",
+    hint: "Pick up your order at Sautéo at the time below.",
+  },
+  {
+    value: "lalamove",
+    label: "Lalamove",
+    hint: "Send a Lalamove rider — we'll have the order ready.",
+  },
+  {
+    value: "grab",
+    label: "Grab",
+    hint: "Send a Grab rider — we'll have the order ready.",
+  },
+];
+
+function PickupReservationView({
+  invite,
+  cart,
+  items,
+  gross,
+  cartUnitCount,
+  claimants,
+  setClaimants,
+  discountSummary,
+  onBack,
+  onConfirm,
+}: {
+  invite: LoadedInvite | null;
+  cart: Cart;
+  items: MenuItem[];
+  gross: number;
+  cartUnitCount: number;
+  claimants: Claimant[];
+  setClaimants: React.Dispatch<React.SetStateAction<Claimant[]>>;
+  discountSummary: DiscountSummary;
+  onBack: () => void;
+  onConfirm: (args: ConfirmArgs) => void;
+}) {
+  const claimFormOpen = claimants.length > 0;
+  const payable = discountSummary.net;
+
+  // Slot picker state (same shape as dine-in).
+  const [slots, setSlots] = useState<AvailableSlot[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(true);
+  const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
+
+  // Customer info — prefilled from invite. `groupSize` is repurposed as
+  // "number of meals" for pickup but uses the same RPC field.
+  const [customerName, setCustomerName] = useState(invite?.customerName ?? "");
+  const [customerEmail, setCustomerEmail] = useState(invite?.customerEmail ?? "");
+  const [customerPhone, setCustomerPhone] = useState(invite?.customerPhone ?? "");
+  const [numberOfMeals, setNumberOfMeals] = useState<number>(
+    invite?.groupSize ?? 1,
+  );
+  const [notes, setNotes] = useState("");
+
+  // Pickup-specific state.
+  const [pickupMode, setPickupMode] = useState<PickupMode>("personal_pickup");
+  const [courierAddress, setCourierAddress] = useState("");
+  const [paymentRef, setPaymentRef] = useState("");
+  const [paymentScreenshot, setPaymentScreenshot] = useState<File | null>(null);
+  const [paymentScreenshotUrl, setPaymentScreenshotUrl] = useState<string | null>(
+    null,
+  );
+  const [qrImgError, setQrImgError] = useState(false);
+
+  // Wizard step. The pickup checkout was a single long-scroll page; users
+  // bailed before reaching payment. Three steps each fit on one screen:
+  //   1 — Your details (name/email/phone/meals/notes)
+  //   2 — Pickup setup (window + mode + courier address if applicable)
+  //   3 — Discount + payment (senior toggle + Maya QR + proof) → Confirm
+  // Each step has its own validity check; Continue is disabled until valid.
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Load upcoming, open slots.
+  useEffect(() => {
+    (async () => {
+      setSlotsLoading(true);
+      const today = new Date().toISOString().slice(0, 10);
+      const { data, error } = await supabase
+        .from("time_slots")
+        .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
+        .gte("slot_date", today)
+        .eq("is_open", true)
+        .order("slot_date")
+        .order("slot_time");
+      if (error) {
+        console.warn("[slots] load failed:", error);
+        setSlots([]);
+      } else {
+        setSlots(
+          ((data ?? []) as AvailableSlot[]).filter(
+            (s) => s.seats_taken < s.capacity,
+          ),
+        );
+      }
+      setSlotsLoading(false);
+    })();
+  }, []);
+
+  const slotsByDate = useMemo(() => {
+    const m: Record<string, AvailableSlot[]> = {};
+    for (const s of slots) (m[s.slot_date] ||= []).push(s);
+    return m;
+  }, [slots]);
+
+  const selectedSlot = useMemo(
+    () => slots.find((s) => s.id === selectedSlotId) ?? null,
+    [slots, selectedSlotId],
+  );
+
+  // Validation ---------------------------------------------------------
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail.trim());
+  const nameValid =
+    customerName.trim().length >= 1 && customerName.trim().length <= 120;
+  const phoneTrimmed = customerPhone.trim();
+  const phoneValid = phoneTrimmed.length >= 7 && phoneTrimmed.length <= 32;
+  const mealsValid = numberOfMeals >= 1 && numberOfMeals <= 50;
+  const slotCapacityOk =
+    !selectedSlot ||
+    selectedSlot.seats_taken + numberOfMeals <= selectedSlot.capacity;
+
+  // Courier requires an address; personal pickup doesn't.
+  const courierAddressOk =
+    pickupMode === "personal_pickup" || courierAddress.trim().length >= 4;
+
+  // Payment proof: at least one of (typed reference) OR (screenshot file).
+  const paymentProofOk =
+    paymentRef.trim().length >= 3 || !!paymentScreenshot;
+
+  const allClaimsValid = useMemo(
+    () =>
+      claimants.every(
+        (c) =>
+          c.fullName.trim().length >= 2 &&
+          c.age.trim().length >= 1 &&
+          c.dateOfBirth.trim().length >= 4 &&
+          c.dateOfIssue.trim().length >= 4 &&
+          !!c.idPhotoFile,
+      ),
+    [claimants],
+  );
+
+  // Per-step validity gates. Continue is enabled only when the current
+  // step's required fields are all valid. Final submit gate (`canSubmit`)
+  // re-checks everything as a defense in depth.
+  const step1Valid = nameValid && emailValid && phoneValid && mealsValid;
+  const step2Valid = !!selectedSlot && slotCapacityOk && courierAddressOk;
+  const step3Valid = paymentProofOk && (!claimFormOpen || allClaimsValid);
+
+  const canSubmit =
+    !submitting &&
+    cartUnitCount > 0 &&
+    step1Valid &&
+    step2Valid &&
+    step3Valid;
+
+  // Trim claimants to cart size (same guard as dine-in).
+  useEffect(() => {
+    if (claimants.length > cartUnitCount) {
+      setClaimants((prev) => prev.slice(0, Math.max(cartUnitCount, 0)));
+    }
+  }, [cartUnitCount, claimants.length, setClaimants]);
+
+  // Per-claimant ID autofill state (mirrors dine-in).
+  const [autoFillByIdx, setAutoFillByIdx] = useState<Record<number, AutoFillStatus>>(
+    {},
+  );
+  const extractAbortByIdx = useRef<Record<number, AbortController>>({});
+
+  // Claim-section helpers (mirror dine-in body).
+  const toggleClaim = () => {
+    setClaimants((prev) =>
+      prev.length > 0 ? [] : [makeBlankClaimant("senior")],
+    );
+  };
+  const addClaimant = () => {
+    if (claimants.length >= cartUnitCount) return;
+    setClaimants((prev) => [...prev, makeBlankClaimant("senior")]);
+  };
+  const removeClaimant = (idx: number) => {
+    setClaimants((prev) => {
+      const removed = prev[idx];
+      if (removed?.idPhotoUrl) URL.revokeObjectURL(removed.idPhotoUrl);
+      return prev.filter((_, i) => i !== idx);
+    });
+  };
+  const updateClaimant = (idx: number, patch: Partial<Claimant>) => {
+    setClaimants((prev) =>
+      prev.map((c, i) => (i === idx ? { ...c, ...patch } : c)),
+    );
+  };
+  const onClaimPhotoChange = (idx: number, file: File | null) => {
+    setClaimants((prev) => {
+      const next = [...prev];
+      const cur = next[idx];
+      if (cur?.idPhotoUrl) URL.revokeObjectURL(cur.idPhotoUrl);
+      next[idx] = {
+        ...cur,
+        idPhotoFile: file,
+        idPhotoUrl: file ? URL.createObjectURL(file) : null,
+      };
+      return next;
+    });
+    extractAbortByIdx.current[idx]?.abort();
+    if (!file) {
+      setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "idle" } }));
+      return;
+    }
+    const ac = new AbortController();
+    extractAbortByIdx.current[idx] = ac;
+    setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "loading" } }));
+    (async () => {
+      let result: ExtractIdResult;
+      try {
+        result = await extractIdFromPhoto(file, ac.signal);
+      } catch (e) {
+        if ((e as DOMException)?.name === "AbortError") return;
+        setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "failed" } }));
+        return;
+      }
+      if (ac.signal.aborted) return;
+      if (!result.available) {
+        setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "off" } }));
+        return;
+      }
+      setClaimants((prev) =>
+        prev.map((c, i) => {
+          if (i !== idx) return c;
+          return {
+            ...c,
+            kind:
+              result.kind === "senior" || result.kind === "pwd"
+                ? result.kind
+                : c.kind,
+            fullName: c.fullName.trim() ? c.fullName : result.full_name,
+            idNumber: c.idNumber.trim() ? c.idNumber : result.id_number,
+            address: c.address.trim() ? c.address : result.address,
+            dateOfBirth: c.dateOfBirth.trim()
+              ? c.dateOfBirth
+              : result.date_of_birth,
+            age: c.age.trim() ? c.age : result.age,
+            sex: c.sex.trim() ? c.sex : result.sex,
+            dateOfIssue: c.dateOfIssue.trim()
+              ? c.dateOfIssue
+              : result.date_of_issue,
+          };
+        }),
+      );
+      setAutoFillByIdx((m) => ({
+        ...m,
+        [idx]: { state: "filled", confidence: result.confidence },
+      }));
+    })();
+  };
+
+  // Local preview for the payment screenshot.
+  const onPaymentScreenshotChange = (file: File | null) => {
+    if (paymentScreenshotUrl) URL.revokeObjectURL(paymentScreenshotUrl);
+    setPaymentScreenshot(file);
+    setPaymentScreenshotUrl(file ? URL.createObjectURL(file) : null);
+  };
+
+  // Submit -------------------------------------------------------------
+  const handleSubmit = async () => {
+    if (!canSubmit || !selectedSlot) return;
+    setSubmitError(null);
+    setSubmitting(true);
+
+    // Same variant-aggregation pattern as dine-in.
+    const qtyByMenuItemId: Record<string, number> = {};
+    const variantDetailLines: string[] = [];
+    for (const [key, qty] of Object.entries(cart)) {
+      const { itemId, variantIndex } = parseCartKey(key);
+      qtyByMenuItemId[itemId] = (qtyByMenuItemId[itemId] || 0) + qty;
+      if (variantIndex != null) {
+        const it = items.find((x) => x.id === itemId);
+        const vName = it ? getVariantName(it, variantIndex) : null;
+        if (it && vName)
+          variantDetailLines.push(`${qty}× ${it.name} — ${vName}`);
+      }
+    }
+    const userNote = notes.trim();
+    const variantNote = variantDetailLines.length
+      ? `Variants: ${variantDetailLines.join("; ")}`
+      : "";
+    const combinedNotes = [userNote, variantNote]
+      .filter(Boolean)
+      .join(" | ")
+      .slice(0, 500);
+
+    const trimmedPaymentRef = paymentRef.trim() || null;
+
+    const payload: Record<string, unknown> = {
+      slot_id: selectedSlot.id,
+      customer_name: customerName.trim(),
+      customer_email: customerEmail.trim().toLowerCase(),
+      customer_phone: customerPhone.trim(),
+      group_size: numberOfMeals,
+      notes: combinedNotes || null,
+      pickup_mode: pickupMode,
+      courier_address:
+        pickupMode === "personal_pickup" ? null : courierAddress.trim(),
+      payment_reference: trimmedPaymentRef,
+      items: Object.entries(qtyByMenuItemId).map(
+        ([menu_item_id, quantity]) => ({ menu_item_id, quantity }),
+      ),
+    };
+    if (invite?.token) payload.invite_token = invite.token;
+
+    const { data, error } = await (supabase.rpc as any)("create_booking", {
+      payload,
+    });
+    if (error) {
+      setSubmitting(false);
+      setSubmitError(friendlyBookingError(error.message));
+      return;
+    }
+    const result = (data ?? {}) as { reference_code?: string };
+    if (!result.reference_code) {
+      setSubmitting(false);
+      setSubmitError(
+        "Booking didn't return a reference code. Contact us in Messenger.",
+      );
+      return;
+    }
+
+    // Optional screenshot upload, post-booking. The payment-proofs bucket
+    // RLS requires the path to be `bookings/<reference_code>/...` AND a
+    // matching pending booking <30min old, both of which we now have. If
+    // the upload fails we still keep the booking — admin can chase the
+    // screenshot via Messenger.
+    if (paymentScreenshot) {
+      const ext = (paymentScreenshot.name.split(".").pop() || "jpg")
+        .toLowerCase()
+        .slice(0, 8);
+      const path = `bookings/${result.reference_code}/payment-${Date.now()}.${ext}`;
+      const { error: upErr } = await supabase.storage
+        .from("payment-proofs")
+        .upload(path, paymentScreenshot, {
+          contentType: paymentScreenshot.type || "image/jpeg",
+          upsert: false,
+        });
+      if (upErr) {
+        console.warn("[pickup] screenshot upload failed:", upErr);
+      } else {
+        const { error: rpcErr } = await (supabase.rpc as any)(
+          "submit_payment_proof",
+          { _ref: result.reference_code, _path: path },
+        );
+        if (rpcErr) console.warn("[pickup] submit_payment_proof failed:", rpcErr);
+      }
+    }
+
+    setSubmitting(false);
+    onConfirm({
+      referenceCode: result.reference_code,
+      slot: selectedSlot,
+      customerName: customerName.trim(),
+      groupSize: numberOfMeals,
+      pickupMode,
+      courierAddress:
+        pickupMode === "personal_pickup" ? null : courierAddress.trim(),
+      paymentReference: trimmedPaymentRef,
+    });
+  };
+
+  // No invite = visitor on `/` with no booking link.
+  if (!invite) {
+    return (
+      <div className="max-w-2xl mx-auto">
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-6"
+        >
+          <ChevronLeft className="h-4 w-4" /> Back to menu
+        </button>
+        <div className="bg-card border border-border rounded-2xl p-6 md:p-8 shadow-sm text-center">
+          <div className="mx-auto h-14 w-14 rounded-full bg-mustard/30 flex items-center justify-center mb-5">
+            <ShoppingBag className="h-6 w-6 text-primary" />
+          </div>
+          <h2 className="font-display text-2xl md:text-3xl mb-2">
+            Pickup is invite-only
+          </h2>
+          <p className="text-muted-foreground text-sm leading-relaxed mb-6">
+            Sautéo runs a Messenger-based waitlist. When you reach the front
+            of the line, our team will send you a one-time pickup link.
+          </p>
+          <a
+            href="https://m.me/sauteo"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-3 text-sm font-semibold hover:opacity-90 transition"
+          >
+            Message us on Messenger
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  const isCourier = pickupMode === "lalamove" || pickupMode === "grab";
+
+  // Step transitions scroll the next panel into view so the user lands at
+  // the top of the new step instead of mid-page.
+  const goToStep = (s: 1 | 2 | 3) => {
+    setStep(s);
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <button
+        onClick={onBack}
+        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-6"
+      >
+        <ChevronLeft className="h-4 w-4" /> Back to menu
+      </button>
+
+      <div className="flex items-center gap-2 mb-2">
+        <ShoppingBag className="h-6 w-6 text-primary" />
+        <h2 className="font-display text-3xl md:text-4xl">
+          Confirm your pickup
+        </h2>
+      </div>
+      <p className="text-muted-foreground mb-5">
+        Step {step} of 3 — your total is{" "}
+        <span className="font-semibold text-primary">
+          ₱{payable.toFixed(0)}
+        </span>
+        .
+      </p>
+
+      {/* Progress indicator — three labelled pills with a connector bar.
+          Completed steps are clickable so the user can jump back; future
+          steps are not (must satisfy current step first). */}
+      <div className="mb-6">
+        <ol className="flex items-center gap-2">
+          {([
+            { n: 1 as const, label: "Your details", done: step > 1 || step1Valid },
+            { n: 2 as const, label: "Pickup", done: step > 2 || step2Valid },
+            { n: 3 as const, label: "Payment", done: false },
+          ]).map((s, i, arr) => {
+            const active = step === s.n;
+            const reachable = s.n <= step;
+            return (
+              <li key={s.n} className="flex items-center gap-2 flex-1">
+                <button
+                  type="button"
+                  onClick={() => reachable && goToStep(s.n)}
+                  disabled={!reachable}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition ${
+                    active
+                      ? "bg-foreground text-background"
+                      : s.done
+                      ? "bg-primary/10 text-primary"
+                      : "bg-muted text-muted-foreground"
+                  } disabled:cursor-not-allowed`}
+                >
+                  <span
+                    className={`h-5 w-5 rounded-full inline-flex items-center justify-center text-[10px] tabular-nums ${
+                      active
+                        ? "bg-background/20 text-background"
+                        : s.done
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background text-muted-foreground"
+                    }`}
+                  >
+                    {s.done && !active ? (
+                      <Check className="h-3 w-3" />
+                    ) : (
+                      s.n
+                    )}
+                  </span>
+                  <span className="hidden sm:inline">{s.label}</span>
+                </button>
+                {i < arr.length - 1 && (
+                  <span
+                    className={`flex-1 h-px ${
+                      arr[i + 1].done || step > s.n ? "bg-primary/30" : "bg-border"
+                    }`}
+                  />
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+
+      {/* ============ STEP 1 — Your details ============ */}
+      {step === 1 && (
+        <>
+          <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
+            <div className="flex items-center gap-2 mb-4">
+              <UserIcon className="h-4 w-4 text-primary" />
+              <h3 className="font-display text-lg font-semibold">Your details</h3>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="sm:col-span-2">
+                <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                  Full name
+                </label>
+                <input
+                  type="text"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  placeholder="Juan Dela Cruz"
+                  maxLength={120}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                  Email
+                </label>
+                <input
+                  type="email"
+                  value={customerEmail}
+                  onChange={(e) => setCustomerEmail(e.target.value)}
+                  placeholder="juan@example.com"
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                  Phone
+                </label>
+                <input
+                  type="tel"
+                  value={customerPhone}
+                  onChange={(e) => setCustomerPhone(e.target.value)}
+                  placeholder="+63 917 000 0000"
+                  maxLength={32}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                  Number of meals
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={numberOfMeals}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setNumberOfMeals(
+                      Number.isFinite(n)
+                        ? Math.max(1, Math.min(50, Math.floor(n)))
+                        : 1,
+                    );
+                  }}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                  Notes (optional)
+                </label>
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value.slice(0, 500))}
+                  placeholder="Allergies, special requests…"
+                  rows={2}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition resize-none"
+                />
+                <div className="mt-1 text-[10px] text-muted-foreground text-right tabular-nums">
+                  {notes.length} / 500
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => goToStep(2)}
+            disabled={!step1Valid}
+            className="w-full inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Continue
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </>
+      )}
+
+      {/* ============ STEP 2 — Pickup setup ============ */}
+      {step === 2 && (
+        <>
+          {/* Slot picker */}
+          <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
+            <div className="flex items-center gap-2 mb-1">
+              <CalendarClock className="h-4 w-4 text-primary" />
+              <h3 className="font-display text-lg font-semibold">
+                Pick your pickup window
+              </h3>
+            </div>
+            <p className="text-xs text-muted-foreground mb-4">
+              When you'd like the food ready.
+            </p>
+
+            {slotsLoading ? (
+              <div className="text-sm text-muted-foreground">Loading slots…</div>
+            ) : slots.length === 0 ? (
+              <div className="text-sm text-muted-foreground bg-muted/40 border border-border rounded-lg p-3">
+                No open windows right now — reply on Messenger and we'll get you another invite.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {Object.entries(slotsByDate).map(([date, daySlots]) => {
+                  const d = new Date(date + "T00:00:00");
+                  const dayLabel = d.toLocaleDateString(undefined, {
+                    weekday: "short",
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  });
+                  return (
+                    <div key={date}>
+                      <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                        {dayLabel}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {daySlots.map((s) => {
+                          const remaining = s.capacity - s.seats_taken;
+                          const tooSmall = remaining < numberOfMeals;
+                          const selected = s.id === selectedSlotId;
+                          const t = s.slot_time.slice(0, 5);
+                          return (
+                            <button
+                              key={s.id}
+                              type="button"
+                              onClick={() => setSelectedSlotId(s.id)}
+                              disabled={tooSmall}
+                              aria-pressed={selected}
+                              className={`inline-flex flex-col items-center px-3 py-2 rounded-xl border text-xs font-semibold transition ${
+                                selected
+                                  ? "border-foreground bg-foreground text-background"
+                                  : tooSmall
+                                  ? "border-border bg-muted/40 text-muted-foreground opacity-50 cursor-not-allowed"
+                                  : "border-border bg-background hover:bg-muted"
+                              }`}
+                            >
+                              <span className="tabular-nums">{t}</span>
+                              <span
+                                className={`text-[10px] font-normal ${
+                                  selected
+                                    ? "text-background/70"
+                                    : "text-muted-foreground"
+                                }`}
+                              >
+                                {remaining} left
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {selectedSlot && !slotCapacityOk && (
+              <div className="mt-3 text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-2.5">
+                That window only has {selectedSlot.capacity - selectedSlot.seats_taken} seats left — pick fewer meals (step 1) or another slot.
+              </div>
+            )}
+          </div>
+
+          {/* Pickup mode selector */}
+          <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <Truck className="h-4 w-4 text-primary" />
+              <h3 className="font-display text-lg font-semibold">
+                How would you like to get it?
+              </h3>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {PICKUP_MODE_OPTIONS.map((opt) => {
+                const active = pickupMode === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setPickupMode(opt.value)}
+                    aria-pressed={active}
+                    className={`text-left rounded-xl border p-3 transition ${
+                      active
+                        ? "border-foreground bg-muted"
+                        : "border-border bg-background hover:bg-muted/50"
+                    }`}
+                  >
+                    <div className="font-semibold text-sm">{opt.label}</div>
+                    <div className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                      {opt.hint}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {isCourier && (
+              <div className="mt-4">
+                <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                  Drop-off address *
+                </label>
+                <input
+                  type="text"
+                  value={courierAddress}
+                  onChange={(e) => setCourierAddress(e.target.value)}
+                  placeholder="Street, Barangay, City"
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Required for {pickupMode === "lalamove" ? "Lalamove" : "Grab"}.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => goToStep(1)}
+              className="inline-flex items-center justify-center gap-1.5 px-5 py-3 rounded-full bg-muted text-foreground text-sm font-semibold hover:bg-muted/70 transition"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={() => goToStep(3)}
+              disabled={!step2Valid}
+              className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Continue to payment
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* ============ STEP 3 — Discount + Payment ============ */}
+      {step === 3 && (
+        <>
+          {/* Senior / PWD discount section. */}
+          <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-primary shrink-0" />
+                  <h3 className="font-display text-lg font-semibold">
+                    Senior / PWD discount
+                  </h3>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                  Per RA 9994 / RA 10754 —{" "}
+                  {Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% off and VAT-exempt
+                  on one qualifying bundle per ID.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={claimFormOpen}
+                onClick={toggleClaim}
+                className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors ${
+                  claimFormOpen ? "bg-foreground" : "bg-muted"
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-background shadow transition-transform ${
+                    claimFormOpen ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
+            {claimFormOpen && (
+              <div className="mt-5 space-y-4">
+                {cartUnitCount === 0 && (
+                  <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-3">
+                    Add at least one item to the cart before claiming a discount.
+                  </div>
+                )}
+                <div className="text-[11px] text-muted-foreground bg-muted/40 border border-border rounded-lg p-3 leading-relaxed">
+                  Uploaded ID photos are sent to our verification provider to
+                  read the name, ID number, and address. Fields stay editable.
+                  By proceeding you consent to this processing under the Data
+                  Privacy Act of 2012.
+                </div>
+                {claimants.map((c, idx) => (
+                  <ClaimantCard
+                    key={idx}
+                    index={idx}
+                    claimant={c}
+                    autoFill={autoFillByIdx[idx] ?? { state: "idle" }}
+                    onChange={(patch) => updateClaimant(idx, patch)}
+                    onPhotoChange={(file) => onClaimPhotoChange(idx, file)}
+                    onRemove={() => removeClaimant(idx)}
+                  />
+                ))}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={addClaimant}
+                    disabled={claimants.length >= cartUnitCount}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground bg-muted hover:bg-muted/70 rounded-full px-3 py-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Add another ID
+                  </button>
+                  <div className="text-[11px] text-muted-foreground">
+                    {claimants.length} of max {cartUnitCount} qualifying bundles
+                  </div>
+                </div>
+                <div className="border-t border-border/60 pt-4 mt-2 space-y-1.5 text-sm">
+                  <div className="flex justify-between text-muted-foreground">
+                    <span>Subtotal</span>
+                    <span className="tabular-nums">₱{gross.toFixed(0)}</span>
+                  </div>
+                  {discountSummary.discount > 0 && (
+                    <div className="flex justify-between text-primary">
+                      <span>
+                        Discount ({Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% ×{" "}
+                        {discountSummary.effectiveClaimants})
+                      </span>
+                      <span className="tabular-nums">
+                        −₱{discountSummary.discount.toFixed(0)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between font-semibold text-foreground pt-1">
+                    <span>Amount due</span>
+                    <span className="tabular-nums">₱{payable.toFixed(0)}</span>
+                  </div>
+                </div>
+                {!allClaimsValid && (
+                  <p className="text-xs text-muted-foreground italic">
+                    Fill name, age, date of birth, date of issue, and upload an
+                    ID photo for every claimant to proceed.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Maya QR block */}
+          <div className="bg-charcoal text-cream rounded-2xl p-6 mb-6">
+            <div className="flex flex-col md:flex-row md:items-center gap-4 md:gap-6">
+              <div className="flex-1 min-w-0 md:text-center">
+                <div className="text-cream text-xs uppercase tracking-wider mb-2">
+                  Send payment to Sautéo PH
+                </div>
+                <div className="text-cream/80 text-sm space-y-1">
+                  <div className="break-words">
+                    Maya / InstaPay:{" "}
+                    <span className="font-mono text-cream">+63 123 456 789</span>
+                  </div>
+                  <div className="pt-2 text-cream/60">
+                    Amount:{" "}
+                    <span className="text-cream font-semibold break-words">
+                      ₱{payable.toFixed(0)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-col items-center md:items-end shrink-0">
+                <div className="bg-white p-3 rounded-xl shadow-lg ring-1 ring-cream/10 w-44 sm:w-52 md:w-48 lg:w-52">
+                  <div className="w-full aspect-square flex items-center justify-center">
+                    {qrImgError ? (
+                      <div className="flex flex-col items-center justify-center text-center gap-2 text-gray-400">
+                        <QrCode className="h-16 w-16" aria-hidden="true" />
+                        <span className="text-xs font-medium text-gray-500">
+                          QR coming soon
+                        </span>
+                      </div>
+                    ) : (
+                      <img
+                        src="/maya-qr.png"
+                        alt="Scan to pay via Maya or any QR Ph–compatible app"
+                        className="w-full h-full object-contain"
+                        onError={() => setQrImgError(true)}
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Payment proof */}
+          <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
+            <h3 className="font-display text-lg font-semibold mb-1">
+              Payment proof
+            </h3>
+            <p className="text-xs text-muted-foreground mb-4">
+              Enter the Maya reference number OR upload a screenshot — either
+              one is enough for our team to verify.
+            </p>
+
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Maya reference number
+            </label>
+            <input
+              type="text"
+              value={paymentRef}
+              onChange={(e) => setPaymentRef(e.target.value.slice(0, 64))}
+              placeholder="e.g. MAYA-1234567890"
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+            />
+
+            <div className="text-center text-[11px] uppercase tracking-wider text-muted-foreground my-3">
+              — or —
+            </div>
+
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Payment screenshot
+            </label>
+            <div className="flex items-center gap-3">
+              <label
+                htmlFor="payment-screenshot"
+                className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold bg-muted hover:bg-muted/70 rounded-full px-3 py-2 transition"
+              >
+                <Upload className="h-3.5 w-3.5" />
+                {paymentScreenshot ? "Replace" : "Upload"}
+              </label>
+              <input
+                id="payment-screenshot"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={(e) =>
+                  onPaymentScreenshotChange(e.target.files?.[0] ?? null)
+                }
+                className="hidden"
+              />
+              {paymentScreenshotUrl ? (
+                <div className="h-12 w-12 rounded-lg overflow-hidden border border-border shrink-0">
+                  <img
+                    src={paymentScreenshotUrl}
+                    alt="Payment preview"
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+              ) : (
+                <div className="h-12 w-12 rounded-lg border border-dashed border-border flex items-center justify-center text-muted-foreground shrink-0">
+                  <ImageIcon className="h-4 w-4" />
+                </div>
+              )}
+              {paymentScreenshot && (
+                <span className="text-xs text-muted-foreground truncate min-w-0">
+                  {paymentScreenshot.name}
+                </span>
+              )}
+            </div>
+
+            {!paymentProofOk &&
+              (paymentRef.length > 0 || paymentScreenshot) && (
+                <p className="mt-2 text-xs text-muted-foreground italic">
+                  Enter a reference number (3+ chars) or attach a screenshot.
+                </p>
+              )}
+          </div>
+
+          {submitError && (
+            <div className="mb-4 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-3 flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>{submitError}</span>
+            </div>
+          )}
+
+          <p className="text-sm text-muted-foreground leading-relaxed mb-4">
+            After you confirm, our team verifies your payment in the Orders
+            dashboard. Once verified, your pickup is locked in.
+            {claimFormOpen &&
+              " Uploaded ID(s) go to our admin for verification — if a photo can't be verified, we'll ask for a re-upload within 24 hours."}
+          </p>
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => goToStep(2)}
+              disabled={submitting}
+              className="inline-flex items-center justify-center gap-1.5 px-5 py-3 rounded-full bg-muted text-foreground text-sm font-semibold hover:bg-muted/70 transition disabled:opacity-50"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!canSubmit}
+              className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {submitting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Confirming pickup…
+                </>
+              ) : (
+                "Confirm pickup"
+              )}
+            </button>
+          </div>
+        </>
+      )}
+
+    </div>
+  );
+}
+
+/* ============ Per-claimant ID form card ============ */
+function ClaimantCard({
+  index,
+  claimant,
+  autoFill,
+  onChange,
+  onPhotoChange,
+  onRemove,
+}: {
+  index: number;
+  claimant: Claimant;
+  autoFill: AutoFillStatus;
+  onChange: (patch: Partial<Claimant>) => void;
+  onPhotoChange: (file: File | null) => void;
+  onRemove: () => void;
+}) {
+  const fileInputId = `claimant-${index}-photo`;
+  const inputCls =
+    "w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition";
+  // Per-required-field "is this filled in?" flags so we can highlight the
+  // specific input that's blocking submit. Matches the validity check used
+  // by allClaimsValid in ReservationView — keep them in sync.
+  const nameMissing = claimant.fullName.trim().length < 2;
+  const ageMissing = claimant.age.trim().length < 1;
+  const dobMissing = claimant.dateOfBirth.trim().length < 4;
+  const issuedMissing = claimant.dateOfIssue.trim().length < 4;
+  const photoMissing = !claimant.idPhotoFile;
+  const missingLabels = [
+    nameMissing && "Name",
+    ageMissing && "Age",
+    dobMissing && "Date of birth",
+    issuedMissing && "Date of issue",
+    photoMissing && "ID photo",
+  ].filter(Boolean) as string[];
+  // Subtle red ring on inputs whose value is empty. Only kicks in once the
+  // user has interacted (started a photo upload OR typed anywhere), so the
+  // form doesn't look angry the moment it opens.
+  const hasInteracted =
+    !!claimant.idPhotoFile ||
+    claimant.fullName.length > 0 ||
+    claimant.idNumber.length > 0 ||
+    claimant.address.length > 0 ||
+    claimant.age.length > 0 ||
+    claimant.dateOfBirth.length > 0 ||
+    claimant.dateOfIssue.length > 0;
+  const errorRing = "border-destructive/60 focus:border-destructive focus:ring-destructive/20";
+
+  return (
+    <div className="border border-border rounded-xl p-4 bg-background space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="h-7 w-7 rounded-full bg-muted flex items-center justify-center text-xs font-semibold tabular-nums">
+            {index + 1}
+          </div>
+          <div className="inline-flex rounded-full bg-muted p-0.5">
+            {(["senior", "pwd"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => onChange({ kind: k })}
+                className={`text-[11px] uppercase tracking-wider px-2.5 py-1 rounded-full transition ${
+                  claimant.kind === k
+                    ? "bg-foreground text-background font-semibold"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {k === "senior" ? "Senior" : "PWD"}
+              </button>
+            ))}
+          </div>
+          {/* Validation badge. Only show "Complete" once the user has
+              actually filled things in — otherwise a brand-new blank card
+              would falsely flash green. */}
+          {hasInteracted && missingLabels.length === 0 && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold uppercase tracking-wider">
+              <Check className="h-3 w-3" /> Complete
+            </span>
+          )}
+          {hasInteracted && missingLabels.length > 0 && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-destructive/10 text-destructive text-[10px] font-semibold uppercase tracking-wider">
+              <AlertTriangle className="h-3 w-3" />
+              Missing: {missingLabels.join(", ")}
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove claimant ${index + 1}`}
+          className="text-muted-foreground hover:text-destructive transition"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* 6-column grid lets us put the small DOB/age/sex/issue fields on
+          one tidy row on tablet+ while name and address stay full-width.
+          On mobile everything stacks to single column. */}
+      <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
+        <div className="col-span-2 sm:col-span-4">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Full name (as on ID)
+          </label>
+          <input
+            type="text"
+            value={claimant.fullName}
+            onChange={(e) => onChange({ fullName: e.target.value })}
+            placeholder="Juan Dela Cruz"
+            className={`${inputCls} ${hasInteracted && nameMissing ? errorRing : ""}`}
+            autoComplete="off"
+          />
+        </div>
+        <div className="col-span-2 sm:col-span-2">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            ID number
+          </label>
+          <input
+            type="text"
+            value={claimant.idNumber}
+            onChange={(e) => onChange({ idNumber: e.target.value })}
+            placeholder={claimant.kind === "pwd" ? "RR-XXXXXX-XX..." : "e.g. 8764"}
+            className={inputCls}
+            autoComplete="off"
+          />
+        </div>
+
+        <div className="col-span-2 sm:col-span-2">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Date of birth
+          </label>
+          <input
+            type="text"
+            value={claimant.dateOfBirth}
+            onChange={(e) => onChange({ dateOfBirth: e.target.value })}
+            placeholder="MM/DD/YYYY"
+            className={`${inputCls} ${hasInteracted && dobMissing ? errorRing : ""}`}
+            autoComplete="off"
+          />
+        </div>
+        <div className="col-span-1 sm:col-span-1">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Age
+          </label>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={claimant.age}
+            onChange={(e) => onChange({ age: e.target.value })}
+            placeholder="65"
+            className={`${inputCls} ${hasInteracted && ageMissing ? errorRing : ""}`}
+            autoComplete="off"
+          />
+        </div>
+        <div className="col-span-1 sm:col-span-1">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Sex
+          </label>
+          <select
+            value={claimant.sex}
+            onChange={(e) => onChange({ sex: e.target.value })}
+            className={inputCls}
+          >
+            <option value="">—</option>
+            <option value="M">M</option>
+            <option value="F">F</option>
+          </select>
+        </div>
+        <div className="col-span-2 sm:col-span-2">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Date of issue
+          </label>
+          <input
+            type="text"
+            value={claimant.dateOfIssue}
+            onChange={(e) => onChange({ dateOfIssue: e.target.value })}
+            placeholder="MM/DD/YYYY"
+            className={`${inputCls} ${hasInteracted && issuedMissing ? errorRing : ""}`}
+            autoComplete="off"
+          />
+        </div>
+
+        <div className="col-span-2 sm:col-span-6">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Address
+          </label>
+          <input
+            type="text"
+            value={claimant.address}
+            onChange={(e) => onChange({ address: e.target.value })}
+            placeholder="Street, Barangay, City"
+            className={inputCls}
+            autoComplete="off"
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+          ID photo
+        </label>
+        <div className="flex items-center gap-3">
+          <label
+            htmlFor={fileInputId}
+            className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold bg-muted hover:bg-muted/70 rounded-full px-3 py-2 transition"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            {claimant.idPhotoFile ? "Replace" : "Upload"}
+          </label>
+          <input
+            id={fileInputId}
+            type="file"
+            accept="image/*"
+            onChange={(e) => onPhotoChange(e.target.files?.[0] ?? null)}
+            className="hidden"
+          />
+          {claimant.idPhotoUrl ? (
+            <div className="relative h-12 w-12 rounded-lg overflow-hidden border border-border shrink-0">
+              <img
+                src={claimant.idPhotoUrl}
+                alt="ID preview"
+                className="h-full w-full object-cover"
+              />
+            </div>
+          ) : (
+            <div className="h-12 w-12 rounded-lg border border-dashed border-border flex items-center justify-center text-muted-foreground shrink-0">
+              <ImageIcon className="h-4 w-4" />
+            </div>
+          )}
+          {claimant.idPhotoFile && (
+            <span className="text-xs text-muted-foreground truncate min-w-0">
+              {claimant.idPhotoFile.name}
+            </span>
+          )}
+        </div>
+
+        {/* Autofill status row. Renders nothing in idle/off states so the
+            form looks clean before/after a photo is dropped; renders a
+            spinner while the LLM reads the ID; shows a "please verify" hint
+            on success with the model's confidence; shows a quiet retry hint
+            on failure. */}
+        {autoFill.state === "loading" && (
+          <div className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Reading ID — this takes a couple of seconds…
+          </div>
+        )}
+        {autoFill.state === "filled" && (
+          <div className="mt-2 inline-flex items-center gap-2 text-xs text-primary">
+            <Sparkles className="h-3.5 w-3.5" />
+            Auto-filled from your ID — please double-check the fields above.
+            {autoFill.confidence > 0 && (
+              <span className="text-muted-foreground">
+                ({Math.round(autoFill.confidence * 100)}% confidence)
+              </span>
+            )}
+          </div>
+        )}
+        {autoFill.state === "failed" && (
+          <div className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+            <AlertTriangle className="h-3.5 w-3.5" />
+            Couldn't read the ID automatically — please type the fields manually.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ============ Receipt View ============ */
+// Invite tokens are single-use, so the receipt is a terminal screen — no
+// "New order" CTA. Guests who need to book again message Sautéo on
+// Messenger to get a fresh invite.
 function ReceiptView({
   receipt,
-  onNewOrder,
 }: {
-  receipt: { ref: string; total: number; items: { name: string; qty: number; price: number }[]; at: Date };
-  onNewOrder: () => void;
+  receipt: ReceiptShape;
 }) {
+  const hasDiscount = receipt.discountLines.length > 0;
   return (
     <div className="max-w-2xl mx-auto py-6">
       <div className="text-center mb-8">
@@ -1652,6 +3746,11 @@ function ReceiptView({
         <div className="flex items-start justify-between mb-6 pb-6 border-b border-border">
           <div>
             <div className="font-display text-2xl">Sautéo<span className="text-primary">.</span></div>
+            {hasDiscount && (
+              <div className="mt-1 inline-flex items-center px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold uppercase tracking-wider">
+                VAT-exempt · SC/PWD
+              </div>
+            )}
           </div>
           <div className="text-right">
             <div className="text-xs uppercase tracking-wider text-muted-foreground">Reference</div>
@@ -1662,6 +3761,84 @@ function ReceiptView({
         <div className="text-xs text-muted-foreground mb-4">
           {receipt.at.toLocaleString()}
         </div>
+
+        {/* Slot + party / pickup block. Helps the guest forward this to
+            their group and serves as the admin-facing summary. Layout
+            adapts: dine-in shows Slot + Party; pickup shows Pickup window,
+            Mode, Address (if courier), Meals, Payment ref. */}
+        {receipt.pickupMode === "dine_in" ? (
+          <div className="border border-border rounded-lg p-3 mb-6 grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <div className="uppercase tracking-wider text-muted-foreground">Slot</div>
+              <div className="text-foreground font-medium mt-0.5">
+                {new Date(receipt.slotDate + "T00:00:00").toLocaleDateString(undefined, {
+                  weekday: "short",
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                })}{" "}
+                · {receipt.slotTime.slice(0, 5)}
+              </div>
+            </div>
+            <div>
+              <div className="uppercase tracking-wider text-muted-foreground">Party</div>
+              <div className="text-foreground font-medium mt-0.5">
+                {receipt.customerName} · {receipt.groupSize}{" "}
+                {receipt.groupSize === 1 ? "person" : "people"}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="border border-border rounded-lg p-3 mb-6 grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <div className="uppercase tracking-wider text-muted-foreground">Pickup window</div>
+              <div className="text-foreground font-medium mt-0.5">
+                {new Date(receipt.slotDate + "T00:00:00").toLocaleDateString(undefined, {
+                  weekday: "short",
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                })}{" "}
+                · {receipt.slotTime.slice(0, 5)}
+              </div>
+            </div>
+            <div>
+              <div className="uppercase tracking-wider text-muted-foreground">Mode</div>
+              <div className="text-foreground font-medium mt-0.5">
+                {receipt.pickupMode === "personal_pickup" && "Personal pickup"}
+                {receipt.pickupMode === "lalamove" && "Lalamove"}
+                {receipt.pickupMode === "grab" && "Grab"}
+              </div>
+            </div>
+            <div>
+              <div className="uppercase tracking-wider text-muted-foreground">Customer</div>
+              <div className="text-foreground font-medium mt-0.5">
+                {receipt.customerName} · {receipt.groupSize} meal
+                {receipt.groupSize === 1 ? "" : "s"}
+              </div>
+            </div>
+            {receipt.courierAddress && (
+              <div>
+                <div className="uppercase tracking-wider text-muted-foreground">
+                  Drop-off
+                </div>
+                <div className="text-foreground font-medium mt-0.5 truncate">
+                  {receipt.courierAddress}
+                </div>
+              </div>
+            )}
+            {receipt.paymentReference && (
+              <div className="col-span-2">
+                <div className="uppercase tracking-wider text-muted-foreground">
+                  Maya reference
+                </div>
+                <div className="text-foreground font-medium mt-0.5 font-mono">
+                  {receipt.paymentReference}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         <table className="w-full text-sm mb-6">
           <thead>
@@ -1684,10 +3861,68 @@ function ReceiptView({
           </tbody>
         </table>
 
+        {hasDiscount && (
+          <div className="border-t border-border pt-4 mb-4 space-y-2">
+            <div className="text-xs uppercase tracking-wider text-muted-foreground">
+              Senior / PWD discount
+            </div>
+            {receipt.discountLines.map((d, i) => {
+              // Compact "DOB · Age · Sex · Issued" line — only rendered if
+              // at least one of the four fields was captured. Keeps the
+              // receipt clean when the OCR / admin only filled the
+              // minimum required fields (name + ID).
+              const extras = [
+                d.dateOfBirth && `DOB ${d.dateOfBirth}`,
+                d.age && `Age ${d.age}`,
+                d.sex,
+                d.dateOfIssue && `Issued ${d.dateOfIssue}`,
+              ].filter(Boolean);
+              return (
+                <div
+                  key={i}
+                  className="flex items-start justify-between gap-3 text-sm"
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium text-foreground">
+                      {d.itemName}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {d.claimantKind === "pwd" ? "PWD" : "Senior"} ·{" "}
+                      {d.claimantName || "—"} · {d.idNumber || "—"}
+                    </div>
+                    {extras.length > 0 && (
+                      <div className="text-[11px] text-muted-foreground/80 mt-0.5">
+                        {extras.join(" · ")}
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-primary font-medium tabular-nums shrink-0">
+                    −₱{d.discountAmount.toFixed(0)}
+                  </div>
+                </div>
+              );
+            })}
+            <div className="flex justify-between text-xs text-muted-foreground pt-2 border-t border-border/40">
+              <span>Subtotal</span>
+              <span className="tabular-nums">₱{receipt.gross.toFixed(0)}</span>
+            </div>
+            <div className="flex justify-between text-xs text-primary">
+              <span>Total discount</span>
+              <span className="tabular-nums">−₱{receipt.discount.toFixed(0)}</span>
+            </div>
+          </div>
+        )}
+
         <div className="border-t border-border pt-4 flex justify-between items-center">
           <span className="font-medium">Total Paid</span>
           <span className="text-primary text-2xl font-display">₱{receipt.total.toFixed(0)}</span>
         </div>
+
+        {hasDiscount && (
+          <p className="mt-4 text-[11px] leading-relaxed text-muted-foreground">
+            Discount applied per RA 9994 / RA 10754. ID(s) submitted for verification — if any photo cannot be verified, we'll request a re-upload within 24 hours before charging the full amount.
+          </p>
+        )}
       </div>
 
       <style>{`

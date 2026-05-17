@@ -77,11 +77,13 @@ const REFUND_LABEL: Record<string, string> = {
   forfeited: "Forfeited",
 };
 
-type TabKey = "overview" | "bookings" | "contacts" | "menu" | "slots" | "knowledge";
+type TabKey = "overview" | "pipeline" | "bookings" | "invites" | "contacts" | "menu" | "slots" | "knowledge";
 
 const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "overview", label: "Overview", icon: LayoutDashboard },
+  { key: "pipeline", label: "Pipeline", icon: TrendingUp },
   { key: "bookings", label: "Orders", icon: ShoppingBag },
+  { key: "invites", label: "Invites", icon: Mail },
   { key: "contacts", label: "Contacts", icon: Users },
   { key: "menu", label: "Menu", icon: UtensilsCrossed },
   { key: "slots", label: "Slots", icon: CalendarClock },
@@ -90,7 +92,9 @@ const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?:
 
 const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   overview: { title: "Overview", subtitle: "A calm summary of what's happening at Sautéo today." },
+  pipeline: { title: "Pipeline", subtitle: "Track every customer from request to seated — pickup and dine-in side by side." },
   bookings: { title: "Orders", subtitle: "Verify payments and manage incoming reservations." },
+  invites: { title: "Invites", subtitle: "Generate one-time booking links for waitlisted customers." },
   contacts: { title: "Contacts", subtitle: "Every guest who has booked, waitlisted, or messaged Sautéo." },
   menu: { title: "Menu", subtitle: "Curate the dishes available to guests." },
   slots: { title: "Time Slots", subtitle: "Open, close, and adjust capacity for each service." },
@@ -196,7 +200,9 @@ function AdminPage() {
           </header>
 
           {tab === "overview" && <OverviewTab onJumpToOrders={() => setTab("bookings")} />}
+          {tab === "pipeline" && <PipelineTab onJumpToOrders={() => setTab("bookings")} />}
           {tab === "bookings" && <BookingsTab />}
+          {tab === "invites" && <InvitesTab />}
           {tab === "contacts" && <ContactsTab />}
           {tab === "menu" && <MenuTab />}
           {tab === "slots" && <SlotsTab />}
@@ -2574,16 +2580,112 @@ function ContactsTab() {
   const [sortBy, setSortBy] = useState<"recent" | "spend" | "visits" | "name">("recent");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  // When set, opens the InviteCreator dialog prefilled with this contact's
+  // info. Generating an invite from here links it back to the contact via
+  // booking_invites.contact_id so the Invites tab can group/monitor by guest.
+  const [inviteFor, setInviteFor] = useState<ContactRow | null>(null);
+
+  // contact_id → that contact's invites, most-recent first. Drives the
+  // status badge (Active / Used / Expired / None) and the contextual
+  // action button (Copy link if an active invite exists, otherwise
+  // Generate invite). Keeps the admin from accidentally issuing two
+  // active invites to the same guest.
+  const [invitesByContact, setInvitesByContact] = useState<
+    Map<string, BookingInvite[]>
+  >(new Map());
+  const [copiedContactId, setCopiedContactId] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     const { data } = await supabase
       .from("crm_contacts_with_stats")
       .select("*")
       .order("updated_at", { ascending: false });
-    setContacts((data ?? []) as ContactRow[]);
+    const rows = (data ?? []) as ContactRow[];
+    setContacts(rows);
+
+    // Load invites linked to any visible contact. We only need the fields
+    // used for status + the token to copy — keep the projection tight.
+    const ids = rows.map((r) => r.id);
+    if (ids.length > 0) {
+      const { data: invRaw } = await supabase
+        .from("booking_invites" as any)
+        .select("id, token, channel, customer_name, expires_at, used_at, contact_id, created_at")
+        .in("contact_id", ids);
+      const m = new Map<string, BookingInvite[]>();
+      for (const inv of ((invRaw ?? []) as unknown as BookingInvite[])) {
+        if (!inv.contact_id) continue;
+        const arr = m.get(inv.contact_id) ?? [];
+        arr.push(inv);
+        m.set(inv.contact_id, arr);
+      }
+      for (const arr of m.values()) {
+        arr.sort(
+          (a, b) =>
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        );
+      }
+      setInvitesByContact(m);
+    } else {
+      setInvitesByContact(new Map());
+    }
+
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // Active = unused + not expired = the only state that has a copyable link
+  // and should block "Generate invite" on the row to prevent duplicates.
+  const inviteStatusFor = useCallback(
+    (
+      contactId: string,
+    ):
+      | { state: "active"; hoursLeft: number; invite: BookingInvite }
+      | { state: "used"; invite: BookingInvite }
+      | { state: "expired"; invite: BookingInvite }
+      | { state: "none" } => {
+      const list = invitesByContact.get(contactId);
+      if (!list || list.length === 0) return { state: "none" };
+      const active = list.find(
+        (i) => !i.used_at && new Date(i.expires_at) > new Date(),
+      );
+      if (active) {
+        const hoursLeft = Math.max(
+          0,
+          Math.round(
+            (new Date(active.expires_at).getTime() - Date.now()) / 36e5,
+          ),
+        );
+        return { state: "active", hoursLeft, invite: active };
+      }
+      const used = list.find((i) => i.used_at);
+      if (used) return { state: "used", invite: used };
+      return { state: "expired", invite: list[0] };
+    },
+    [invitesByContact],
+  );
+
+  const copyInviteLink = async (contactId: string, token: string) => {
+    const url =
+      typeof window !== "undefined"
+        ? `${window.location.origin}/book/${token}`
+        : `/book/${token}`;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setCopiedContactId(contactId);
+    window.setTimeout(
+      () => setCopiedContactId((p) => (p === contactId ? null : p)),
+      1500,
+    );
+  };
 
   const tagCounts = useMemo(() => {
     const m: Record<string, number> = {};
@@ -2675,7 +2777,9 @@ function ContactsTab() {
         </div>
       </div>
 
-      {/* List */}
+      {/* List — google-sheet-style table on sm+ (5 columns: customer, spend,
+          visits, invite status, action). On mobile collapses to a stacked
+          card so it stays readable. */}
       {loading ? (
         <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">Loading contacts…</div>
       ) : filtered.length === 0 ? (
@@ -2688,14 +2792,39 @@ function ContactsTab() {
         </div>
       ) : (
         <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+          {/* Column headers — desktop only. Grid column widths echo the body
+              rows below so columns line up exactly. */}
+          <div className="hidden sm:grid sm:grid-cols-[minmax(0,1fr)_110px_90px_180px_180px] gap-4 px-5 py-3 bg-muted/40 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+            <div>Customer</div>
+            <div className="text-right">Spend</div>
+            <div className="text-center">Visits</div>
+            <div className="text-center">Invite status</div>
+            <div className="text-right">Action</div>
+          </div>
+
           <ul className="divide-y divide-border">
-            {filtered.map(c => (
-              <li key={c.id}>
-                <button
-                  onClick={() => setSelectedId(c.id)}
-                  className="w-full text-left px-5 py-4 flex items-center justify-between gap-4 hover:bg-muted/30 transition"
+            {filtered.map(c => {
+              // Both waitlist (dine-in) and pickup contacts are eligible for
+              // an invite — the channel boundary is enforced server-side at
+              // booking time, so we just default the radio in the dialog
+              // based on the contact's tag.
+              const isWaitlist = c.tags.includes("waitlist");
+              const isPickup = c.tags.includes("pickup");
+              const inviteEligible = isWaitlist || isPickup;
+              const invStatus = inviteStatusFor(c.id);
+              const showInviteAction =
+                inviteEligible || invStatus.state !== "none";
+
+              return (
+                <li
+                  key={c.id}
+                  className="flex flex-col sm:grid sm:grid-cols-[minmax(0,1fr)_110px_90px_180px_180px] gap-2 sm:gap-4 px-5 py-4 sm:items-center hover:bg-muted/30 transition"
                 >
-                  <div className="min-w-0 flex-1">
+                  {/* Customer (clickable → opens drawer) */}
+                  <button
+                    onClick={() => setSelectedId(c.id)}
+                    className="text-left min-w-0"
+                  >
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium truncate">{c.full_name}</span>
                       {c.tags.map(t => (
@@ -2710,29 +2839,154 @@ function ContactsTab() {
                       {c.facebook_handle && <span className="inline-flex items-center gap-1"><Facebook className="h-3 w-3" /> {c.facebook_handle.slice(0, 14)}{c.facebook_handle.length > 14 ? "…" : ""}</span>}
                       {c.instagram_handle && <span className="inline-flex items-center gap-1"><Instagram className="h-3 w-3" /> {c.instagram_handle}</span>}
                     </div>
+                  </button>
+
+                  {/* Spend */}
+                  <div className="text-right text-sm font-display font-semibold tabular-nums">
+                    <span className="sm:hidden text-[10px] uppercase tracking-wider text-muted-foreground mr-2">Spend</span>
+                    ₱{Number(c.lifetime_spend).toLocaleString("en-PH", { maximumFractionDigits: 0 })}
                   </div>
-                  <div className="text-right shrink-0">
-                    <div className="font-display font-semibold tabular-nums">₱{Number(c.lifetime_spend).toLocaleString("en-PH", { maximumFractionDigits: 0 })}</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {c.confirmed_bookings} visit{c.confirmed_bookings === 1 ? "" : "s"}
-                      {c.last_visit_date && <> · last {format(new Date(c.last_visit_date), "MMM d")}</>}
-                    </div>
+
+                  {/* Visits */}
+                  <div className="sm:text-center text-xs text-muted-foreground tabular-nums">
+                    <span className="sm:hidden uppercase tracking-wider text-[10px] mr-2">Visits</span>
+                    {c.confirmed_bookings}
+                    {c.last_visit_date && (
+                      <span className="text-muted-foreground/70">
+                        {" "}· {format(new Date(c.last_visit_date), "MMM d")}
+                      </span>
+                    )}
                   </div>
-                </button>
-              </li>
-            ))}
+
+                  {/* Invite status */}
+                  <div className="sm:flex sm:justify-center">
+                    <InviteStatusPill status={invStatus} />
+                  </div>
+
+                  {/* Action */}
+                  <div className="sm:flex sm:justify-end">
+                    {showInviteAction && (
+                      invStatus.state === "active" ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            copyInviteLink(c.id, invStatus.invite.token);
+                          }}
+                          title="Copy this contact's active invite link"
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-2 bg-foreground text-background hover:opacity-90 transition w-full sm:w-auto justify-center"
+                        >
+                          {copiedContactId === c.id ? (
+                            <>
+                              <CheckCircle2 className="h-3.5 w-3.5" /> Copied!
+                            </>
+                          ) : (
+                            <>
+                              <Mail className="h-3.5 w-3.5" /> Copy link
+                            </>
+                          )}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setInviteFor(c);
+                          }}
+                          title="Generate one-time booking invite for this guest"
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-2 bg-foreground text-background hover:opacity-90 transition w-full sm:w-auto justify-center"
+                        >
+                          <Mail className="h-3.5 w-3.5" />
+                          Generate invite
+                        </button>
+                      )
+                    )}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
 
-      {selectedId && (
-        <ContactDrawer
-          id={selectedId}
-          onClose={() => setSelectedId(null)}
-          onSaved={() => { setSelectedId(null); load(); }}
+      {selectedId && (() => {
+        const c = contacts.find((row) => row.id === selectedId);
+        const status = inviteStatusFor(selectedId);
+        return (
+          <ContactDrawer
+            id={selectedId}
+            onClose={() => setSelectedId(null)}
+            onSaved={() => { setSelectedId(null); load(); }}
+            inviteStatus={status}
+            isCopied={copiedContactId === selectedId}
+            onCopyInvite={
+              status.state === "active"
+                ? () => copyInviteLink(selectedId, status.invite.token)
+                : undefined
+            }
+            onGenerateInvite={c ? () => setInviteFor(c) : undefined}
+          />
+        );
+      })()}
+
+      {inviteFor && (
+        <InviteCreator
+          prefill={{
+            contactId: inviteFor.id,
+            name: inviteFor.full_name,
+            email: inviteFor.email,
+            phone: inviteFor.phone,
+            // Best-guess of the original messaging channel — defaults to
+            // 'messenger' since that's where both waitlist + pickup
+            // customers usually come in from.
+            source:
+              inviteFor.channels.includes("instagram") ? "instagram" :
+              inviteFor.channels.includes("messenger") ? "messenger" : "messenger",
+            // Default the channel radio to match the contact's tag. Tie
+            // goes to dine-in. Admin can still flip it in the dialog.
+            channel: inviteFor.tags.includes("pickup") && !inviteFor.tags.includes("waitlist")
+              ? "pickup"
+              : "dine_in",
+          }}
+          onClose={() => setInviteFor(null)}
+          onCreated={() => { setInviteFor(null); /* invite shows up in Invites tab */ }}
         />
       )}
     </div>
+  );
+}
+
+// Tiny status pill rendered in the contacts table's "Invite status" column.
+// Mirrors the same vocabulary used in the Invites tab (active / used /
+// expired) so admins recognize it at a glance from either screen.
+function InviteStatusPill({
+  status,
+}: {
+  status:
+    | { state: "active"; hoursLeft: number; invite: BookingInvite }
+    | { state: "used"; invite: BookingInvite }
+    | { state: "expired"; invite: BookingInvite }
+    | { state: "none" };
+}) {
+  if (status.state === "none") {
+    return <span className="text-xs text-muted-foreground/70">—</span>;
+  }
+  if (status.state === "active") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold uppercase tracking-wider">
+        Active · {status.hoursLeft}h
+      </span>
+    );
+  }
+  if (status.state === "used") {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted text-muted-foreground text-[10px] font-semibold uppercase tracking-wider">
+        Used{status.invite.used_at && ` · ${format(new Date(status.invite.used_at), "MMM d")}`}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-destructive/10 text-destructive text-[10px] font-semibold uppercase tracking-wider">
+      Expired
+    </span>
   );
 }
 
@@ -2757,7 +3011,23 @@ function MiniStat({
 /* ============ Contact detail drawer ============ */
 function ContactDrawer({
   id, onClose, onSaved,
-}: { id: string; onClose: () => void; onSaved: () => void }) {
+  inviteStatus,
+  isCopied,
+  onCopyInvite,
+  onGenerateInvite,
+}: {
+  id: string;
+  onClose: () => void;
+  onSaved: () => void;
+  inviteStatus?:
+    | { state: "active"; hoursLeft: number; invite: BookingInvite }
+    | { state: "used"; invite: BookingInvite }
+    | { state: "expired"; invite: BookingInvite }
+    | { state: "none" };
+  isCopied?: boolean;
+  onCopyInvite?: () => void;
+  onGenerateInvite?: () => void;
+}) {
   const [contact, setContact] = useState<ContactRow | null>(null);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2881,24 +3151,60 @@ function ContactDrawer({
               {/* Header */}
               <div>
                 <div className="flex items-start justify-between gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <div className="font-display text-2xl tracking-tight">{contact.full_name}</div>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
                       {contact.tags.map(t => (
                         <span key={t} className="px-2 py-0.5 rounded-full bg-mustard/25 text-charcoal text-[10px] font-medium">
                           {t}
                         </span>
                       ))}
+                      {inviteStatus && inviteStatus.state !== "none" && (
+                        <InviteStatusPill status={inviteStatus} />
+                      )}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setEditing(e => !e)}
-                    className="inline-flex items-center gap-1.5 text-xs bg-muted/60 hover:bg-muted text-foreground rounded-full px-3 py-1.5 font-medium transition"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                    {editing ? "Cancel" : "Edit"}
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {/* Generate invite / Copy link — mirrors the contact-row
+                        action. Hidden if the parent didn't pass the callbacks
+                        (e.g. for non-waitlist contacts on a future caller). */}
+                    {inviteStatus?.state === "active" && onCopyInvite ? (
+                      <button
+                        type="button"
+                        onClick={onCopyInvite}
+                        className="inline-flex items-center gap-1.5 text-xs bg-foreground text-background rounded-full px-3 py-1.5 font-medium hover:opacity-90 transition"
+                      >
+                        {isCopied ? (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5" /> Copied!
+                          </>
+                        ) : (
+                          <>
+                            <Mail className="h-3.5 w-3.5" /> Copy link
+                          </>
+                        )}
+                      </button>
+                    ) : onGenerateInvite &&
+                      (contact.tags.includes("waitlist") ||
+                        contact.tags.includes("pickup")) ? (
+                      <button
+                        type="button"
+                        onClick={onGenerateInvite}
+                        className="inline-flex items-center gap-1.5 text-xs bg-foreground text-background rounded-full px-3 py-1.5 font-medium hover:opacity-90 transition"
+                      >
+                        <Mail className="h-3.5 w-3.5" />
+                        Generate invite
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setEditing(e => !e)}
+                      className="inline-flex items-center gap-1.5 text-xs bg-muted/60 hover:bg-muted text-foreground rounded-full px-3 py-1.5 font-medium transition"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      {editing ? "Cancel" : "Edit"}
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -3473,6 +3779,1107 @@ function FaqEditor({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ============ Invites ============ */
+type BookingInvite = {
+  id: string;
+  token: string;
+  channel: "dine_in" | "pickup";
+  customer_name: string;
+  customer_email: string | null;
+  customer_phone: string | null;
+  group_size: number | null;
+  source: string | null;
+  platform_id: string | null;
+  notes: string | null;
+  expires_at: string;
+  used_at: string | null;
+  used_booking_id: string | null;
+  // Added by the 20260517140000_booking_invites_contact_link migration.
+  // Nullable for invites issued manually (no contact selected).
+  contact_id: string | null;
+  created_at: string;
+};
+
+// Generates a URL-safe random token. 24 bytes → 32 base64url chars ≈ 192
+// bits — well past guess-resistant, and within the 16..128 length window
+// the lookup_invite RPC accepts. Uses Web Crypto where available and a
+// graceful fallback for legacy WebViews.
+function generateInviteToken(): string {
+  const bytes = new Uint8Array(24);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  let b64: string;
+  if (typeof btoa === "function") {
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    b64 = btoa(bin);
+  } else {
+    b64 = Buffer.from(bytes).toString("base64");
+  }
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function inviteStatus(inv: BookingInvite): "used" | "expired" | "unused" {
+  if (inv.used_at) return "used";
+  if (new Date(inv.expires_at) < new Date()) return "expired";
+  return "unused";
+}
+
+function InvitesTab() {
+  const [invites, setInvites] = useState<BookingInvite[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creatorOpen, setCreatorOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<"all" | "unused" | "used" | "expired">("all");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    // booking_invites isn't in the generated types yet — cast through `as any`
+    // until the next type-regen pass.
+    const { data, error } = await supabase
+      .from("booking_invites" as any)
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) console.warn("[invites] load failed:", error);
+    setInvites(((data ?? []) as unknown as BookingInvite[]));
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const filtered = useMemo(() => {
+    if (statusFilter === "all") return invites;
+    return invites.filter(i => inviteStatus(i) === statusFilter);
+  }, [invites, statusFilter]);
+
+  const counts = useMemo(() => {
+    const c = { all: invites.length, unused: 0, used: 0, expired: 0 };
+    for (const i of invites) c[inviteStatus(i)] += 1;
+    return c;
+  }, [invites]);
+
+  const linkFor = (token: string) => {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    return `${origin}/book/${token}`;
+  };
+
+  const copyLink = async (id: string, token: string) => {
+    const url = linkFor(token);
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      // Legacy fallback — modern admin browsers shouldn't hit this.
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setCopiedId(id);
+    window.setTimeout(() => setCopiedId(p => (p === id ? null : p)), 1500);
+  };
+
+  const revokeInvite = async (inv: BookingInvite) => {
+    if (inv.used_at) return;
+    if (!confirm(`Delete invite for ${inv.customer_name}? The link will stop working.`)) return;
+    const { error } = await supabase
+      .from("booking_invites" as any)
+      .delete()
+      .eq("id", inv.id);
+    if (error) {
+      alert(`Couldn't delete: ${error.message}`);
+      return;
+    }
+    load();
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap gap-1.5">
+            {(["all", "unused", "used", "expired"] as const).map(s => (
+              <CategoryChip
+                key={s}
+                label={s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
+                count={counts[s]}
+                active={statusFilter === s}
+                onClick={() => setStatusFilter(s)}
+              />
+            ))}
+          </div>
+          <button
+            onClick={() => setCreatorOpen(true)}
+            className="inline-flex items-center gap-1.5 border border-border text-foreground rounded-full px-3.5 py-2 text-xs font-medium hover:bg-muted/50 transition"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Manual invite
+          </button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Most invites are generated straight from the{" "}
+          <span className="text-foreground font-medium">Contacts</span> tab — find
+          the waitlisted guest and hit "Generate invite" on their row. Use
+          "Manual invite" here only when the guest isn't in contacts yet.
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="bg-card border border-border rounded-2xl py-12 text-center text-muted-foreground text-sm shadow-sm">
+          Loading invites…
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="bg-card border border-border rounded-2xl shadow-sm">
+          <EmptyState
+            icon={Inbox}
+            title={statusFilter === "all" ? "No invites yet" : `No ${statusFilter} invites`}
+            hint="Generate one to send a waitlisted customer their one-time booking link."
+          />
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(inv => {
+            const status = inviteStatus(inv);
+            const expiresIn = Math.round(
+              (new Date(inv.expires_at).getTime() - Date.now()) / 36e5
+            );
+            return (
+              <div
+                key={inv.id}
+                className="bg-card border border-border rounded-2xl shadow-sm p-4 sm:p-5"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium text-foreground">{inv.customer_name}</span>
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${
+                        status === "unused"
+                          ? "bg-primary/10 text-primary"
+                          : status === "used"
+                          ? "bg-muted text-muted-foreground"
+                          : "bg-destructive/10 text-destructive"
+                      }`}>
+                        {status}
+                      </span>
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-muted text-muted-foreground">
+                        {inv.channel === "dine_in" ? "Dine-in" : "Pickup"}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground space-y-0.5">
+                      {(inv.customer_email || inv.customer_phone) && (
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                          {inv.customer_email && <span>{inv.customer_email}</span>}
+                          {inv.customer_phone && <span>{inv.customer_phone}</span>}
+                          {inv.group_size && <span>Party of {inv.group_size}</span>}
+                        </div>
+                      )}
+                      <div>
+                        {status === "unused" && (
+                          <>Expires in {expiresIn}h ({format(new Date(inv.expires_at), "MMM d, h:mm a")})</>
+                        )}
+                        {status === "used" && inv.used_at && (
+                          <>Used {format(new Date(inv.used_at), "MMM d, h:mm a")}</>
+                        )}
+                        {status === "expired" && (
+                          <>Expired {format(new Date(inv.expires_at), "MMM d, h:mm a")}</>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {status === "unused" && (
+                      <button
+                        onClick={() => copyLink(inv.id, inv.token)}
+                        className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-2 bg-foreground text-background hover:opacity-90 transition"
+                      >
+                        {copiedId === inv.id ? (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5" /> Copied!
+                          </>
+                        ) : (
+                          <>Copy link</>
+                        )}
+                      </button>
+                    )}
+                    {!inv.used_at && (
+                      <button
+                        onClick={() => revokeInvite(inv)}
+                        aria-label="Delete invite"
+                        className="p-2 text-muted-foreground hover:text-destructive hover:bg-muted/50 rounded-full transition"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {creatorOpen && (
+        <InviteCreator
+          onClose={() => setCreatorOpen(false)}
+          onCreated={() => { setCreatorOpen(false); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+type InviteCreatorPrefill = {
+  contactId?: string;
+  name?: string;
+  email?: string | null;
+  phone?: string | null;
+  source?: "messenger" | "instagram" | "manual";
+  // Default for the dine-in / pickup radio. ContactsTab passes this based on
+  // the contact's tags ("waitlist" → dine_in, "pickup" → pickup) so the
+  // admin doesn't have to remember which channel the guest came in through.
+  channel?: "dine_in" | "pickup";
+};
+
+function InviteCreator({
+  prefill,
+  onClose,
+  onCreated,
+}: {
+  prefill?: InviteCreatorPrefill;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  // Both channels enabled — pickup flow lives at the same /book/$token URL
+  // and the customer page branches on this `channel` value to render the
+  // dine-in or pickup UI. Default comes from the prefill (set by the
+  // ContactsTab button based on tag); falls back to dine-in for manual
+  // invites issued from the Invites tab.
+  const [channel, setChannel] = useState<"dine_in" | "pickup">(
+    prefill?.channel ?? "dine_in",
+  );
+  const [name, setName] = useState(prefill?.name ?? "");
+  const [email, setEmail] = useState(prefill?.email ?? "");
+  const [phone, setPhone] = useState(prefill?.phone ?? "");
+  const [groupSize, setGroupSize] = useState<number | "">(2);
+  const [source, setSource] = useState<"messenger" | "instagram" | "manual">(
+    prefill?.source ?? "messenger",
+  );
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const inputCls =
+    "w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition";
+
+  const nameOk = name.trim().length >= 2;
+  const canSubmit = !busy && nameOk;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setErrorMsg(null);
+    setBusy(true);
+    const expiresAt = new Date(Date.now() + 72 * 3600_000).toISOString();
+    const payload: Record<string, unknown> = {
+      token: generateInviteToken(),
+      channel,
+      customer_name: name.trim(),
+      customer_email: email.trim() ? email.trim().toLowerCase() : null,
+      customer_phone: phone.trim() || null,
+      group_size: typeof groupSize === "number" && groupSize >= 1 ? groupSize : null,
+      source,
+      notes: notes.trim() || null,
+      expires_at: expiresAt,
+    };
+    // Link the invite back to the originating CRM contact when this is being
+    // generated from the Contacts tab — lets the Invites monitor view show
+    // "issued for <contact>" and groups invites by guest history.
+    if (prefill?.contactId) payload.contact_id = prefill.contactId;
+    const { error } = await supabase.from("booking_invites" as any).insert(payload);
+    setBusy(false);
+    if (error) {
+      setErrorMsg(error.message);
+      return;
+    }
+    onCreated();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6 bg-charcoal/40">
+      <div className="bg-card border border-border rounded-2xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+        <div className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <h3 className="font-display text-lg font-semibold">Generate booking invite</h3>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="p-1 text-muted-foreground hover:text-foreground rounded-lg"
+          >
+            <XIcon className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+              Booking type
+            </label>
+            <div className="inline-flex rounded-full bg-muted p-0.5">
+              {(["dine_in", "pickup"] as const).map(k => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setChannel(k)}
+                  className={`text-xs px-3 py-1.5 rounded-full transition ${
+                    channel === k
+                      ? "bg-foreground text-background font-semibold"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {k === "dine_in" ? "Dine-in" : "Pickup"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="sm:col-span-2">
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                Customer name *
+              </label>
+              <input
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="Juan Dela Cruz"
+                className={inputCls}
+                maxLength={120}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="juan@example.com"
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                Phone
+              </label>
+              <input
+                value={phone}
+                onChange={e => setPhone(e.target.value)}
+                placeholder="+63 917 000 0000"
+                className={inputCls}
+                maxLength={32}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                Group size
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={groupSize}
+                onChange={e => {
+                  const v = e.target.value;
+                  if (v === "") setGroupSize("");
+                  else {
+                    const n = Number(v);
+                    setGroupSize(Number.isFinite(n) ? Math.max(1, Math.min(50, Math.floor(n))) : "");
+                  }
+                }}
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                Source
+              </label>
+              <select
+                value={source}
+                onChange={e => setSource(e.target.value as any)}
+                className={inputCls}
+              >
+                <option value="messenger">Messenger</option>
+                <option value="instagram">Instagram</option>
+                <option value="manual">Manual</option>
+              </select>
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                Notes (admin-only)
+              </label>
+              <textarea
+                value={notes}
+                onChange={e => setNotes(e.target.value.slice(0, 500))}
+                rows={2}
+                className={`${inputCls} resize-none`}
+                placeholder="e.g. paid via Maya 2026-05-17 — waitlist #14"
+              />
+            </div>
+          </div>
+
+          <p className="text-[11px] text-muted-foreground bg-muted/40 border border-border rounded-lg p-3 leading-relaxed">
+            The link expires in 72 hours and can only be used once. Customer
+            info pre-fills on the booking page but stays editable in case of typos.
+          </p>
+
+          {errorMsg && (
+            <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-2.5">
+              {errorMsg}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-4 border-t border-border flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-full px-4 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canSubmit}
+            className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
+          >
+            {busy ? "Generating…" : "Generate invite"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============ Pipeline ============
+   Kanban-style view of every customer in the pickup or dine-in flow, with
+   one column per stage. The stage for each contact is DERIVED from
+   existing tables (no separate stage column to keep in sync):
+
+     contact.tags + latest invite + latest booking → stage
+
+   Mapping (pickup channel; dine-in uses the same logic with relabeled
+   columns):
+     Request    – tagged 'pickup', no invite & no booking
+     Invited    – has active (unused & unexpired) invite, no booking
+     Booked     – latest booking status='pending', not completed
+     Confirmed  – latest booking status='confirmed', not completed
+     Picked up  – latest booking has completed_at
+     Cancelled  – latest booking status='cancelled' (collapsed lane)
+     Expired    – only expired/used invites without a booking (collapsed)
+
+   Cards expose stage-appropriate actions so admin can advance the
+   customer right from the board. */
+
+type PipelineChannel = "pickup" | "dine_in";
+type PipelineStage =
+  | "request"
+  | "invited"
+  | "booked"
+  | "confirmed"
+  | "completed"
+  | "cancelled"
+  | "expired";
+
+type PipelineBooking = {
+  id: string;
+  reference_code: string;
+  status: string;
+  created_at: string;
+  confirmed_at: string | null;
+  completed_at: string | null;
+  pickup_mode: string | null;
+  total_amount: number;
+  customer_email: string | null;
+  customer_phone: string | null;
+  facebook_handle: string | null;
+  time_slots?: { slot_date: string; slot_time: string };
+};
+
+type PipelineCard = {
+  contact: ContactRow;
+  invites: BookingInvite[];           // sorted most-recent first
+  bookings: PipelineBooking[];        // sorted most-recent first
+  stage: PipelineStage;
+  // Convenience: highest-priority invite + latest booking already resolved
+  activeInvite: BookingInvite | null;
+  latestInvite: BookingInvite | null;
+  latestBooking: PipelineBooking | null;
+};
+
+const STAGE_LABELS: Record<PipelineChannel, Record<PipelineStage, string>> = {
+  pickup: {
+    request: "Request",
+    invited: "Invited",
+    booked: "Booked",
+    confirmed: "Confirmed",
+    completed: "Picked up",
+    cancelled: "Cancelled",
+    expired: "Expired",
+  },
+  dine_in: {
+    request: "Waitlist",
+    invited: "Invited",
+    booked: "Booked",
+    confirmed: "Confirmed",
+    completed: "Visited",
+    cancelled: "Cancelled / No-show",
+    expired: "Expired",
+  },
+};
+
+// Returns the matching booking_invites row for an "active" claim — unused
+// and not yet expired. Used for the Invited stage + Copy link button.
+function findActiveInvite(invites: BookingInvite[]): BookingInvite | null {
+  return (
+    invites.find((i) => !i.used_at && new Date(i.expires_at) > new Date()) ??
+    null
+  );
+}
+
+function deriveStage(
+  invites: BookingInvite[],
+  bookings: PipelineBooking[],
+): PipelineStage {
+  const latestBooking = bookings[0] ?? null;
+  if (latestBooking) {
+    if (latestBooking.status === "cancelled") return "cancelled";
+    if (latestBooking.completed_at) return "completed";
+    if (latestBooking.status === "confirmed") return "confirmed";
+    if (latestBooking.status === "pending") return "booked";
+  }
+  const active = findActiveInvite(invites);
+  if (active) return "invited";
+  // Has invites but none active (all used without booking — rare — or
+  // expired). Drop to "expired" so the card shows up in the collapsed lane
+  // for admin attention.
+  if (invites.length > 0) return "expired";
+  return "request";
+}
+
+// Match bookings → contact via email / phone / facebook_handle, mirroring
+// the existing ContactDrawer pattern. Email match is case-insensitive.
+function bookingMatchesContact(b: PipelineBooking, c: ContactRow): boolean {
+  if (c.email && b.customer_email && b.customer_email.toLowerCase() === c.email.toLowerCase()) {
+    return true;
+  }
+  if (c.phone && b.customer_phone && b.customer_phone === c.phone) return true;
+  if (c.facebook_handle && b.facebook_handle && b.facebook_handle === c.facebook_handle) {
+    return true;
+  }
+  return false;
+}
+
+function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
+  const [channel, setChannel] = useState<PipelineChannel>("pickup");
+  const [contacts, setContacts] = useState<ContactRow[]>([]);
+  const [allInvites, setAllInvites] = useState<BookingInvite[]>([]);
+  const [allBookings, setAllBookings] = useState<PipelineBooking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [inviteFor, setInviteFor] = useState<ContactRow | null>(null);
+  const [copiedContactId, setCopiedContactId] = useState<string | null>(null);
+  // Per-card busy flag for the "Mark complete" action so the button can
+  // show a spinner without blocking the rest of the board.
+  const [completingId, setCompletingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    // Load contacts tagged for the current channel. We do a wide fetch and
+    // filter client-side rather than a contains() query so the response is
+    // cached for both channels — switching tabs doesn't re-hit the network.
+    const [{ data: cData }, { data: invData }, { data: bkData }] =
+      await Promise.all([
+        supabase
+          .from("crm_contacts_with_stats")
+          .select("*")
+          .order("updated_at", { ascending: false }),
+        supabase
+          .from("booking_invites" as any)
+          .select(
+            "id, token, channel, customer_name, customer_email, customer_phone, group_size, source, platform_id, notes, expires_at, used_at, used_booking_id, contact_id, created_at",
+          )
+          .order("created_at", { ascending: false })
+          .limit(500),
+        supabase
+          .from("bookings")
+          .select(
+            "id, reference_code, status, created_at, confirmed_at, completed_at, pickup_mode, total_amount, customer_email, customer_phone, facebook_handle, time_slots(slot_date, slot_time)",
+          )
+          .order("created_at", { ascending: false })
+          .limit(500),
+      ]);
+    setContacts((cData ?? []) as ContactRow[]);
+    setAllInvites(((invData ?? []) as unknown) as BookingInvite[]);
+    setAllBookings(((bkData ?? []) as unknown) as PipelineBooking[]);
+    setLoading(false);
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Build the card set for the selected channel. Each contact yields one
+  // card; the stage is derived; cards are bucketed by stage in the next
+  // step. Contacts tagged for the OTHER channel are excluded (a customer
+  // tagged both pickup AND waitlist appears in both pipelines — intentional).
+  const cards = useMemo<PipelineCard[]>(() => {
+    const wantTag = channel === "pickup" ? "pickup" : "waitlist";
+    const relevantInvitesByContact = new Map<string, BookingInvite[]>();
+    for (const inv of allInvites) {
+      if (!inv.contact_id) continue;
+      if (inv.channel !== channel) continue;
+      const list = relevantInvitesByContact.get(inv.contact_id) ?? [];
+      list.push(inv);
+      relevantInvitesByContact.set(inv.contact_id, list);
+    }
+
+    return contacts
+      .filter((c) => c.tags.includes(wantTag))
+      .map<PipelineCard>((c) => {
+        const invs = relevantInvitesByContact.get(c.id) ?? [];
+        // Bookings whose pickup_mode aligns with this channel. Dine-in =
+        // pickup_mode is null or 'dine_in'; pickup = anything else.
+        const myBookings = allBookings
+          .filter((b) => bookingMatchesContact(b, c))
+          .filter((b) => {
+            const mode = b.pickup_mode ?? "dine_in";
+            return channel === "pickup" ? mode !== "dine_in" : mode === "dine_in";
+          });
+        const stage = deriveStage(invs, myBookings);
+        return {
+          contact: c,
+          invites: invs,
+          bookings: myBookings,
+          stage,
+          activeInvite: findActiveInvite(invs),
+          latestInvite: invs[0] ?? null,
+          latestBooking: myBookings[0] ?? null,
+        };
+      });
+  }, [contacts, allInvites, allBookings, channel]);
+
+  const byStage = useMemo(() => {
+    const m: Record<PipelineStage, PipelineCard[]> = {
+      request: [],
+      invited: [],
+      booked: [],
+      confirmed: [],
+      completed: [],
+      cancelled: [],
+      expired: [],
+    };
+    for (const card of cards) m[card.stage].push(card);
+    return m;
+  }, [cards]);
+
+  const copyInviteLink = async (contactId: string, token: string) => {
+    const url =
+      typeof window !== "undefined"
+        ? `${window.location.origin}/book/${token}`
+        : `/book/${token}`;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setCopiedContactId(contactId);
+    window.setTimeout(
+      () => setCopiedContactId((p) => (p === contactId ? null : p)),
+      1500,
+    );
+  };
+
+  // Stamps completed_at on the latest confirmed booking. RLS already lets
+  // admin UPDATE bookings, so no RPC needed here.
+  const markCompleted = async (bookingId: string) => {
+    setCompletingId(bookingId);
+    // completed_at column was added by the 20260518120000 migration; the
+    // generated types are stale until they're re-introspected, so cast at
+    // the update payload to bypass.
+    const { error } = await supabase
+      .from("bookings")
+      .update({ completed_at: new Date().toISOString() } as any)
+      .eq("id", bookingId);
+    setCompletingId(null);
+    if (error) {
+      alert(`Couldn't mark complete: ${error.message}`);
+      return;
+    }
+    load();
+  };
+
+  // Stage order in the visible kanban (cancelled + expired sit in a
+  // collapsed lane below).
+  const mainStages: PipelineStage[] = [
+    "request",
+    "invited",
+    "booked",
+    "confirmed",
+    "completed",
+  ];
+
+  return (
+    <div className="space-y-6">
+      {/* Channel toggle */}
+      <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="inline-flex rounded-full bg-muted p-0.5">
+            {(["pickup", "dine_in"] as const).map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setChannel(c)}
+                className={`text-sm px-4 py-1.5 rounded-full transition ${
+                  channel === c
+                    ? "bg-foreground text-background font-semibold"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {c === "pickup" ? "Pickup" : "Dine-in"}
+              </button>
+            ))}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {loading
+              ? "Loading…"
+              : `${cards.length} ${cards.length === 1 ? "guest" : "guests"} in ${channel === "pickup" ? "pickup" : "dine-in"} pipeline`}
+          </div>
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">
+          Stages are derived from invite + booking state — moving a card forward
+          means clicking the action button on it (Generate invite, Copy link,
+          Verify in Orders, Mark complete). No drag-and-drop, no drift.
+        </p>
+      </div>
+
+      {/* Main 5-column kanban — horizontal scroll on narrow screens. */}
+      <div className="overflow-x-auto -mx-2 px-2">
+        <div className="grid grid-cols-5 gap-3 min-w-[1000px]">
+          {mainStages.map((stage) => (
+            <PipelineColumn
+              key={stage}
+              label={STAGE_LABELS[channel][stage]}
+              cards={byStage[stage]}
+              channel={channel}
+              tone={stage === "completed" ? "success" : "neutral"}
+              loading={loading}
+              renderCard={(card) => (
+                <PipelineCardView
+                  key={card.contact.id}
+                  card={card}
+                  channel={channel}
+                  copied={copiedContactId === card.contact.id}
+                  completing={
+                    card.latestBooking
+                      ? completingId === card.latestBooking.id
+                      : false
+                  }
+                  onGenerateInvite={() => setInviteFor(card.contact)}
+                  onCopyInvite={(token) =>
+                    copyInviteLink(card.contact.id, token)
+                  }
+                  onJumpToOrders={onJumpToOrders}
+                  onMarkComplete={(bookingId) => markCompleted(bookingId)}
+                />
+              )}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* Collapsed lane — cancelled + expired together, less visually noisy
+          than dedicated columns since they're terminal states admin
+          rarely acts on. */}
+      <PipelineCollapsedLane
+        channel={channel}
+        cancelled={byStage.cancelled}
+        expired={byStage.expired}
+      />
+
+      {inviteFor && (
+        <InviteCreator
+          prefill={{
+            contactId: inviteFor.id,
+            name: inviteFor.full_name,
+            email: inviteFor.email,
+            phone: inviteFor.phone,
+            source:
+              inviteFor.channels.includes("instagram")
+                ? "instagram"
+                : "messenger",
+            channel,
+          }}
+          onClose={() => setInviteFor(null)}
+          onCreated={() => {
+            setInviteFor(null);
+            load();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function PipelineColumn({
+  label,
+  cards,
+  channel: _channel,
+  tone,
+  loading,
+  renderCard,
+}: {
+  label: string;
+  cards: PipelineCard[];
+  channel: PipelineChannel;
+  tone: "neutral" | "success";
+  loading: boolean;
+  renderCard: (card: PipelineCard) => React.ReactNode;
+}) {
+  const headerTone =
+    tone === "success" ? "text-primary" : "text-foreground";
+  return (
+    <div className="bg-muted/30 border border-border rounded-2xl flex flex-col min-h-[200px]">
+      <div className="px-3 py-2.5 border-b border-border flex items-center justify-between gap-2">
+        <div className={`text-[11px] uppercase tracking-wider font-semibold ${headerTone}`}>
+          {label}
+        </div>
+        <div className="text-[11px] text-muted-foreground tabular-nums">
+          {loading ? "…" : cards.length}
+        </div>
+      </div>
+      <div className="flex-1 p-2 space-y-2">
+        {!loading && cards.length === 0 && (
+          <div className="text-[11px] text-muted-foreground/70 italic px-2 py-3 text-center">
+            Empty
+          </div>
+        )}
+        {cards.map(renderCard)}
+      </div>
+    </div>
+  );
+}
+
+function PipelineCardView({
+  card,
+  channel,
+  copied,
+  completing,
+  onGenerateInvite,
+  onCopyInvite,
+  onJumpToOrders,
+  onMarkComplete,
+}: {
+  card: PipelineCard;
+  channel: PipelineChannel;
+  copied: boolean;
+  completing: boolean;
+  onGenerateInvite: () => void;
+  onCopyInvite: (token: string) => void;
+  onJumpToOrders: () => void;
+  onMarkComplete: (bookingId: string) => void;
+}) {
+  const { contact, stage, activeInvite, latestBooking } = card;
+  return (
+    <div className="bg-card border border-border rounded-xl p-3 shadow-sm space-y-2">
+      <div className="min-w-0">
+        <div className="text-sm font-semibold truncate">{contact.full_name}</div>
+        <div className="text-[11px] text-muted-foreground truncate">
+          {contact.email || contact.phone || contact.facebook_handle || "—"}
+        </div>
+      </div>
+
+      {/* Stage-specific quick info */}
+      {stage === "invited" && activeInvite && (
+        <div className="text-[10px] text-muted-foreground">
+          Expires{" "}
+          {format(new Date(activeInvite.expires_at), "MMM d, h:mm a")}
+        </div>
+      )}
+      {(stage === "booked" || stage === "confirmed" || stage === "completed") &&
+        latestBooking && (
+          <div className="text-[10px] text-muted-foreground space-y-0.5">
+            <div className="font-mono">{latestBooking.reference_code}</div>
+            {latestBooking.time_slots && (
+              <div>
+                {format(
+                  new Date(latestBooking.time_slots.slot_date),
+                  "MMM d",
+                )}{" "}
+                · {latestBooking.time_slots.slot_time.slice(0, 5)}
+              </div>
+            )}
+            <div className="tabular-nums">
+              ₱{Number(latestBooking.total_amount).toFixed(0)}
+            </div>
+          </div>
+        )}
+
+      {/* Stage-specific primary action */}
+      {stage === "request" && (
+        <button
+          onClick={onGenerateInvite}
+          className="w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold rounded-full px-2.5 py-1.5 bg-foreground text-background hover:opacity-90 transition"
+        >
+          <Mail className="h-3 w-3" />
+          Generate invite
+        </button>
+      )}
+      {stage === "invited" && activeInvite && (
+        <button
+          onClick={() => onCopyInvite(activeInvite.token)}
+          className="w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold rounded-full px-2.5 py-1.5 bg-foreground text-background hover:opacity-90 transition"
+        >
+          {copied ? (
+            <>
+              <CheckCircle2 className="h-3 w-3" /> Copied!
+            </>
+          ) : (
+            <>
+              <Mail className="h-3 w-3" /> Copy link
+            </>
+          )}
+        </button>
+      )}
+      {(stage === "booked" || stage === "confirmed") && (
+        <button
+          onClick={onJumpToOrders}
+          className="w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold rounded-full px-2.5 py-1.5 bg-muted hover:bg-muted/70 transition"
+        >
+          {stage === "booked" ? "Verify in Orders" : "Open in Orders"}
+          <ArrowRight className="h-3 w-3" />
+        </button>
+      )}
+      {stage === "confirmed" && latestBooking && (
+        <button
+          onClick={() => onMarkComplete(latestBooking.id)}
+          disabled={completing}
+          className="w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold rounded-full px-2.5 py-1.5 bg-primary text-primary-foreground hover:opacity-90 transition disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <CheckCircle2 className="h-3 w-3" />
+          {completing
+            ? "Marking…"
+            : channel === "pickup"
+            ? "Mark picked up"
+            : "Mark visited"}
+        </button>
+      )}
+      {stage === "completed" && latestBooking?.completed_at && (
+        <div className="text-[10px] text-primary inline-flex items-center gap-1">
+          <CheckCircle2 className="h-3 w-3" />
+          {format(new Date(latestBooking.completed_at), "MMM d, h:mm a")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PipelineCollapsedLane({
+  channel,
+  cancelled,
+  expired,
+}: {
+  channel: PipelineChannel;
+  cancelled: PipelineCard[];
+  expired: PipelineCard[];
+}) {
+  const [open, setOpen] = useState(false);
+  const total = cancelled.length + expired.length;
+  if (total === 0) return null;
+
+  return (
+    <div className="bg-card border border-border rounded-2xl shadow-sm">
+      <button
+        type="button"
+        onClick={() => setOpen((p) => !p)}
+        className="w-full flex items-center justify-between gap-3 px-5 py-3 hover:bg-muted/30 transition"
+      >
+        <div className="flex items-center gap-3 text-sm">
+          <span className="font-semibold">Inactive</span>
+          <span className="text-xs text-muted-foreground">
+            {cancelled.length} cancelled · {expired.length} expired
+          </span>
+        </div>
+        <ChevronDown
+          className={`h-4 w-4 text-muted-foreground transition-transform ${
+            open ? "rotate-180" : "rotate-0"
+          }`}
+        />
+      </button>
+      {open && (
+        <div className="border-t border-border px-5 py-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+              {STAGE_LABELS[channel].cancelled}
+            </div>
+            {cancelled.length === 0 ? (
+              <div className="text-[11px] text-muted-foreground/70 italic">
+                None
+              </div>
+            ) : (
+              <ul className="space-y-1.5">
+                {cancelled.map((c) => (
+                  <li
+                    key={c.contact.id}
+                    className="text-xs px-2.5 py-1.5 bg-muted/40 border border-border rounded-lg flex items-center justify-between gap-2"
+                  >
+                    <span className="truncate">{c.contact.full_name}</span>
+                    {c.latestBooking && (
+                      <span className="font-mono text-[10px] text-muted-foreground shrink-0">
+                        {c.latestBooking.reference_code}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+              {STAGE_LABELS[channel].expired}
+            </div>
+            {expired.length === 0 ? (
+              <div className="text-[11px] text-muted-foreground/70 italic">
+                None
+              </div>
+            ) : (
+              <ul className="space-y-1.5">
+                {expired.map((c) => (
+                  <li
+                    key={c.contact.id}
+                    className="text-xs px-2.5 py-1.5 bg-muted/40 border border-border rounded-lg flex items-center justify-between gap-2"
+                  >
+                    <span className="truncate">{c.contact.full_name}</span>
+                    {c.latestInvite && (
+                      <span className="text-[10px] text-muted-foreground shrink-0">
+                        {format(new Date(c.latestInvite.expires_at), "MMM d")}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
