@@ -6,6 +6,7 @@ import { Footer } from "@/components/Footer";
 import {
   AlertTriangle,
   CalendarClock,
+  Camera,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -3654,7 +3655,30 @@ function ClaimantCard({
         <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
           ID photo
         </label>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+          {/* "Take photo" — opens the phone's native camera directly on
+              mobile via the `capture` attribute (rear/world-facing camera).
+              On desktop browsers `capture` is ignored and this falls back
+              to the regular file picker, so we can ship the same control
+              everywhere without feature-detection. */}
+          <label
+            htmlFor={`${fileInputId}-camera`}
+            className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold bg-foreground text-background hover:opacity-90 rounded-full px-3 py-2 transition"
+          >
+            <Camera className="h-3.5 w-3.5" />
+            {claimant.idPhotoFile ? "Retake" : "Take photo"}
+          </label>
+          <input
+            id={`${fileInputId}-camera`}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={(e) => onPhotoChange(e.target.files?.[0] ?? null)}
+            className="hidden"
+          />
+
+          {/* "Upload" — picks an existing photo from the gallery / disk.
+              Same handler so the autofill pipeline runs identically. */}
           <label
             htmlFor={fileInputId}
             className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold bg-muted hover:bg-muted/70 rounded-full px-3 py-2 transition"
