@@ -1,12 +1,5 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
@@ -49,90 +42,14 @@ import {
   type LoadedInvite,
 } from "@/lib/invite";
 
+// Bare `/` is no longer a chooser — customers always receive a direct
+// /dine-in or /pick-up link. Anyone landing here is sent to dine-in as the
+// default flow.
 export const Route = createFileRoute("/")({
-  component: LandingPage,
-  head: () => ({
-    meta: [
-      { title: "Sautéo — Reserve a table or order pickup" },
-      {
-        name: "description",
-        content:
-          "Choose dine-in to reserve a table, or pickup to order food to go.",
-      },
-    ],
-  }),
+  beforeLoad: () => {
+    throw redirect({ to: "/dine-in" });
+  },
 });
-
-// Landing page chooser. Visitors at / pick which booking flow they want;
-// each option deep-links into a dedicated route (/dine-in, /pick-up) so the
-// two checkout flows stay isolated and shareable as separate links.
-function LandingPage() {
-  return (
-    <div className="min-h-screen flex flex-col">
-      <Header />
-      <main className="flex-1 w-full max-w-3xl mx-auto px-4 sm:px-6 py-12 md:py-20">
-        <div className="text-center mb-10 md:mb-14">
-          <h1 className="font-display text-3xl md:text-5xl mb-3">
-            How would you like to enjoy Sautéo?
-          </h1>
-          <p className="text-muted-foreground text-sm md:text-base max-w-xl mx-auto">
-            Reserve a table for dine-in, or order ahead for pickup. Both flows
-            are invite-only — message us on Messenger to get your link.
-          </p>
-        </div>
-        <div className="grid gap-4 md:gap-6 md:grid-cols-2">
-          <LandingChoice
-            to="/dine-in"
-            icon={<Sparkles className="h-6 w-6 text-primary" />}
-            title="Reserve a table"
-            body="Pick a time slot, share your party size, and we'll have your table ready."
-            cta="Start dine-in booking"
-          />
-          <LandingChoice
-            to="/pick-up"
-            icon={<ShoppingBag className="h-6 w-6 text-primary" />}
-            title="Order pickup"
-            body="Choose personal pickup or courier (Lalamove / Grab) and pay ahead by Maya QR."
-            cta="Start pickup order"
-          />
-        </div>
-      </main>
-      <Footer />
-    </div>
-  );
-}
-
-function LandingChoice({
-  to,
-  icon,
-  title,
-  body,
-  cta,
-}: {
-  to: string;
-  icon: ReactNode;
-  title: string;
-  body: string;
-  cta: string;
-}) {
-  return (
-    <Link
-      to={to}
-      className="group bg-card border border-border rounded-2xl p-6 md:p-8 shadow-sm hover:shadow-md hover:border-primary/40 transition flex flex-col"
-    >
-      <div className="h-14 w-14 rounded-full bg-mustard/30 flex items-center justify-center mb-5">
-        {icon}
-      </div>
-      <h2 className="font-display text-xl md:text-2xl mb-2">{title}</h2>
-      <p className="text-muted-foreground text-sm leading-relaxed mb-6 flex-1">
-        {body}
-      </p>
-      <span className="inline-flex items-center gap-1 text-sm font-semibold text-primary group-hover:gap-2 transition-all">
-        {cta} <ChevronRight className="h-4 w-4" />
-      </span>
-    </Link>
-  );
-}
 
 type Category = { id: string; name: string; slug: string; sort_order: number };
 type MenuItemVariant = { name: string; price: number };
