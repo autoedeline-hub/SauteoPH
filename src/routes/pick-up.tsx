@@ -1,12 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import {
-  ChevronRight,
-  CreditCard,
-  MessageCircle,
-  ShoppingBag,
-  Truck,
-} from "lucide-react";
+import { ChevronRight, MessageCircle, ShoppingBag } from "lucide-react";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import { MenuPage } from "./index";
@@ -49,24 +43,6 @@ function PickupIntro({ onStart }: { onStart: () => void }) {
           </p>
         </div>
 
-        <div className="grid gap-3 md:gap-4 md:grid-cols-3 mb-10 md:mb-12">
-          <IntroPoint
-            icon={<ShoppingBag className="h-5 w-5 text-primary" />}
-            title="Personal pickup"
-            body="Swing by during your chosen window and grab your order."
-          />
-          <IntroPoint
-            icon={<Truck className="h-5 w-5 text-primary" />}
-            title="Courier delivery"
-            body="Book Lalamove or Grab — we'll prep, you choose the address."
-          />
-          <IntroPoint
-            icon={<CreditCard className="h-5 w-5 text-primary" />}
-            title="Pay ahead with Maya"
-            body="Scan the QR at checkout and upload your proof — no on-site queue."
-          />
-        </div>
-
         <div className="flex justify-center">
           <button
             onClick={onStart}
@@ -86,22 +62,3 @@ function PickupIntro({ onStart }: { onStart: () => void }) {
   );
 }
 
-function IntroPoint({
-  icon,
-  title,
-  body,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  body: string;
-}) {
-  return (
-    <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
-      <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
-        {icon}
-      </div>
-      <h3 className="font-display text-lg mb-1">{title}</h3>
-      <p className="text-muted-foreground text-sm leading-relaxed">{body}</p>
-    </div>
-  );
-}
