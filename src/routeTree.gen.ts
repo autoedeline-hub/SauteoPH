@@ -9,10 +9,22 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as PickUpRouteImport } from './routes/pick-up'
+import { Route as DineInRouteImport } from './routes/dine-in'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as BookTokenRouteImport } from './routes/book.$token'
 
+const PickUpRoute = PickUpRouteImport.update({
+  id: '/pick-up',
+  path: '/pick-up',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DineInRoute = DineInRouteImport.update({
+  id: '/dine-in',
+  path: '/dine-in',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminRoute = AdminRouteImport.update({
   id: '/admin',
   path: '/admin',
@@ -32,35 +44,57 @@ const BookTokenRoute = BookTokenRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/dine-in': typeof DineInRoute
+  '/pick-up': typeof PickUpRoute
   '/book/$token': typeof BookTokenRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/dine-in': typeof DineInRoute
+  '/pick-up': typeof PickUpRoute
   '/book/$token': typeof BookTokenRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/dine-in': typeof DineInRoute
+  '/pick-up': typeof PickUpRoute
   '/book/$token': typeof BookTokenRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/admin' | '/book/$token'
+  fullPaths: '/' | '/admin' | '/dine-in' | '/pick-up' | '/book/$token'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/admin' | '/book/$token'
-  id: '__root__' | '/' | '/admin' | '/book/$token'
+  to: '/' | '/admin' | '/dine-in' | '/pick-up' | '/book/$token'
+  id: '__root__' | '/' | '/admin' | '/dine-in' | '/pick-up' | '/book/$token'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRoute: typeof AdminRoute
+  DineInRoute: typeof DineInRoute
+  PickUpRoute: typeof PickUpRoute
   BookTokenRoute: typeof BookTokenRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/pick-up': {
+      id: '/pick-up'
+      path: '/pick-up'
+      fullPath: '/pick-up'
+      preLoaderRoute: typeof PickUpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dine-in': {
+      id: '/dine-in'
+      path: '/dine-in'
+      fullPath: '/dine-in'
+      preLoaderRoute: typeof DineInRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin': {
       id: '/admin'
       path: '/admin'
@@ -88,6 +122,8 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRoute,
+  DineInRoute: DineInRoute,
+  PickUpRoute: PickUpRoute,
   BookTokenRoute: BookTokenRoute,
 }
 export const routeTree = rootRouteImport
