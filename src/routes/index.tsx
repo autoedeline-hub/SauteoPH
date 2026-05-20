@@ -2092,7 +2092,7 @@ function DineInReservationView({
             pre-filled.
           </p>
           <a
-            href="https://m.me/sauteo"
+            href="https://www.facebook.com/messages/t/1119234891273865"
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-3 text-sm font-semibold hover:opacity-90 transition"
@@ -2830,7 +2830,7 @@ function PickupReservationView({
             of the line, our team will send you a one-time pickup link.
           </p>
           <a
-            href="https://m.me/sauteo"
+            href="https://www.facebook.com/messages/t/1119234891273865"
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-3 text-sm font-semibold hover:opacity-90 transition"
