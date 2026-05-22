@@ -1,6 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Image as ImageIcon, Search, UtensilsCrossed } from "lucide-react";
+import {
+  ChevronDown,
+  Image as ImageIcon,
+  Search,
+  UtensilsCrossed,
+  X,
+} from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
@@ -43,6 +49,10 @@ function MenuViewerPage() {
   const [loading, setLoading] = useState(true);
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
+  // Browse-only variant viewer. Clicking a card opens this in a modal so
+  // customers can see what's inside each set menu / option group without
+  // dragging the cart flow onto a page that's meant to be read-only.
+  const [viewItem, setViewItem] = useState<MenuItem | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -162,9 +172,11 @@ function MenuViewerPage() {
               const cat = cats.find((c) => c.id === item.category_id);
               const variantCount = item.variants?.length ?? 0;
               return (
-                <div
+                <button
                   key={item.id}
-                  className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm flex flex-col"
+                  type="button"
+                  onClick={() => setViewItem(item)}
+                  className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm flex flex-col text-left cursor-pointer hover:shadow-md hover:border-foreground/30 transition focus:outline-none focus:ring-2 focus:ring-foreground/20"
                 >
                   <div className="aspect-[4/3] bg-muted flex items-center justify-center overflow-hidden">
                     {item.image_url ? (
@@ -203,13 +215,265 @@ function MenuViewerPage() {
                       </div>
                     )}
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
         )}
       </main>
       <Footer />
+
+      {viewItem && (
+        <VariantViewerModal
+          item={viewItem}
+          categoryName={
+            cats.find((c) => c.id === viewItem.category_id)?.name ??
+            "Uncategorized"
+          }
+          onClose={() => setViewItem(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Threshold above which the variant list collapses into an accordion
+// instead of a long flat list. Tuned for mobile scroll — anything over
+// this and set-menu drink lists make the modal too tall to read.
+const ACCORDION_VARIANT_THRESHOLD = 5;
+
+// Split " <base> with <option>" into { group: "<base>", option: "<option>" }
+// so set-menu variants like "BASIC SAUTÉO HAMBURGER with COKE" stack under
+// a single accordion section by base name. Mirrors the parser used in the
+// booking-flow variant picker so the grouping logic is consistent across
+// surfaces.
+function parseVariantName(name: string): {
+  group: string | null;
+  option: string;
+} {
+  const idx = name.indexOf(" with ");
+  if (idx === -1) return { group: null, option: name };
+  return {
+    group: name.slice(0, idx).trim(),
+    option: name.slice(idx + " with ".length).trim(),
+  };
+}
+
+type GroupedVariant = { name: string; price: number };
+type VariantGroup = { name: string; entries: GroupedVariant[] };
+
+function buildVariantGroups(variants: MenuVariant[]): {
+  groups: VariantGroup[];
+  ungrouped: MenuVariant[];
+} {
+  const groups: VariantGroup[] = [];
+  const byName = new Map<string, VariantGroup>();
+  const ungrouped: MenuVariant[] = [];
+  for (const v of variants) {
+    const { group, option } = parseVariantName(v.name);
+    if (group == null) {
+      ungrouped.push(v);
+      continue;
+    }
+    let g = byName.get(group);
+    if (!g) {
+      g = { name: group, entries: [] };
+      byName.set(group, g);
+      groups.push(g);
+    }
+    g.entries.push({ name: option, price: v.price });
+  }
+  return { groups, ungrouped };
+}
+
+// Read-only modal showing an item's image, description, and full variant
+// list. Mirrors the visual language of the booking-flow variant picker but
+// strips out every interactive control (no selection, no add-to-cart) so
+// the /menu page stays a pure browse surface.
+function VariantViewerModal({
+  item,
+  categoryName,
+  onClose,
+}: {
+  item: MenuItem;
+  categoryName: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [onClose]);
+
+  const variants = item.variants ?? [];
+  const { groups, ungrouped } = useMemo(
+    () => buildVariantGroups(variants),
+    [variants],
+  );
+  // Accordion when there are enough variants to make scrolling painful AND
+  // we actually have group structure to collapse them under. A 10-variant
+  // list with no " with " connectors stays flat — collapsing a single
+  // catch-all section wouldn't reduce scroll meaningfully.
+  const useAccordion =
+    variants.length >= ACCORDION_VARIANT_THRESHOLD && groups.length >= 1;
+  // Start fully collapsed — customer taps a header to reveal that
+  // group's options. Radio-style: clicking another header closes the
+  // current one, so modal height stays predictable.
+  const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${item.name} details`}
+      className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-card border border-border rounded-t-2xl sm:rounded-2xl shadow-xl w-full sm:max-w-md max-h-[88vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="sticky top-0 bg-card/95 backdrop-blur border-b border-border px-4 py-3 flex items-center justify-between">
+          <div className="text-sm font-medium text-muted-foreground">
+            Item details
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="h-8 w-8 rounded-full hover:bg-muted flex items-center justify-center transition"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {item.image_url ? (
+          <div className="aspect-[4/3] bg-muted overflow-hidden">
+            <img
+              src={item.image_url}
+              alt={item.name}
+              className="w-full h-full object-cover"
+            />
+          </div>
+        ) : null}
+
+        <div className="p-5">
+          <div className="flex items-start justify-between gap-3 mb-1">
+            <div className="min-w-0">
+              <h2 className="font-display text-xl md:text-2xl leading-tight">
+                {item.name}
+              </h2>
+              <div className="text-xs text-muted-foreground mt-1">
+                {categoryName}
+              </div>
+            </div>
+            <div className="text-lg font-semibold tabular-nums shrink-0">
+              ₱{Number(item.price).toFixed(0)}
+            </div>
+          </div>
+
+          {item.description && (
+            <p className="mt-3 text-sm text-muted-foreground leading-relaxed whitespace-pre-line">
+              {item.description}
+            </p>
+          )}
+
+          {variants.length > 0 && (
+            <div className="mt-5">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                {variants.length} variant{variants.length === 1 ? "" : "s"}
+              </div>
+
+              {useAccordion ? (
+                <div className="space-y-2">
+                  {groups.map((g) => {
+                    const isOpen = expandedGroup === g.name;
+                    return (
+                      <div
+                        key={g.name}
+                        className="border border-border rounded-xl overflow-hidden"
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedGroup(isOpen ? null : g.name)
+                          }
+                          aria-expanded={isOpen}
+                          className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-sm bg-muted/40 hover:bg-muted transition text-left"
+                        >
+                          <span className="font-medium leading-snug">
+                            {g.name}
+                          </span>
+                          <span className="flex items-center gap-2 text-xs text-muted-foreground shrink-0">
+                            {g.entries.length} option
+                            {g.entries.length === 1 ? "" : "s"}
+                            <ChevronDown
+                              className={`h-4 w-4 transition-transform ${
+                                isOpen ? "rotate-180" : ""
+                              }`}
+                            />
+                          </span>
+                        </button>
+                        {isOpen && (
+                          <ul className="divide-y divide-border bg-background">
+                            {g.entries.map((v, i) => (
+                              <li
+                                key={`${v.name}-${i}`}
+                                className="px-3 py-2.5 flex items-center justify-between gap-3 text-sm"
+                              >
+                                <span className="leading-snug">{v.name}</span>
+                                <span className="font-semibold tabular-nums shrink-0">
+                                  ₱{Number(v.price).toFixed(0)}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {ungrouped.length > 0 && (
+                    <ul className="divide-y divide-border border border-border rounded-xl overflow-hidden">
+                      {ungrouped.map((v, i) => (
+                        <li
+                          key={`ungrouped-${v.name}-${i}`}
+                          className="px-3 py-2.5 flex items-center justify-between gap-3 text-sm bg-background"
+                        >
+                          <span className="leading-snug">{v.name}</span>
+                          <span className="font-semibold tabular-nums shrink-0">
+                            ₱{Number(v.price).toFixed(0)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : (
+                <ul className="divide-y divide-border border border-border rounded-xl overflow-hidden">
+                  {variants.map((v, i) => (
+                    <li
+                      key={`${v.name}-${i}`}
+                      className="px-3 py-2.5 flex items-center justify-between gap-3 text-sm bg-background"
+                    >
+                      <span className="leading-snug">{v.name}</span>
+                      <span className="font-semibold tabular-nums shrink-0">
+                        ₱{Number(v.price).toFixed(0)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
