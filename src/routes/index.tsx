@@ -42,12 +42,13 @@ import {
   type LoadedInvite,
 } from "@/lib/invite";
 
-// Bare `/` is no longer a chooser — customers always receive a direct
-// /dine-in or /pick-up link. Anyone landing here is sent to dine-in as the
-// default flow.
+// Bare `/` redirects to the read-only /menu page. The booking flows
+// (/dine-in, /pick-up) stay reachable only via the tokenized invite
+// links Sautéo sends out — landing on the public root shouldn't expose
+// them.
 export const Route = createFileRoute("/")({
   beforeLoad: () => {
-    throw redirect({ to: "/dine-in" });
+    throw redirect({ to: "/menu" });
   },
 });
 
