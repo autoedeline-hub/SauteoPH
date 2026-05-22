@@ -2616,7 +2616,7 @@ function ContactsTab() {
     if (ids.length > 0) {
       const { data: invRaw } = await supabase
         .from("booking_invites" as any)
-        .select("id, token, channel, customer_name, expires_at, used_at, contact_id, created_at")
+        .select("id, token, channel, customer_name, group_size, expires_at, used_at, contact_id, created_at")
         .in("contact_id", ids);
       const m = new Map<string, BookingInvite[]>();
       for (const inv of ((invRaw ?? []) as unknown as BookingInvite[])) {
@@ -2639,6 +2639,24 @@ function ContactsTab() {
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // Latest party size known for the contact, sourced from their most-recent
+  // invite that captured one. Waitlist details (collected over Messenger)
+  // land on booking_invites.group_size when admin issues the invite, so this
+  // is the closest stored proxy for "how many guests is Sautéo expecting".
+  const guestsFor = useCallback(
+    (contactId: string): number | null => {
+      const list = invitesByContact.get(contactId);
+      if (!list) return null;
+      for (const inv of list) {
+        if (typeof inv.group_size === "number" && inv.group_size > 0) {
+          return inv.group_size;
+        }
+      }
+      return null;
+    },
+    [invitesByContact],
+  );
 
   // Active = unused + not expired = the only state that has a copyable link
   // and should block "Generate invite" on the row to prevent duplicates.
@@ -2786,9 +2804,9 @@ function ContactsTab() {
         </div>
       </div>
 
-      {/* List — google-sheet-style table on sm+ (5 columns: customer, spend,
-          visits, invite status, action). On mobile collapses to a stacked
-          card so it stays readable. */}
+      {/* List — google-sheet-style table on sm+ (6 columns: customer, spend,
+          visits, guests, invite status, action). On mobile collapses to a
+          stacked card so it stays readable. */}
       {loading ? (
         <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">Loading contacts…</div>
       ) : filtered.length === 0 ? (
@@ -2803,10 +2821,11 @@ function ContactsTab() {
         <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
           {/* Column headers — desktop only. Grid column widths echo the body
               rows below so columns line up exactly. */}
-          <div className="hidden sm:grid sm:grid-cols-[minmax(0,1fr)_110px_90px_180px_180px] gap-4 px-5 py-3 bg-muted/40 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+          <div className="hidden sm:grid sm:grid-cols-[minmax(0,1fr)_110px_90px_80px_180px_180px] gap-4 px-5 py-3 bg-muted/40 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
             <div>Customer</div>
             <div className="text-right">Spend</div>
             <div className="text-center">Visits</div>
+            <div className="text-center">Guests</div>
             <div className="text-center">Invite status</div>
             <div className="text-right">Action</div>
           </div>
@@ -2821,13 +2840,14 @@ function ContactsTab() {
               const isPickup = c.tags.includes("pickup");
               const inviteEligible = isWaitlist || isPickup;
               const invStatus = inviteStatusFor(c.id);
+              const guests = guestsFor(c.id);
               const showInviteAction =
                 inviteEligible || invStatus.state !== "none";
 
               return (
                 <li
                   key={c.id}
-                  className="flex flex-col sm:grid sm:grid-cols-[minmax(0,1fr)_110px_90px_180px_180px] gap-2 sm:gap-4 px-5 py-4 sm:items-center hover:bg-muted/30 transition"
+                  className="flex flex-col sm:grid sm:grid-cols-[minmax(0,1fr)_110px_90px_80px_180px_180px] gap-2 sm:gap-4 px-5 py-4 sm:items-center hover:bg-muted/30 transition"
                 >
                   {/* Customer (clickable → opens drawer) */}
                   <button
@@ -2864,6 +2884,18 @@ function ContactsTab() {
                       <span className="text-muted-foreground/70">
                         {" "}· {format(new Date(c.last_visit_date), "MMM d")}
                       </span>
+                    )}
+                  </div>
+
+                  {/* Guests — party size pulled from the latest invite the
+                      admin generated for this contact (mirrors the waitlist
+                      details they collected over Messenger). */}
+                  <div className="sm:text-center text-xs text-muted-foreground tabular-nums">
+                    <span className="sm:hidden uppercase tracking-wider text-[10px] mr-2">Guests</span>
+                    {guests != null ? (
+                      <span className="text-foreground font-medium">{guests}</span>
+                    ) : (
+                      <span className="text-muted-foreground/60">—</span>
                     )}
                   </div>
 

@@ -86,6 +86,18 @@ export default async function handler(req, res) {
       res.setHeader(key, value);
     });
 
+    // SSR HTML must never be cached by intermediaries — invite routes
+    // change behavior on every deploy, and Facebook Messenger's in-app
+    // browser is especially aggressive about caching. If we ever serve
+    // an old HTML that references chunks from a previous build, the page
+    // breaks. Asset URLs are content-hashed and stay cacheable as usual.
+    const ct = (response.headers.get("content-type") || "").toLowerCase();
+    if (ct.includes("text/html")) {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+    }
+
     if (!response.body) {
       res.end();
       return;
