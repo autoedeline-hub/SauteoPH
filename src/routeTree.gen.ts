@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as PickUpRouteImport } from './routes/pick-up'
+import { Route as MenuRouteImport } from './routes/menu'
 import { Route as DineInRouteImport } from './routes/dine-in'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
@@ -20,6 +21,11 @@ import { Route as BookTokenRouteImport } from './routes/book.$token'
 const PickUpRoute = PickUpRouteImport.update({
   id: '/pick-up',
   path: '/pick-up',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MenuRoute = MenuRouteImport.update({
+  id: '/menu',
+  path: '/menu',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DineInRoute = DineInRouteImport.update({
@@ -57,6 +63,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/dine-in': typeof DineInRoute
+  '/menu': typeof MenuRoute
   '/pick-up': typeof PickUpRoute
   '/book/$token': typeof BookTokenRoute
   '/dine-in/$token': typeof DineInTokenRoute
@@ -66,6 +73,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/dine-in': typeof DineInRoute
+  '/menu': typeof MenuRoute
   '/pick-up': typeof PickUpRoute
   '/book/$token': typeof BookTokenRoute
   '/dine-in/$token': typeof DineInTokenRoute
@@ -76,6 +84,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/dine-in': typeof DineInRoute
+  '/menu': typeof MenuRoute
   '/pick-up': typeof PickUpRoute
   '/book/$token': typeof BookTokenRoute
   '/dine-in_/$token': typeof DineInTokenRoute
@@ -87,6 +96,7 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/dine-in'
+    | '/menu'
     | '/pick-up'
     | '/book/$token'
     | '/dine-in/$token'
@@ -96,6 +106,7 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/dine-in'
+    | '/menu'
     | '/pick-up'
     | '/book/$token'
     | '/dine-in/$token'
@@ -105,6 +116,7 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/dine-in'
+    | '/menu'
     | '/pick-up'
     | '/book/$token'
     | '/dine-in_/$token'
@@ -115,6 +127,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRoute: typeof AdminRoute
   DineInRoute: typeof DineInRoute
+  MenuRoute: typeof MenuRoute
   PickUpRoute: typeof PickUpRoute
   BookTokenRoute: typeof BookTokenRoute
   DineInTokenRoute: typeof DineInTokenRoute
@@ -128,6 +141,13 @@ declare module '@tanstack/react-router' {
       path: '/pick-up'
       fullPath: '/pick-up'
       preLoaderRoute: typeof PickUpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/menu': {
+      id: '/menu'
+      path: '/menu'
+      fullPath: '/menu'
+      preLoaderRoute: typeof MenuRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/dine-in': {
@@ -179,6 +199,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRoute,
   DineInRoute: DineInRoute,
+  MenuRoute: MenuRoute,
   PickUpRoute: PickUpRoute,
   BookTokenRoute: BookTokenRoute,
   DineInTokenRoute: DineInTokenRoute,

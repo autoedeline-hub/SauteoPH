@@ -2821,12 +2821,12 @@ function ContactsTab() {
         <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
           {/* Column headers — desktop only. Grid column widths echo the body
               rows below so columns line up exactly. */}
-          <div className="hidden sm:grid sm:grid-cols-[minmax(0,1fr)_110px_90px_80px_180px_180px] gap-4 px-5 py-3 bg-muted/40 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+          <div className="hidden sm:grid sm:grid-cols-[minmax(0,1fr)_80px_180px_90px_110px_180px] gap-4 px-5 py-3 bg-muted/40 border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
             <div>Customer</div>
-            <div className="text-right">Spend</div>
-            <div className="text-center">Visits</div>
             <div className="text-center">Guests</div>
             <div className="text-center">Invite status</div>
+            <div className="text-center">Visits</div>
+            <div className="text-right">Spend</div>
             <div className="text-right">Action</div>
           </div>
 
@@ -2847,7 +2847,7 @@ function ContactsTab() {
               return (
                 <li
                   key={c.id}
-                  className="flex flex-col sm:grid sm:grid-cols-[minmax(0,1fr)_110px_90px_80px_180px_180px] gap-2 sm:gap-4 px-5 py-4 sm:items-center hover:bg-muted/30 transition"
+                  className="flex flex-col sm:grid sm:grid-cols-[minmax(0,1fr)_80px_180px_90px_110px_180px] gap-2 sm:gap-4 px-5 py-4 sm:items-center hover:bg-muted/30 transition"
                 >
                   {/* Customer (clickable → opens drawer) */}
                   <button
@@ -2870,23 +2870,6 @@ function ContactsTab() {
                     </div>
                   </button>
 
-                  {/* Spend */}
-                  <div className="text-right text-sm font-display font-semibold tabular-nums">
-                    <span className="sm:hidden text-[10px] uppercase tracking-wider text-muted-foreground mr-2">Spend</span>
-                    ₱{Number(c.lifetime_spend).toLocaleString("en-PH", { maximumFractionDigits: 0 })}
-                  </div>
-
-                  {/* Visits */}
-                  <div className="sm:text-center text-xs text-muted-foreground tabular-nums">
-                    <span className="sm:hidden uppercase tracking-wider text-[10px] mr-2">Visits</span>
-                    {c.confirmed_bookings}
-                    {c.last_visit_date && (
-                      <span className="text-muted-foreground/70">
-                        {" "}· {format(new Date(c.last_visit_date), "MMM d")}
-                      </span>
-                    )}
-                  </div>
-
                   {/* Guests — party size pulled from the latest invite the
                       admin generated for this contact (mirrors the waitlist
                       details they collected over Messenger). */}
@@ -2902,6 +2885,23 @@ function ContactsTab() {
                   {/* Invite status */}
                   <div className="sm:flex sm:justify-center">
                     <InviteStatusPill status={invStatus} />
+                  </div>
+
+                  {/* Visits */}
+                  <div className="sm:text-center text-xs text-muted-foreground tabular-nums">
+                    <span className="sm:hidden uppercase tracking-wider text-[10px] mr-2">Visits</span>
+                    {c.confirmed_bookings}
+                    {c.last_visit_date && (
+                      <span className="text-muted-foreground/70">
+                        {" "}· {format(new Date(c.last_visit_date), "MMM d")}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Spend */}
+                  <div className="text-right text-sm font-display font-semibold tabular-nums">
+                    <span className="sm:hidden text-[10px] uppercase tracking-wider text-muted-foreground mr-2">Spend</span>
+                    ₱{Number(c.lifetime_spend).toLocaleString("en-PH", { maximumFractionDigits: 0 })}
                   </div>
 
                   {/* Action */}
