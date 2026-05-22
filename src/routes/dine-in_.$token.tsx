@@ -7,7 +7,7 @@ import { BookByInvite } from "./book.$token";
 // are all delegated to BookByInvite — the create_booking RPC enforces
 // channel match at the DB layer, so a pickup token at this URL still
 // fails fast with invite_channel_mismatch.
-export const Route = createFileRoute("/dine-in/$token")({
+export const Route = createFileRoute("/dine-in_/$token")({
   component: DineInByInvite,
   head: () => ({
     meta: [

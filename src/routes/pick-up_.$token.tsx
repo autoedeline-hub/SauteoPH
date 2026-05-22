@@ -2,8 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { BookByInvite } from "./book.$token";
 
 // Channel-aware alias of /book/$token for pickup invites — see
-// dine-in.$token.tsx for the rationale and the back-stop guarantees.
-export const Route = createFileRoute("/pick-up/$token")({
+// dine-in_.$token.tsx for the rationale and the back-stop guarantees.
+export const Route = createFileRoute("/pick-up_/$token")({
   component: PickupByInvite,
   head: () => ({
     meta: [
