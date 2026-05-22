@@ -41,6 +41,7 @@ import {
   useInvite,
   type LoadedInvite,
 } from "@/lib/invite";
+import { formatSlotTime12h } from "@/lib/utils";
 
 // Bare `/` redirects to the read-only /menu page. The booking flows
 // (/dine-in, /pick-up) stay reachable only via the tokenized invite
@@ -2279,7 +2280,7 @@ function DineInReservationView({
                       const remaining = s.capacity - s.seats_taken;
                       const tooSmall = remaining < groupSize;
                       const selected = s.id === selectedSlotId;
-                      const t = s.slot_time.slice(0, 5);
+                      const t = formatSlotTime12h(s.slot_time);
                       return (
                         <button
                           key={s.id}
@@ -3078,7 +3079,7 @@ function PickupReservationView({
                           const remaining = s.capacity - s.seats_taken;
                           const tooSmall = remaining < numberOfMeals;
                           const selected = s.id === selectedSlotId;
-                          const t = s.slot_time.slice(0, 5);
+                          const t = formatSlotTime12h(s.slot_time);
                           return (
                             <button
                               key={s.id}
@@ -3809,7 +3810,7 @@ function ReceiptView({
                   day: "numeric",
                   year: "numeric",
                 })}{" "}
-                · {receipt.slotTime.slice(0, 5)}
+                · {formatSlotTime12h(receipt.slotTime)}
               </div>
             </div>
             <div>
@@ -3831,7 +3832,7 @@ function ReceiptView({
                   day: "numeric",
                   year: "numeric",
                 })}{" "}
-                · {receipt.slotTime.slice(0, 5)}
+                · {formatSlotTime12h(receipt.slotTime)}
               </div>
             </div>
             <div>

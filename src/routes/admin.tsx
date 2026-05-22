@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { format, subDays } from "date-fns";
 import { inviteLinkPath } from "@/lib/invite";
+import { formatSlotTime12h } from "@/lib/utils";
 import {
   CheckCircle2,
   LogOut,
@@ -473,7 +474,7 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
                     <div className="text-xs text-muted-foreground mt-0.5 truncate">
                       {b.reference_code}
                       {b.time_slots && (
-                        <> · {format(new Date(b.time_slots.slot_date), "EEE, MMM d")} · {b.time_slots.slot_time.slice(0, 5)}</>
+                        <> · {format(new Date(b.time_slots.slot_date), "EEE, MMM d")} · {formatSlotTime12h(b.time_slots.slot_time)}</>
                       )}
                     </div>
                   </div>
@@ -808,7 +809,7 @@ function BookingsTab() {
                   <td className="px-5 py-4">
                     {b.time_slots && <>
                       <div>{format(new Date(b.time_slots.slot_date), "EEE, MMM d")}</div>
-                      <div className="text-xs text-muted-foreground">{b.time_slots.slot_time.slice(0,5)}</div>
+                      <div className="text-xs text-muted-foreground">{formatSlotTime12h(b.time_slots.slot_time)}</div>
                     </>}
                     {b.pickup_mode && b.pickup_mode !== "dine_in" && (
                       <div className="mt-1 text-[11px] text-muted-foreground">
@@ -891,7 +892,7 @@ function BookingsTab() {
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Slot</div>
                 <div className="mt-0.5">
                   {b.time_slots
-                    ? <>{format(new Date(b.time_slots.slot_date), "EEE, MMM d")} · {b.time_slots.slot_time.slice(0,5)}</>
+                    ? <>{format(new Date(b.time_slots.slot_date), "EEE, MMM d")} · {formatSlotTime12h(b.time_slots.slot_time)}</>
                     : <span className="text-muted-foreground">—</span>}
                 </div>
                 {b.pickup_mode && b.pickup_mode !== "dine_in" && (
@@ -2174,7 +2175,7 @@ function SlotsTab() {
       alert("This slot already has bookings. Close it instead of deleting.");
       return;
     }
-    if (!confirm(`Delete the ${s.slot_time.slice(0, 5)} slot on ${format(new Date(s.slot_date), "EEE, MMM d")}?`)) return;
+    if (!confirm(`Delete the ${formatSlotTime12h(s.slot_time)} slot on ${format(new Date(s.slot_date), "EEE, MMM d")}?`)) return;
     setSlots(prev => prev.filter(p => p.id !== s.id));
     await supabase.from("time_slots").delete().eq("id", s.id);
   };
@@ -2294,7 +2295,7 @@ function SlotCard({
         <XIcon className="h-3 w-3" />
       </button>
       <div className={`font-display text-base leading-none ${slot.is_open ? "" : "text-muted-foreground"}`}>
-        {slot.slot_time.slice(0, 5)}
+        {formatSlotTime12h(slot.slot_time)}
       </div>
       <div className="text-[10px] text-muted-foreground mt-1">
         {slot.seats_taken}/{slot.capacity}
@@ -2517,7 +2518,7 @@ function SlotCreator({
               <div className="mt-2 flex flex-wrap gap-1">
                 {planned.slice(0, 12).map((p, i) => (
                   <span key={i} className="px-2 py-0.5 rounded-full bg-card border border-border text-[10px] tabular-nums">
-                    {p.slot_time.slice(0, 5)}
+                    {formatSlotTime12h(p.slot_time)}
                   </span>
                 ))}
                 {planned.length > 12 && (
@@ -3333,7 +3334,7 @@ function ContactDrawer({
                           </div>
                           <div className="text-[11px] text-muted-foreground mt-0.5">
                             {b.time_slots
-                              ? <>{format(new Date(b.time_slots.slot_date), "EEE, MMM d")} · {b.time_slots.slot_time.slice(0, 5)}</>
+                              ? <>{format(new Date(b.time_slots.slot_date), "EEE, MMM d")} · {formatSlotTime12h(b.time_slots.slot_time)}</>
                               : "—"}
                             {" · "}{b.group_size} guest{b.group_size === 1 ? "" : "s"}
                           </div>
@@ -4786,7 +4787,7 @@ function PipelineCardView({
                   new Date(latestBooking.time_slots.slot_date),
                   "MMM d",
                 )}{" "}
-                · {latestBooking.time_slots.slot_time.slice(0, 5)}
+                · {formatSlotTime12h(latestBooking.time_slots.slot_time)}
               </div>
             )}
             <div className="tabular-nums">
