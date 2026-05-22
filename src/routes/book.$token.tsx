@@ -8,7 +8,7 @@ import { InviteContext, type LoadedInvite } from "@/lib/invite";
 import { MenuPage } from "./index";
 
 export const Route = createFileRoute("/book/$token")({
-  component: BookByInvite,
+  component: BookRouteComponent,
   head: () => ({
     meta: [
       { title: "Confirm your reservation — Sautéo" },
@@ -17,6 +17,11 @@ export const Route = createFileRoute("/book/$token")({
     ],
   }),
 });
+
+function BookRouteComponent() {
+  const { token } = Route.useParams();
+  return <BookByInvite token={token} />;
+}
 
 // What lookup_invite() returns. Discriminated union so the UI can branch
 // without ad-hoc string checks elsewhere.
@@ -28,8 +33,10 @@ type LookupResult =
   | { status: "used" }
   | { status: "expired" };
 
-function BookByInvite() {
-  const { token } = Route.useParams();
+// Exported so /dine-in/$token and /pick-up/$token can reuse the same
+// invite-validation + MenuPage rendering pipeline. Each route file owns
+// its own Route.useParams() call and passes the token in here.
+export function BookByInvite({ token }: { token: string }) {
   type ViewState =
     | { kind: "loading" }
     | { kind: "valid"; invite: LoadedInvite }

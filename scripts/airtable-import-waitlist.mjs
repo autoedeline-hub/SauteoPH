@@ -21,12 +21,24 @@ const rows = JSON.parse(readFileSync(SRC, "utf8"));
 
 const escape = v => v == null || v === "" ? "NULL" : `'${String(v).replace(/'/g, "''")}'`;
 const validEmail = v => typeof v === "string" && /^[^@]+@[^@]+\.[^@]+$/.test(v.trim());
+// A Messenger PSID is page-scoped, all-digit, 15-17 chars in practice.
+// Anything else in fb_handle is a vanity URL handle (e.g. "edestar.go").
+const isPsid = v => typeof v === "string" && /^[0-9]{15,}$/.test(v.trim());
+// Test rows the bot harness leaves behind — sender_id starts with TEST_
+// or fb_handle starts with TEST_. Skipping them keeps prod crm_contacts
+// from getting polluted with bot fixtures.
+const isTest = v => typeof v === "string" && /^TEST_/i.test(v.trim());
 
 const lines = [
   "-- Imports historical waitlist guests from Airtable into crm_contacts.",
   "-- Uses the upsert helper so re-running is safe (idempotent by email/phone/fb_handle).",
+  "-- PSIDs (numeric 15+ digits) are routed to messenger_psid via link_messenger_psid.",
+  "-- Test-harness rows (TEST_* prefix) are skipped.",
   "BEGIN;",
 ];
+
+let kept = 0;
+let skippedTest = 0;
 
 for (const r of rows) {
   const f = r.fields ?? {};
@@ -34,7 +46,16 @@ for (const r of rows) {
   const emailRaw = (f.email ?? "").trim();
   const email = validEmail(emailRaw) ? emailRaw : null;
   const phone = (f.mobile ?? "").trim() || null;
-  const fb = (f.fb_handle ?? "").trim() || null;
+  const fbRaw = (f.fb_handle ?? "").trim() || null;
+  // Skip bot test fixtures wholesale.
+  if (fbRaw && isTest(fbRaw)) {
+    skippedTest += 1;
+    continue;
+  }
+  // Numeric fb_handle is actually a Messenger PSID. Send it through
+  // link_messenger_psid below; don't pollute facebook_handle with it.
+  const fbHandle = fbRaw && !isPsid(fbRaw) ? fbRaw : null;
+  const messengerPsid = fbRaw && isPsid(fbRaw) ? fbRaw : null;
   // Junk email goes into notes so we keep the data.
   const notesBits = [];
   if (emailRaw && !email) notesBits.push(`Airtable email field: ${emailRaw}`);
@@ -50,10 +71,11 @@ BEGIN
     ${escape(name)},
     ${escape(email)},
     ${escape(phone)},
-    ${escape(fb)},
+    ${escape(fbHandle)},
     NULL,
     'messenger'
   );
+  ${messengerPsid ? `PERFORM public.link_messenger_psid(v_id, ${escape(messengerPsid)});` : "-- no PSID for this row"}
   UPDATE public.crm_contacts SET
     tags  = CASE WHEN 'waitlist' = ANY(tags) THEN tags ELSE tags || ARRAY['waitlist'] END,
     notes = COALESCE(notes, '') ||
@@ -62,9 +84,13 @@ BEGIN
   WHERE id = v_id;
 END $$;`
   );
+  kept += 1;
 }
 
 lines.push("COMMIT;");
 
 writeFileSync(OUT, lines.join("\n\n"));
-console.log(`Wrote ${rows.length} statements to ${OUT}`);
+console.log(
+  `Wrote ${kept} statements to ${OUT}` +
+    (skippedTest > 0 ? ` (skipped ${skippedTest} test_harness rows).` : "."),
+);

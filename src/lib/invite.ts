@@ -26,6 +26,18 @@ export function useInvite(): LoadedInvite | null {
   return useContext(InviteContext);
 }
 
+// Customer-facing invite path keyed off the issued channel. Admin link
+// copiers feed straight from booking_invites.channel, so a dine-in invite
+// always copies as /dine-in/<token> and a pickup invite as /pick-up/<token>.
+// /book/<token> still works for back-compat with previously-shared links.
+export function inviteLinkPath(
+  channel: "dine_in" | "pickup",
+  token: string,
+): string {
+  const segment = channel === "pickup" ? "pick-up" : "dine-in";
+  return `/${segment}/${token}`;
+}
+
 // Maps SQLSTATE / message from create_booking RPC errors into a friendly
 // sentence for the customer. RPC raises these via RAISE EXCEPTION:
 //   'invite_required'         P0001

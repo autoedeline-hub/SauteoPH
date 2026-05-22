@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { format, subDays } from "date-fns";
+import { inviteLinkPath } from "@/lib/invite";
 import {
   CheckCircle2,
   LogOut,
@@ -2559,6 +2560,11 @@ type ContactRow = {
   phone: string | null;
   facebook_handle: string | null;
   instagram_handle: string | null;
+  // Messenger Page-Scoped ID, populated for waitlist guests + anyone the
+  // bot has ever messaged. n8n's invite-sender workflow uses it as the
+  // Send API recipient, so the InviteCreator copies this into
+  // booking_invites.platform_id on submit.
+  messenger_psid: string | null;
   source: string | null;
   tags: string[];
   notes: string | null;
@@ -2665,11 +2671,14 @@ function ContactsTab() {
     [invitesByContact],
   );
 
-  const copyInviteLink = async (contactId: string, token: string) => {
+  const copyInviteLink = async (
+    contactId: string,
+    token: string,
+    channel: "dine_in" | "pickup",
+  ) => {
+    const path = inviteLinkPath(channel, token);
     const url =
-      typeof window !== "undefined"
-        ? `${window.location.origin}/book/${token}`
-        : `/book/${token}`;
+      typeof window !== "undefined" ? `${window.location.origin}${path}` : path;
     try {
       await navigator.clipboard.writeText(url);
     } catch {
@@ -2870,7 +2879,11 @@ function ContactsTab() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            copyInviteLink(c.id, invStatus.invite.token);
+                            copyInviteLink(
+                              c.id,
+                              invStatus.invite.token,
+                              invStatus.invite.channel as "dine_in" | "pickup",
+                            );
                           }}
                           title="Copy this contact's active invite link"
                           className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-2 bg-foreground text-background hover:opacity-90 transition w-full sm:w-auto justify-center"
@@ -2919,7 +2932,12 @@ function ContactsTab() {
             isCopied={copiedContactId === selectedId}
             onCopyInvite={
               status.state === "active"
-                ? () => copyInviteLink(selectedId, status.invite.token)
+                ? () =>
+                    copyInviteLink(
+                      selectedId,
+                      status.invite.token,
+                      status.invite.channel as "dine_in" | "pickup",
+                    )
                 : undefined
             }
             onGenerateInvite={c ? () => setInviteFor(c) : undefined}
@@ -2934,6 +2952,7 @@ function ContactsTab() {
             name: inviteFor.full_name,
             email: inviteFor.email,
             phone: inviteFor.phone,
+            messengerPsid: inviteFor.messenger_psid,
             // Best-guess of the original messaging channel — defaults to
             // 'messenger' since that's where both waitlist + pickup
             // customers usually come in from.
@@ -3865,13 +3884,13 @@ function InvitesTab() {
     return c;
   }, [invites]);
 
-  const linkFor = (token: string) => {
+  const linkFor = (inv: BookingInvite) => {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
-    return `${origin}/book/${token}`;
+    return `${origin}${inviteLinkPath(inv.channel, inv.token)}`;
   };
 
-  const copyLink = async (id: string, token: string) => {
-    const url = linkFor(token);
+  const copyLink = async (inv: BookingInvite) => {
+    const url = linkFor(inv);
     try {
       await navigator.clipboard.writeText(url);
     } catch {
@@ -3883,8 +3902,8 @@ function InvitesTab() {
       document.execCommand("copy");
       document.body.removeChild(ta);
     }
-    setCopiedId(id);
-    window.setTimeout(() => setCopiedId(p => (p === id ? null : p)), 1500);
+    setCopiedId(inv.id);
+    window.setTimeout(() => setCopiedId(p => (p === inv.id ? null : p)), 1500);
   };
 
   const revokeInvite = async (inv: BookingInvite) => {
@@ -3997,7 +4016,7 @@ function InvitesTab() {
                   <div className="flex items-center gap-2 shrink-0">
                     {status === "unused" && (
                       <button
-                        onClick={() => copyLink(inv.id, inv.token)}
+                        onClick={() => copyLink(inv)}
                         className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-2 bg-foreground text-background hover:opacity-90 transition"
                       >
                         {copiedId === inv.id ? (
@@ -4041,6 +4060,11 @@ type InviteCreatorPrefill = {
   name?: string;
   email?: string | null;
   phone?: string | null;
+  // Carried straight from ContactRow so the new invite row gets the PSID
+  // attached at INSERT time. The n8n invite-sender workflow reads
+  // booking_invites.platform_id and would have nothing to send to without
+  // this — admin would have to type the PSID manually otherwise.
+  messengerPsid?: string | null;
   source?: "messenger" | "instagram" | "manual";
   // Default for the dine-in / pickup radio. ContactsTab passes this based on
   // the contact's tags ("waitlist" → dine_in, "pickup" → pickup) so the
@@ -4102,6 +4126,10 @@ function InviteCreator({
     // generated from the Contacts tab — lets the Invites monitor view show
     // "issued for <contact>" and groups invites by guest history.
     if (prefill?.contactId) payload.contact_id = prefill.contactId;
+    // Copy the contact's Messenger PSID onto the invite so the n8n
+    // sender workflow has a recipient when the row INSERT fires the
+    // Supabase webhook.
+    if (prefill?.messengerPsid) payload.platform_id = prefill.messengerPsid;
     const { error } = await supabase.from("booking_invites" as any).insert(payload);
     setBusy(false);
     if (error) {
@@ -4487,10 +4515,11 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
   }, [cards]);
 
   const copyInviteLink = async (contactId: string, token: string) => {
+    // The pipeline view is always scoped to a single channel via the
+    // parent state, so any invite generated from here matches it.
+    const path = inviteLinkPath(channel, token);
     const url =
-      typeof window !== "undefined"
-        ? `${window.location.origin}/book/${token}`
-        : `/book/${token}`;
+      typeof window !== "undefined" ? `${window.location.origin}${path}` : path;
     try {
       await navigator.clipboard.writeText(url);
     } catch {
@@ -4622,6 +4651,7 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
             name: inviteFor.full_name,
             email: inviteFor.email,
             phone: inviteFor.phone,
+            messengerPsid: inviteFor.messenger_psid,
             source:
               inviteFor.channels.includes("instagram")
                 ? "instagram"

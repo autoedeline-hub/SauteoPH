@@ -50,6 +50,11 @@ const escape = (v) =>
   v == null || v === "" ? "NULL" : `'${String(v).replace(/'/g, "''")}'`;
 const validEmail = (v) =>
   typeof v === "string" && /^[^@]+@[^@]+\.[^@]+$/.test(v.trim());
+// Numeric Messenger PSIDs sometimes show up under fb_handle. Treat 15+
+// digit values as PSIDs and route to messenger_psid; leave real vanity
+// handles in facebook_handle.
+const isPsid = (v) => typeof v === "string" && /^[0-9]{15,}$/.test(v.trim());
+const isTest = (v) => typeof v === "string" && /^TEST_/i.test(v.trim());
 
 const lines = [
   "-- Imports pickup-request guests from Airtable into crm_contacts.",
@@ -81,14 +86,23 @@ for (const r of rows) {
   const emailRaw = pick("email", "Email");
   const email = validEmail(emailRaw) ? emailRaw : null;
   const phone = pick("mobile", "phone", "Phone", "Mobile") || null;
-  const fb = pick("fb_handle", "facebook", "FB Handle") || null;
+  const fbRaw = pick("fb_handle", "facebook", "FB Handle") || null;
   const ig = pick("ig_handle", "instagram", "IG Handle") || null;
 
-  // Skip rows with no way to identify the guest — they'd just be noise.
-  if (!name && !email && !phone && !fb && !ig) {
+  // Drop bot-fixture rows wholesale.
+  if (fbRaw && isTest(fbRaw)) {
     skipped += 1;
     continue;
   }
+
+  // Skip rows with no way to identify the guest — they'd just be noise.
+  if (!name && !email && !phone && !fbRaw && !ig) {
+    skipped += 1;
+    continue;
+  }
+
+  const fb = fbRaw && !isPsid(fbRaw) ? fbRaw : null;
+  const messengerPsid = fbRaw && isPsid(fbRaw) ? fbRaw : null;
 
   // Pack pickup-specific context into notes so it shows in the Contacts
   // drawer + survives re-runs without touching the structural columns.
@@ -119,6 +133,7 @@ BEGIN
     ${escape(ig)},
     'messenger'
   );
+  ${messengerPsid ? `PERFORM public.link_messenger_psid(v_id, ${escape(messengerPsid)});` : "-- no PSID for this row"}
   UPDATE public.crm_contacts SET
     tags  = CASE WHEN 'pickup' = ANY(tags) THEN tags ELSE tags || ARRAY['pickup'] END,
     notes = COALESCE(notes, '') ||
