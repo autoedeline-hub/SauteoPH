@@ -1791,6 +1791,16 @@ function DineInReservationView({
   const [groupSize, setGroupSize] = useState<number>(invite?.groupSize ?? 2);
   const [notes, setNotes] = useState("");
 
+  // Payment proof state — mirrors the pickup checkout. Either a typed Maya
+  // reference number OR an uploaded screenshot is enough for our team to
+  // verify. Both submit to Supabase the same way the pickup flow does.
+  const [paymentRef, setPaymentRef] = useState("");
+  const [paymentScreenshot, setPaymentScreenshot] = useState<File | null>(null);
+  const [paymentScreenshotUrl, setPaymentScreenshotUrl] = useState<string | null>(
+    null,
+  );
+  const [qrImgError, setQrImgError] = useState(false);
+
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -1865,6 +1875,10 @@ function DineInReservationView({
     [claimants],
   );
 
+  // Payment proof: at least one of (typed reference) OR (screenshot file).
+  const paymentProofOk =
+    paymentRef.trim().length >= 3 || !!paymentScreenshot;
+
   const canSubmit =
     !submitting &&
     !!selectedSlot &&
@@ -1874,6 +1888,7 @@ function DineInReservationView({
     phoneValid &&
     groupSizeValid &&
     slotCapacityOk &&
+    paymentProofOk &&
     (!claimFormOpen || allClaimsValid);
 
   // Trim claimants to cart size as before.
@@ -1918,6 +1933,13 @@ function DineInReservationView({
     setClaimants((prev) =>
       prev.map((c, i) => (i === idx ? { ...c, ...patch } : c)),
     );
+  };
+
+  // Local preview for the payment screenshot. Mirrors pickup flow.
+  const onPaymentScreenshotChange = (file: File | null) => {
+    if (paymentScreenshotUrl) URL.revokeObjectURL(paymentScreenshotUrl);
+    setPaymentScreenshot(file);
+    setPaymentScreenshotUrl(file ? URL.createObjectURL(file) : null);
   };
 
   const onPhotoChange = (idx: number, file: File | null) => {
@@ -2026,6 +2048,8 @@ function DineInReservationView({
       .join(" | ")
       .slice(0, 500);
 
+    const trimmedPaymentRef = paymentRef.trim() || null;
+
     const payload: Record<string, unknown> = {
       slot_id: selectedSlot.id,
       customer_name: customerName.trim(),
@@ -2034,6 +2058,7 @@ function DineInReservationView({
       group_size: groupSize,
       notes: combinedNotes || null,
       pickup_mode: invite?.channel === "pickup" ? "personal_pickup" : "dine_in",
+      payment_reference: trimmedPaymentRef,
       items: Object.entries(qtyByMenuItemId).map(([menu_item_id, quantity]) => ({
         menu_item_id,
         quantity,
@@ -2052,16 +2077,46 @@ function DineInReservationView({
     const { data, error } = await (supabase.rpc as any)("create_booking", {
       payload,
     });
-    setSubmitting(false);
     if (error) {
+      setSubmitting(false);
       setSubmitError(friendlyBookingError(error.message));
       return;
     }
     const result = (data ?? {}) as { reference_code?: string };
     if (!result.reference_code) {
+      setSubmitting(false);
       setSubmitError("Booking didn't return a reference code. Contact us in Messenger.");
       return;
     }
+
+    // Optional screenshot upload, post-booking. The payment-proofs bucket
+    // RLS requires the path to be `bookings/<reference_code>/...` AND a
+    // matching pending booking <30min old, both of which we now have. If
+    // the upload fails we still keep the booking — admin can chase the
+    // screenshot via Messenger. Same pattern as the pickup flow.
+    if (paymentScreenshot) {
+      const ext = (paymentScreenshot.name.split(".").pop() || "jpg")
+        .toLowerCase()
+        .slice(0, 8);
+      const path = `bookings/${result.reference_code}/payment-${Date.now()}.${ext}`;
+      const { error: upErr } = await supabase.storage
+        .from("payment-proofs")
+        .upload(path, paymentScreenshot, {
+          contentType: paymentScreenshot.type || "image/jpeg",
+          upsert: false,
+        });
+      if (upErr) {
+        console.warn("[dine-in] screenshot upload failed:", upErr);
+      } else {
+        const { error: rpcErr } = await (supabase.rpc as any)(
+          "submit_payment_proof",
+          { _ref: result.reference_code, _path: path },
+        );
+        if (rpcErr) console.warn("[dine-in] submit_payment_proof failed:", rpcErr);
+      }
+    }
+
+    setSubmitting(false);
     onConfirm({
       referenceCode: result.reference_code,
       slot: selectedSlot,
@@ -2397,6 +2452,127 @@ function DineInReservationView({
         )}
       </div>
 
+      {/* Sautéo Payment QR — same Maya / InstaPay account customers see
+          on the pickup flow. The receipt's totals + payment-verification
+          path are shared with pickup so the admin Orders dashboard sees
+          dine-in payments through the same lens. */}
+      <div className="bg-charcoal text-cream rounded-2xl p-6 mb-6">
+        <div className="flex flex-col md:flex-row md:items-center gap-4 md:gap-6">
+          <div className="flex-1 min-w-0 md:text-center">
+            <div className="text-cream text-xs uppercase tracking-wider mb-2">
+              Send payment to Sautéo PH
+            </div>
+            <div className="text-cream/80 text-sm space-y-1">
+              <div className="break-words">
+                Maya / InstaPay:{" "}
+                <span className="font-mono text-cream">+63 123 456 789</span>
+              </div>
+              <div className="pt-2 text-cream/60">
+                Amount:{" "}
+                <span className="text-cream font-semibold break-words">
+                  ₱{payable.toFixed(0)}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-col items-center md:items-end shrink-0">
+            <div className="bg-white p-3 rounded-xl shadow-lg ring-1 ring-cream/10 w-44 sm:w-52 md:w-48 lg:w-52">
+              <div className="w-full aspect-square flex items-center justify-center">
+                {qrImgError ? (
+                  <div className="flex flex-col items-center justify-center text-center gap-2 text-gray-400">
+                    <QrCode className="h-16 w-16" aria-hidden="true" />
+                    <span className="text-xs font-medium text-gray-500">
+                      QR coming soon
+                    </span>
+                  </div>
+                ) : (
+                  <img
+                    src="/maya-qr.png"
+                    alt="Scan to pay via Maya or any QR Ph–compatible app"
+                    className="w-full h-full object-contain"
+                    onError={() => setQrImgError(true)}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Payment proof — either a typed reference number OR a screenshot
+          (or both) is enough for our team to verify in the Orders tab. */}
+      <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
+        <h3 className="font-display text-lg font-semibold mb-1">
+          Payment proof
+        </h3>
+        <p className="text-xs text-muted-foreground mb-4">
+          Enter the Maya reference number OR upload a screenshot — either
+          one is enough for our team to verify.
+        </p>
+
+        <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+          Maya reference number
+        </label>
+        <input
+          type="text"
+          value={paymentRef}
+          onChange={(e) => setPaymentRef(e.target.value.slice(0, 64))}
+          placeholder="e.g. MAYA-1234567890"
+          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+        />
+
+        <div className="text-center text-[11px] uppercase tracking-wider text-muted-foreground my-3">
+          — or —
+        </div>
+
+        <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+          Payment screenshot
+        </label>
+        <div className="flex items-center gap-3">
+          <label
+            htmlFor="dinein-payment-screenshot"
+            className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold bg-muted hover:bg-muted/70 rounded-full px-3 py-2 transition"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            {paymentScreenshot ? "Replace" : "Upload"}
+          </label>
+          <input
+            id="dinein-payment-screenshot"
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={(e) =>
+              onPaymentScreenshotChange(e.target.files?.[0] ?? null)
+            }
+            className="hidden"
+          />
+          {paymentScreenshotUrl ? (
+            <div className="h-12 w-12 rounded-lg overflow-hidden border border-border shrink-0">
+              <img
+                src={paymentScreenshotUrl}
+                alt="Payment preview"
+                className="h-full w-full object-cover"
+              />
+            </div>
+          ) : (
+            <div className="h-12 w-12 rounded-lg border border-dashed border-border flex items-center justify-center text-muted-foreground shrink-0">
+              <ImageIcon className="h-4 w-4" />
+            </div>
+          )}
+          {paymentScreenshot && (
+            <span className="text-xs text-muted-foreground truncate min-w-0">
+              {paymentScreenshot.name}
+            </span>
+          )}
+        </div>
+
+        {!paymentProofOk &&
+          (paymentRef.length > 0 || paymentScreenshot) && (
+            <p className="mt-2 text-xs text-muted-foreground italic">
+              Enter a reference number (3+ chars) or attach a screenshot.
+            </p>
+          )}
+      </div>
+
       {submitError && (
         <div className="mb-4 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-3 flex items-start gap-2">
           <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
@@ -2405,8 +2581,8 @@ function DineInReservationView({
       )}
 
       <p className="text-sm text-muted-foreground leading-relaxed mb-4">
-        Your payment was already confirmed with our team — this step just
-        locks in your slot.
+        Please settle your payment to confirm your reservation with our team
+        — this step locks in your slot.
         {claimFormOpen &&
           " Your uploaded ID(s) go to our admin for verification — if a photo can't be verified, we'll ask for a re-upload within 24 hours."}
       </p>

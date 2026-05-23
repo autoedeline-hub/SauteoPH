@@ -758,26 +758,30 @@ function BookingsTab() {
         )}
       </div>
 
-      {/* Table (desktop) */}
-      <div className="hidden lg:block bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
+      {/* Table (wide desktop, ≥ xl). On MacBook Air-class viewports and
+          smaller we drop to the card layout below — the 9-column table
+          gets too cramped under ~1280px even with whitespace-nowrap.
+          Vertical scroll is scoped to the table body so admin doesn't
+          have to scroll the page when the list grows. */}
+      <div className="hidden xl:block bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+        <div className="overflow-auto max-h-[calc(100vh-280px)]">
           <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-muted-foreground text-xs uppercase tracking-wider">
+            <thead className="sticky top-0 z-10 bg-muted/40 text-muted-foreground text-[11px] uppercase tracking-wider shadow-[0_1px_0_0_var(--border)]">
               <tr>
-                <th className="px-5 py-4 font-medium text-left">Ref</th>
-                <th className="px-5 py-4 font-medium text-left">Customer</th>
-                <th className="px-5 py-4 font-medium text-left">Slot</th>
-                <th className="px-5 py-4 font-medium text-left">Group</th>
-                <th className="px-5 py-4 font-medium text-left">Items</th>
-                <th className="px-5 py-4 font-medium text-left">Total</th>
-                <th className="px-5 py-4 font-medium text-left">Payment</th>
-                <th className="px-5 py-4 font-medium text-left">Status</th>
-                <th className="px-5 py-4 font-medium text-left"></th>
+                <th className="px-3 py-3 font-medium text-center">Ref</th>
+                <th className="px-3 py-3 font-medium text-center">Customer</th>
+                <th className="px-3 py-3 font-medium text-center">Slot</th>
+                <th className="px-3 py-3 font-medium text-center">Pax</th>
+                <th className="px-3 py-3 font-medium text-center">Items</th>
+                <th className="px-3 py-3 font-medium text-center">Total</th>
+                <th className="px-3 py-3 font-medium text-center">Payment</th>
+                <th className="px-3 py-3 font-medium text-center">Status</th>
+                <th className="px-3 py-3 font-medium text-center"></th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={9} className="px-5 py-12 text-center text-muted-foreground">Loading…</td></tr>
+                <tr><td colSpan={9} className="px-3 py-12 text-center text-muted-foreground">Loading…</td></tr>
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={9} className="p-0">
                   <EmptyState
@@ -787,8 +791,8 @@ function BookingsTab() {
                   />
                 </td></tr>
               ) : filtered.map(b => (
-                <tr key={b.id} className="border-t border-border align-top hover:bg-muted/30 transition">
-                  <td className="px-5 py-4 font-mono text-xs text-muted-foreground">
+                <tr key={b.id} className="border-t border-border align-middle hover:bg-muted/30 transition">
+                  <td className="px-3 py-3 font-mono text-[11px] text-muted-foreground whitespace-nowrap text-center">
                     {b.reference_code}
                     {b.source && b.source !== "web" && (
                       <div className="mt-1 inline-flex items-center px-1.5 py-0.5 rounded-full bg-muted text-[10px] uppercase tracking-wider font-medium text-muted-foreground">
@@ -796,20 +800,20 @@ function BookingsTab() {
                       </div>
                     )}
                   </td>
-                  <td className="px-5 py-4">
-                    <div className="font-medium">{b.customer_name}</div>
-                    <div className="text-xs text-muted-foreground">{b.customer_email}</div>
-                    <div className="text-xs text-muted-foreground">{b.customer_phone}</div>
+                  <td className="px-3 py-3 max-w-[180px] text-center">
+                    <div className="font-medium truncate" title={b.customer_name}>{b.customer_name}</div>
+                    <div className="text-[11px] text-muted-foreground truncate" title={b.customer_email}>{b.customer_email}</div>
+                    <div className="text-[11px] text-muted-foreground truncate" title={b.customer_phone}>{b.customer_phone}</div>
                     {b.allergy_notes && (
                       <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-destructive/10 text-destructive text-[10px] font-medium" title={b.allergy_notes}>
                         <AlertCircle className="h-3 w-3" /> Allergy
                       </div>
                     )}
                   </td>
-                  <td className="px-5 py-4">
+                  <td className="px-3 py-3 whitespace-nowrap text-center">
                     {b.time_slots && <>
                       <div>{format(new Date(b.time_slots.slot_date), "EEE, MMM d")}</div>
-                      <div className="text-xs text-muted-foreground">{formatSlotTime12h(b.time_slots.slot_time)}</div>
+                      <div className="text-[11px] text-muted-foreground">{formatSlotTime12h(b.time_slots.slot_time)}</div>
                     </>}
                     {b.pickup_mode && b.pickup_mode !== "dine_in" && (
                       <div className="mt-1 text-[11px] text-muted-foreground">
@@ -817,36 +821,46 @@ function BookingsTab() {
                       </div>
                     )}
                   </td>
-                  <td className="px-5 py-4">{b.group_size}</td>
-                  <td className="px-5 py-4 text-xs max-w-xs">
-                    {b.booking_items?.map((bi, i) => <div key={i}>{bi.quantity}× {bi.item_name}</div>)}
+                  <td className="px-3 py-3 tabular-nums text-center">{b.group_size}</td>
+                  <td className="px-3 py-3 text-[11px] max-w-[180px] text-center">
+                    {b.booking_items?.map((bi, i) => (
+                      <div key={i} className="truncate" title={`${bi.quantity}× ${bi.item_name}`}>
+                        {bi.quantity}× {bi.item_name}
+                      </div>
+                    ))}
                   </td>
-                  <td className="px-5 py-4 font-medium">
+                  <td className="px-3 py-3 text-center font-medium whitespace-nowrap tabular-nums">
                     <div>₱{Number(b.total_amount).toFixed(0)}</div>
                     {b.credit_remaining != null && b.credit_remaining > 0 && (
-                      <div className="text-[11px] text-muted-foreground mt-0.5">
+                      <div className="text-[11px] text-muted-foreground mt-0.5 font-normal">
                         Credit ₱{Number(b.credit_remaining).toFixed(0)}
                         {b.refund_status && <> · {REFUND_LABEL[b.refund_status] ?? b.refund_status}</>}
                       </div>
                     )}
                   </td>
-                  <td className="px-5 py-4 text-xs">
-                    {b.payments?.[0]?.reference_number && <div>Ref: {b.payments[0].reference_number}</div>}
+                  <td className="px-3 py-3 text-[11px] max-w-[140px] text-center">
+                    {b.payments?.[0]?.reference_number && (
+                      <div className="truncate" title={b.payments[0].reference_number}>
+                        Ref: {b.payments[0].reference_number}
+                      </div>
+                    )}
                     {b.payments?.[0]?.screenshot_url && (
                       <a href={b.payments[0].screenshot_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">
                         Screenshot
                       </a>
                     )}
-                    <div className="text-muted-foreground">{b.payments?.[0]?.status}</div>
+                    <div className="text-muted-foreground truncate" title={b.payments?.[0]?.status ?? undefined}>
+                      {b.payments?.[0]?.status}
+                    </div>
                   </td>
-                  <td className="px-5 py-4">
+                  <td className="px-3 py-3 text-center">
                     <StatusBadge status={b.status} />
                   </td>
-                  <td className="px-5 py-4">
+                  <td className="px-3 py-3 text-center">
                     {b.status !== "confirmed" && (
                       <button
                         onClick={() => verify(b)}
-                        className="inline-flex items-center gap-1.5 text-xs bg-foreground text-background rounded-full px-4 py-2 font-medium hover:opacity-90 transition"
+                        className="inline-flex items-center gap-1.5 text-xs bg-foreground text-background rounded-full px-3 py-1.5 font-medium hover:opacity-90 transition whitespace-nowrap"
                       >
                         <CheckCircle2 className="h-3.5 w-3.5" /> Verify
                       </button>
@@ -859,8 +873,11 @@ function BookingsTab() {
         </div>
       </div>
 
-      {/* Cards (mobile + tablet) */}
-      <div className="lg:hidden space-y-3">
+      {/* Cards — covers mobile, tablet, and laptop widths up to xl.
+          Single-column on phones, two-up on tablet and laptop so MacBook
+          Air-class screens don't have one tall stack of orders. Scroll
+          is scoped to this container so the page itself stays put. */}
+      <div className="xl:hidden grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[calc(100vh-280px)] overflow-y-auto pr-1">
         {loading ? (
           <div className="bg-card border border-border rounded-2xl py-12 text-center text-muted-foreground text-sm shadow-sm">Loading…</div>
         ) : filtered.length === 0 ? (
