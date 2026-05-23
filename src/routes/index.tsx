@@ -1791,15 +1791,16 @@ function DineInReservationView({
   const [groupSize, setGroupSize] = useState<number>(invite?.groupSize ?? 2);
   const [notes, setNotes] = useState("");
 
-  // Payment proof state — mirrors the pickup checkout. Either a typed Maya
-  // reference number OR an uploaded screenshot is enough for our team to
-  // verify. Both submit to Supabase the same way the pickup flow does.
-  const [paymentRef, setPaymentRef] = useState("");
-  const [paymentScreenshot, setPaymentScreenshot] = useState<File | null>(null);
-  const [paymentScreenshotUrl, setPaymentScreenshotUrl] = useState<string | null>(
-    null,
-  );
+  // QR display fallback — flips to true when /maya-qr.png 404s so the
+  // payment card still renders gracefully without the image.
   const [qrImgError, setQrImgError] = useState(false);
+
+  // Wizard step. Matches the pickup checkout: each step fits one screen
+  // so the customer never has to scroll past a long form to pay.
+  //   1 — Your details (name/email/phone/group/notes)
+  //   2 — Slot (date + time picker)
+  //   3 — Discount + payment (senior toggle + Maya QR + proof) → Confirm
+  const [step, setStep] = useState<1 | 2 | 3>(1);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -1875,21 +1876,28 @@ function DineInReservationView({
     [claimants],
   );
 
-  // Payment proof: at least one of (typed reference) OR (screenshot file).
-  const paymentProofOk =
-    paymentRef.trim().length >= 3 || !!paymentScreenshot;
+  // Per-step validity gates. Continue is enabled only when the current
+  // step's required fields are all valid. Final submit gate (`canSubmit`)
+  // re-checks everything as a defense in depth.
+  const step1Valid = nameValid && emailValid && phoneValid && groupSizeValid;
+  const step2Valid = !!selectedSlot && slotCapacityOk;
+  const step3Valid = !claimFormOpen || allClaimsValid;
 
   const canSubmit =
     !submitting &&
-    !!selectedSlot &&
     cartUnitCount > 0 &&
-    nameValid &&
-    emailValid &&
-    phoneValid &&
-    groupSizeValid &&
-    slotCapacityOk &&
-    paymentProofOk &&
-    (!claimFormOpen || allClaimsValid);
+    step1Valid &&
+    step2Valid &&
+    step3Valid;
+
+  // Step transitions scroll the next panel into view so the user lands at
+  // the top of the new step instead of mid-page.
+  const goToStep = (s: 1 | 2 | 3) => {
+    setStep(s);
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
 
   // Trim claimants to cart size as before.
   useEffect(() => {
@@ -1933,13 +1941,6 @@ function DineInReservationView({
     setClaimants((prev) =>
       prev.map((c, i) => (i === idx ? { ...c, ...patch } : c)),
     );
-  };
-
-  // Local preview for the payment screenshot. Mirrors pickup flow.
-  const onPaymentScreenshotChange = (file: File | null) => {
-    if (paymentScreenshotUrl) URL.revokeObjectURL(paymentScreenshotUrl);
-    setPaymentScreenshot(file);
-    setPaymentScreenshotUrl(file ? URL.createObjectURL(file) : null);
   };
 
   const onPhotoChange = (idx: number, file: File | null) => {
@@ -2048,8 +2049,6 @@ function DineInReservationView({
       .join(" | ")
       .slice(0, 500);
 
-    const trimmedPaymentRef = paymentRef.trim() || null;
-
     const payload: Record<string, unknown> = {
       slot_id: selectedSlot.id,
       customer_name: customerName.trim(),
@@ -2058,7 +2057,6 @@ function DineInReservationView({
       group_size: groupSize,
       notes: combinedNotes || null,
       pickup_mode: invite?.channel === "pickup" ? "personal_pickup" : "dine_in",
-      payment_reference: trimmedPaymentRef,
       items: Object.entries(qtyByMenuItemId).map(([menu_item_id, quantity]) => ({
         menu_item_id,
         quantity,
@@ -2087,33 +2085,6 @@ function DineInReservationView({
       setSubmitting(false);
       setSubmitError("Booking didn't return a reference code. Contact us in Messenger.");
       return;
-    }
-
-    // Optional screenshot upload, post-booking. The payment-proofs bucket
-    // RLS requires the path to be `bookings/<reference_code>/...` AND a
-    // matching pending booking <30min old, both of which we now have. If
-    // the upload fails we still keep the booking — admin can chase the
-    // screenshot via Messenger. Same pattern as the pickup flow.
-    if (paymentScreenshot) {
-      const ext = (paymentScreenshot.name.split(".").pop() || "jpg")
-        .toLowerCase()
-        .slice(0, 8);
-      const path = `bookings/${result.reference_code}/payment-${Date.now()}.${ext}`;
-      const { error: upErr } = await supabase.storage
-        .from("payment-proofs")
-        .upload(path, paymentScreenshot, {
-          contentType: paymentScreenshot.type || "image/jpeg",
-          upsert: false,
-        });
-      if (upErr) {
-        console.warn("[dine-in] screenshot upload failed:", upErr);
-      } else {
-        const { error: rpcErr } = await (supabase.rpc as any)(
-          "submit_payment_proof",
-          { _ref: result.reference_code, _path: path },
-        );
-        if (rpcErr) console.warn("[dine-in] submit_payment_proof failed:", rpcErr);
-      }
     }
 
     setSubmitting(false);
@@ -2177,23 +2148,84 @@ function DineInReservationView({
         <ChevronLeft className="h-4 w-4" /> Back to menu
       </button>
 
-      <h2 className="font-display text-3xl md:text-4xl mb-2">
-        Confirm your reservation
-      </h2>
-      <p className="text-muted-foreground mb-8">
-        Pick a date and time, share your contact details, and we'll lock in
-        your seat. Your total comes to{" "}
+      <div className="flex items-center gap-2 mb-2">
+        <Sparkles className="h-6 w-6 text-primary" />
+        <h2 className="font-display text-3xl md:text-4xl">
+          Confirm your reservation
+        </h2>
+      </div>
+      <p className="text-muted-foreground mb-5">
+        Step {step} of 3 — your total is{" "}
         <span className="font-semibold text-primary">
           ₱{payable.toFixed(0)}
         </span>
         .
       </p>
 
-      {/* Senior/PWD claim section. Renders the toggle by default; when on,
+      {/* Progress indicator — three labelled pills with a connector bar.
+          Completed steps are clickable so the user can jump back; future
+          steps are not (must satisfy current step first). Mirrors the
+          pickup checkout's progress nav. */}
+      <div className="mb-6">
+        <ol className="flex items-center gap-2">
+          {([
+            { n: 1 as const, label: "Your details", done: step > 1 || step1Valid },
+            { n: 2 as const, label: "Slot", done: step > 2 || step2Valid },
+            { n: 3 as const, label: "Payment", done: false },
+          ]).map((s, i, arr) => {
+            const active = step === s.n;
+            const reachable = s.n <= step;
+            return (
+              <li key={s.n} className="flex items-center gap-2 flex-1">
+                <button
+                  type="button"
+                  onClick={() => reachable && goToStep(s.n)}
+                  disabled={!reachable}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition ${
+                    active
+                      ? "bg-foreground text-background"
+                      : s.done
+                      ? "bg-primary/10 text-primary"
+                      : "bg-muted text-muted-foreground"
+                  } disabled:cursor-not-allowed`}
+                >
+                  <span
+                    className={`h-5 w-5 rounded-full inline-flex items-center justify-center text-[10px] tabular-nums ${
+                      active
+                        ? "bg-background/20 text-background"
+                        : s.done
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background text-muted-foreground"
+                    }`}
+                  >
+                    {s.done && !active ? (
+                      <Check className="h-3 w-3" />
+                    ) : (
+                      s.n
+                    )}
+                  </span>
+                  <span className="hidden sm:inline">{s.label}</span>
+                </button>
+                {i < arr.length - 1 && (
+                  <span
+                    className={`flex-1 h-px ${
+                      arr[i + 1].done || step > s.n ? "bg-primary/30" : "bg-border"
+                    }`}
+                  />
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+
+      {/* ============ STEP 3 — Senior/PWD discount (rendered with payment) ============
+          Renders the toggle by default; when on,
           expands into N claim rows (one per cardholder). Each row collects
           the fields RA 9994 requires for the OR: full name, ID number,
           address, ID photo. The number of rows is capped at the number of
           cart units so we can't promise more discount than there's items. */}
+      {step === 3 && (
       <div className="bg-card border border-border rounded-2xl p-5 mb-8 shadow-sm">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -2297,9 +2329,12 @@ function DineInReservationView({
           </div>
         )}
       </div>
+      )}
 
-      {/* Slot picker — dates grouped, time chips per date. RLS lets anon
-          read time_slots; we filter to is_open=true and seats remaining. */}
+      {/* ============ STEP 2 — Slot picker ============
+          Dates grouped, time chips per date. RLS lets anon read
+          time_slots; we filter to is_open=true and seats remaining. */}
+      {step === 2 && (
       <div className="bg-card border border-border rounded-2xl p-5 mb-8 shadow-sm">
         <div className="flex items-center gap-2 mb-1">
           <CalendarClock className="h-4 w-4 text-primary" />
@@ -2364,9 +2399,42 @@ function DineInReservationView({
             })}
           </div>
         )}
-      </div>
 
-      {/* Customer info — fields mirror create_booking() server validation. */}
+        {selectedSlot && !slotCapacityOk && (
+          <div className="mt-3 text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-2.5">
+            That slot only has {selectedSlot.capacity - selectedSlot.seats_taken} seat
+            {selectedSlot.capacity - selectedSlot.seats_taken === 1 ? "" : "s"} left — pick a smaller group or another slot.
+          </div>
+        )}
+      </div>
+      )}
+
+      {/* Step 2 nav — Back to details / Continue to payment. */}
+      {step === 2 && (
+        <div className="flex items-center gap-3 mb-8">
+          <button
+            type="button"
+            onClick={() => goToStep(1)}
+            className="inline-flex items-center justify-center gap-1.5 px-5 py-3 rounded-full bg-muted text-foreground text-sm font-semibold hover:bg-muted/70 transition"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            Back
+          </button>
+          <button
+            type="button"
+            onClick={() => goToStep(3)}
+            disabled={!step2Valid}
+            className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-foreground text-background font-semibold hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Continue to payment
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* ============ STEP 1 — Your details ============
+          Customer info — fields mirror create_booking() server validation. */}
+      {step === 1 && (
       <div className="bg-card border border-border rounded-2xl p-5 mb-8 shadow-sm">
         <div className="flex items-center gap-2 mb-4">
           <UserIcon className="h-4 w-4 text-primary" />
@@ -2443,19 +2511,31 @@ function DineInReservationView({
             </div>
           </div>
         </div>
-
-        {selectedSlot && !slotCapacityOk && (
-          <div className="mt-3 text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-2.5">
-            That slot only has {selectedSlot.capacity - selectedSlot.seats_taken} seat
-            {selectedSlot.capacity - selectedSlot.seats_taken === 1 ? "" : "s"} left — pick a smaller group or another slot.
-          </div>
-        )}
       </div>
+      )}
 
-      {/* Sautéo Payment QR — same Maya / InstaPay account customers see
+      {/* Step 1 nav — Continue to slot. */}
+      {step === 1 && (
+        <div className="flex items-center gap-3 mb-8">
+          <button
+            type="button"
+            onClick={() => goToStep(2)}
+            disabled={!step1Valid}
+            className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-foreground text-background font-semibold hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Continue to slot
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* ============ STEP 3 — Payment ============
+          Sautéo Payment QR — same Maya / InstaPay account customers see
           on the pickup flow. The receipt's totals + payment-verification
           path are shared with pickup so the admin Orders dashboard sees
           dine-in payments through the same lens. */}
+      {step === 3 && (
+      <>
       <div className="bg-charcoal text-cream rounded-2xl p-6 mb-6">
         <div className="flex flex-col md:flex-row md:items-center gap-4 md:gap-6">
           <div className="flex-1 min-w-0 md:text-center">
@@ -2499,80 +2579,6 @@ function DineInReservationView({
         </div>
       </div>
 
-      {/* Payment proof — either a typed reference number OR a screenshot
-          (or both) is enough for our team to verify in the Orders tab. */}
-      <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
-        <h3 className="font-display text-lg font-semibold mb-1">
-          Payment proof
-        </h3>
-        <p className="text-xs text-muted-foreground mb-4">
-          Enter the Maya reference number OR upload a screenshot — either
-          one is enough for our team to verify.
-        </p>
-
-        <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-          Maya reference number
-        </label>
-        <input
-          type="text"
-          value={paymentRef}
-          onChange={(e) => setPaymentRef(e.target.value.slice(0, 64))}
-          placeholder="e.g. MAYA-1234567890"
-          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
-        />
-
-        <div className="text-center text-[11px] uppercase tracking-wider text-muted-foreground my-3">
-          — or —
-        </div>
-
-        <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-          Payment screenshot
-        </label>
-        <div className="flex items-center gap-3">
-          <label
-            htmlFor="dinein-payment-screenshot"
-            className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold bg-muted hover:bg-muted/70 rounded-full px-3 py-2 transition"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            {paymentScreenshot ? "Replace" : "Upload"}
-          </label>
-          <input
-            id="dinein-payment-screenshot"
-            type="file"
-            accept="image/jpeg,image/png,image/webp"
-            onChange={(e) =>
-              onPaymentScreenshotChange(e.target.files?.[0] ?? null)
-            }
-            className="hidden"
-          />
-          {paymentScreenshotUrl ? (
-            <div className="h-12 w-12 rounded-lg overflow-hidden border border-border shrink-0">
-              <img
-                src={paymentScreenshotUrl}
-                alt="Payment preview"
-                className="h-full w-full object-cover"
-              />
-            </div>
-          ) : (
-            <div className="h-12 w-12 rounded-lg border border-dashed border-border flex items-center justify-center text-muted-foreground shrink-0">
-              <ImageIcon className="h-4 w-4" />
-            </div>
-          )}
-          {paymentScreenshot && (
-            <span className="text-xs text-muted-foreground truncate min-w-0">
-              {paymentScreenshot.name}
-            </span>
-          )}
-        </div>
-
-        {!paymentProofOk &&
-          (paymentRef.length > 0 || paymentScreenshot) && (
-            <p className="mt-2 text-xs text-muted-foreground italic">
-              Enter a reference number (3+ chars) or attach a screenshot.
-            </p>
-          )}
-      </div>
-
       {submitError && (
         <div className="mb-4 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-3 flex items-start gap-2">
           <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
@@ -2587,20 +2593,34 @@ function DineInReservationView({
           " Your uploaded ID(s) go to our admin for verification — if a photo can't be verified, we'll ask for a re-upload within 24 hours."}
       </p>
 
-      <button
-        onClick={handleSubmit}
-        disabled={!canSubmit}
-        className="w-full inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
-      >
-        {submitting ? (
-          <>
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Confirming reservation…
-          </>
-        ) : (
-          "Confirm reservation"
-        )}
-      </button>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => goToStep(2)}
+          disabled={submitting}
+          className="inline-flex items-center justify-center gap-1.5 px-5 py-3 rounded-full bg-muted text-foreground text-sm font-semibold hover:bg-muted/70 transition disabled:opacity-50"
+        >
+          <ChevronLeft className="h-4 w-4" />
+          Back
+        </button>
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={!canSubmit}
+          className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {submitting ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Confirming reservation…
+            </>
+          ) : (
+            "Confirm reservation"
+          )}
+        </button>
+      </div>
+      </>
+      )}
     </div>
   );
 }
