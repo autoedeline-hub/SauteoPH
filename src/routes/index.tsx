@@ -640,8 +640,12 @@ function MenuView({
                       aria-controls={panelId}
                       className="group w-full flex items-center justify-between gap-4 min-h-[56px] py-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                     >
-                      <span className="flex items-baseline gap-2 min-w-0">
-                        <span className="font-display text-xl md:text-2xl font-semibold text-foreground tracking-tight truncate">
+                      <span className="flex items-baseline gap-2 min-w-0 flex-1">
+                        {/* min-w-0 here is what actually lets `truncate`
+                            shrink the name in a flex layout — without it,
+                            flex children default to min-width: auto and
+                            the long set-menu names blow past the chevron. */}
+                        <span className="font-display text-xl md:text-2xl font-semibold text-foreground tracking-tight truncate min-w-0">
                           {c.name}
                         </span>
                         <span className="text-sm text-muted-foreground shrink-0">
@@ -1028,10 +1032,17 @@ function VariantSelectModal({
           <X className="h-4 w-4" />
         </button>
 
-        {/* Scrollable interior — image + name + variants + optional description */}
+        {/* Scrollable interior — image + name + variants + optional description.
+            Image height is capped so variant pickers are visible above the
+            fold; otherwise on mobile a square hero ate the whole modal and
+            customers couldn't tell why "Add to cart" was disabled. */}
         <div className="flex-1 overflow-y-auto min-h-0">
           {/* Image */}
-          <div className="w-full aspect-square bg-muted overflow-hidden">
+          <div
+            className={`w-full bg-muted overflow-hidden ${
+              hasVariants ? "aspect-[16/9] max-h-44" : "aspect-square"
+            }`}
+          >
             {displayed.image_url ? (
               <img
                 src={displayed.image_url}
@@ -2694,9 +2705,11 @@ function PickupReservationView({
   const [customerName, setCustomerName] = useState(invite?.customerName ?? "");
   const [customerEmail, setCustomerEmail] = useState(invite?.customerEmail ?? "");
   const [customerPhone, setCustomerPhone] = useState(invite?.customerPhone ?? "");
-  const [numberOfMeals, setNumberOfMeals] = useState<number>(
-    invite?.groupSize ?? 1,
-  );
+  // Auto-derived from the cart. The field stays visible (the RPC still
+  // needs group_size) but the customer doesn't type it — every item they
+  // added bumps the count. Falls back to 1 when the cart is empty so the
+  // slot picker's capacity check has a sane minimum.
+  const numberOfMeals = Math.max(cartUnitCount, 1);
   const [notes, setNotes] = useState("");
 
   // Pickup-specific state.
@@ -3114,19 +3127,17 @@ function PickupReservationView({
                 </label>
                 <input
                   type="number"
-                  min={1}
-                  max={50}
                   value={numberOfMeals}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    setNumberOfMeals(
-                      Number.isFinite(n)
-                        ? Math.max(1, Math.min(50, Math.floor(n)))
-                        : 1,
-                    );
-                  }}
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+                  readOnly
+                  aria-describedby="meal-count-hint"
+                  className="w-full bg-muted/40 border border-border rounded-lg px-3 py-2 text-sm tabular-nums cursor-not-allowed focus:outline-none"
                 />
+                <div
+                  id="meal-count-hint"
+                  className="mt-1 text-[10px] text-muted-foreground"
+                >
+                  Matches your order — adjust items in the cart to change.
+                </div>
               </div>
               <div className="sm:col-span-2">
                 <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">

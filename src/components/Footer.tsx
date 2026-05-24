@@ -6,7 +6,7 @@ export function Footer() {
     >
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-center text-xs text-muted-foreground">
         <span>
-          Powerdby{" "}
+          Powered by{" "}
           <span className="font-semibold text-foreground">AutomatEdz</span>
         </span>
       </div>

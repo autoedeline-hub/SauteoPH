@@ -2192,7 +2192,16 @@ function SlotsTab() {
       .gte("slot_date", format(new Date(), "yyyy-MM-dd"))
       .order("slot_date")
       .order("slot_time");
-    setSlots((data ?? []) as TimeSlot[]);
+    // The DB query only filters by date so today's elapsed slots come
+    // back too — strip them client-side so "Upcoming" actually means
+    // upcoming. Slot times are local restaurant time; combining with
+    // slot_date gives a comparable Date.
+    const now = new Date();
+    const upcoming = ((data ?? []) as TimeSlot[]).filter((s) => {
+      const slotDateTime = new Date(`${s.slot_date}T${s.slot_time}`);
+      return slotDateTime > now;
+    });
+    setSlots(upcoming);
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
