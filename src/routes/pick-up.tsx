@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { ChevronRight, MessageCircle, ShoppingBag } from "lucide-react";
+import { ChevronRight, ShoppingBag } from "lucide-react";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import { MenuPage } from "./index";
@@ -51,11 +51,6 @@ function PickupIntro({ onStart }: { onStart: () => void }) {
             View menu & order <ChevronRight className="h-4 w-4" />
           </button>
         </div>
-
-        <p className="text-center text-xs text-muted-foreground mt-6 inline-flex items-center justify-center gap-1.5 w-full">
-          <MessageCircle className="h-3.5 w-3.5" />
-          Pickup is invite-only — message us on Messenger for your link.
-        </p>
       </main>
       <Footer />
     </div>

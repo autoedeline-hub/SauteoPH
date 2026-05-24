@@ -672,8 +672,24 @@ function BookingsTab() {
   const verify = async (b: Booking) => {
     const now = new Date().toISOString();
     const pid = b.payments?.[0]?.id;
-    if (pid) await supabase.from("payments").update({ status: "verified", verified_at: now }).eq("id", pid);
-    await supabase.from("bookings").update({ status: "confirmed", confirmed_at: now }).eq("id", b.id);
+    if (pid) {
+      const { error: payErr } = await supabase
+        .from("payments")
+        .update({ status: "verified", verified_at: now })
+        .eq("id", pid);
+      if (payErr) {
+        alert(`Couldn't mark payment verified: ${payErr.message}`);
+        return;
+      }
+    }
+    const { error: bookingErr } = await supabase
+      .from("bookings")
+      .update({ status: "confirmed", confirmed_at: now })
+      .eq("id", b.id);
+    if (bookingErr) {
+      alert(`Couldn't confirm booking: ${bookingErr.message}`);
+      return;
+    }
     load();
   };
 
@@ -1431,6 +1447,7 @@ function CategoryManager({
               onChange={e => setNewName(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addCategory(); } }}
               placeholder="New category name"
+              maxLength={80}
               className="flex-1 bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
             />
             <button
@@ -1537,6 +1554,7 @@ function CategoryRow({
               if (e.key === "Enter") { e.preventDefault(); commit(); }
               if (e.key === "Escape") { setDraft(cat.name); setEditing(false); }
             }}
+            maxLength={80}
             className="w-full bg-background border border-border rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
           />
         ) : (
@@ -3300,12 +3318,12 @@ function ContactDrawer({
               {/* Edit form OR read view */}
               {editing ? (
                 <div className="space-y-3">
-                  <ContactField label="Full name" value={draft.full_name} onChange={v => setDraft(d => ({ ...d, full_name: v }))} />
-                  <ContactField label="Email" type="email" value={draft.email} onChange={v => setDraft(d => ({ ...d, email: v }))} />
-                  <ContactField label="Phone" value={draft.phone} onChange={v => setDraft(d => ({ ...d, phone: v }))} />
-                  <ContactField label="Facebook handle" value={draft.facebook_handle} onChange={v => setDraft(d => ({ ...d, facebook_handle: v }))} />
-                  <ContactField label="Instagram handle" value={draft.instagram_handle} onChange={v => setDraft(d => ({ ...d, instagram_handle: v }))} />
-                  <ContactField label="Tags (comma-separated)" value={draft.tagsCsv} onChange={v => setDraft(d => ({ ...d, tagsCsv: v }))} />
+                  <ContactField label="Full name" value={draft.full_name} onChange={v => setDraft(d => ({ ...d, full_name: v }))} maxLength={120} />
+                  <ContactField label="Email" type="email" value={draft.email} onChange={v => setDraft(d => ({ ...d, email: v }))} maxLength={254} />
+                  <ContactField label="Phone" value={draft.phone} onChange={v => setDraft(d => ({ ...d, phone: v }))} maxLength={32} />
+                  <ContactField label="Facebook handle" value={draft.facebook_handle} onChange={v => setDraft(d => ({ ...d, facebook_handle: v }))} maxLength={80} />
+                  <ContactField label="Instagram handle" value={draft.instagram_handle} onChange={v => setDraft(d => ({ ...d, instagram_handle: v }))} maxLength={80} />
+                  <ContactField label="Tags (comma-separated)" value={draft.tagsCsv} onChange={v => setDraft(d => ({ ...d, tagsCsv: v }))} maxLength={500} />
                   <div>
                     <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Notes</label>
                     <textarea
@@ -3404,8 +3422,16 @@ function ContactDrawer({
 }
 
 function ContactField({
-  label, value, onChange, type,
-}: { label: string; value: string; onChange: (v: string) => void; type?: string }) {
+  label, value, onChange, type, maxLength,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  // Optional cap that mirrors the create_booking() server-side limits
+  // so admins can't type past what the RPC accepts.
+  maxLength?: number;
+}) {
   return (
     <div>
       <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">{label}</label>
@@ -3413,6 +3439,7 @@ function ContactField({
         type={type ?? "text"}
         value={value}
         onChange={e => onChange(e.target.value)}
+        maxLength={maxLength}
         className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
       />
     </div>
@@ -3744,8 +3771,9 @@ function FaqEditor({
             <input
               type="text"
               value={question}
-              onChange={e => setQuestion(e.target.value)}
+              onChange={e => setQuestion(e.target.value.slice(0, 300))}
               placeholder="e.g. What are your hours?"
+              maxLength={300}
               className={cls}
             />
           </div>
@@ -3754,8 +3782,9 @@ function FaqEditor({
             <textarea
               rows={6}
               value={answer}
-              onChange={e => setAnswer(e.target.value)}
+              onChange={e => setAnswer(e.target.value.slice(0, 2000))}
               placeholder="The exact reply the chatbot will send."
+              maxLength={2000}
               className={`${cls} resize-y whitespace-pre-line`}
             />
           </div>
@@ -3783,8 +3812,9 @@ function FaqEditor({
             <input
               type="text"
               value={tagsCsv}
-              onChange={e => setTagsCsv(e.target.value)}
+              onChange={e => setTagsCsv(e.target.value.slice(0, 300))}
               placeholder="e.g. refund, cancel, credit"
+              maxLength={300}
               className={cls}
             />
           </div>

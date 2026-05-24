@@ -2702,18 +2702,14 @@ function PickupReservationView({
   // Pickup-specific state.
   const [pickupMode, setPickupMode] = useState<PickupMode>("personal_pickup");
   const [courierAddress, setCourierAddress] = useState("");
-  const [paymentRef, setPaymentRef] = useState("");
-  const [paymentScreenshot, setPaymentScreenshot] = useState<File | null>(null);
-  const [paymentScreenshotUrl, setPaymentScreenshotUrl] = useState<string | null>(
-    null,
-  );
+  // QR display fallback — flips to true when /maya-qr.png 404s.
   const [qrImgError, setQrImgError] = useState(false);
 
   // Wizard step. The pickup checkout was a single long-scroll page; users
   // bailed before reaching payment. Three steps each fit on one screen:
   //   1 — Your details (name/email/phone/meals/notes)
   //   2 — Pickup setup (window + mode + courier address if applicable)
-  //   3 — Discount + payment (senior toggle + Maya QR + proof) → Confirm
+  //   3 — Discount + Maya QR → Confirm (payment verified off-platform)
   // Each step has its own validity check; Continue is disabled until valid.
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
@@ -2772,10 +2768,6 @@ function PickupReservationView({
   const courierAddressOk =
     pickupMode === "personal_pickup" || courierAddress.trim().length >= 4;
 
-  // Payment proof: at least one of (typed reference) OR (screenshot file).
-  const paymentProofOk =
-    paymentRef.trim().length >= 3 || !!paymentScreenshot;
-
   const allClaimsValid = useMemo(
     () =>
       claimants.every(
@@ -2794,7 +2786,7 @@ function PickupReservationView({
   // re-checks everything as a defense in depth.
   const step1Valid = nameValid && emailValid && phoneValid && mealsValid;
   const step2Valid = !!selectedSlot && slotCapacityOk && courierAddressOk;
-  const step3Valid = paymentProofOk && (!claimFormOpen || allClaimsValid);
+  const step3Valid = !claimFormOpen || allClaimsValid;
 
   const canSubmit =
     !submitting &&
@@ -2902,13 +2894,6 @@ function PickupReservationView({
     })();
   };
 
-  // Local preview for the payment screenshot.
-  const onPaymentScreenshotChange = (file: File | null) => {
-    if (paymentScreenshotUrl) URL.revokeObjectURL(paymentScreenshotUrl);
-    setPaymentScreenshot(file);
-    setPaymentScreenshotUrl(file ? URL.createObjectURL(file) : null);
-  };
-
   // Submit -------------------------------------------------------------
   const handleSubmit = async () => {
     if (!canSubmit || !selectedSlot) return;
@@ -2937,8 +2922,6 @@ function PickupReservationView({
       .join(" | ")
       .slice(0, 500);
 
-    const trimmedPaymentRef = paymentRef.trim() || null;
-
     const payload: Record<string, unknown> = {
       slot_id: selectedSlot.id,
       customer_name: customerName.trim(),
@@ -2949,7 +2932,6 @@ function PickupReservationView({
       pickup_mode: pickupMode,
       courier_address:
         pickupMode === "personal_pickup" ? null : courierAddress.trim(),
-      payment_reference: trimmedPaymentRef,
       items: Object.entries(qtyByMenuItemId).map(
         ([menu_item_id, quantity]) => ({ menu_item_id, quantity }),
       ),
@@ -2973,33 +2955,6 @@ function PickupReservationView({
       return;
     }
 
-    // Optional screenshot upload, post-booking. The payment-proofs bucket
-    // RLS requires the path to be `bookings/<reference_code>/...` AND a
-    // matching pending booking <30min old, both of which we now have. If
-    // the upload fails we still keep the booking — admin can chase the
-    // screenshot via Messenger.
-    if (paymentScreenshot) {
-      const ext = (paymentScreenshot.name.split(".").pop() || "jpg")
-        .toLowerCase()
-        .slice(0, 8);
-      const path = `bookings/${result.reference_code}/payment-${Date.now()}.${ext}`;
-      const { error: upErr } = await supabase.storage
-        .from("payment-proofs")
-        .upload(path, paymentScreenshot, {
-          contentType: paymentScreenshot.type || "image/jpeg",
-          upsert: false,
-        });
-      if (upErr) {
-        console.warn("[pickup] screenshot upload failed:", upErr);
-      } else {
-        const { error: rpcErr } = await (supabase.rpc as any)(
-          "submit_payment_proof",
-          { _ref: result.reference_code, _path: path },
-        );
-        if (rpcErr) console.warn("[pickup] submit_payment_proof failed:", rpcErr);
-      }
-    }
-
     setSubmitting(false);
     onConfirm({
       referenceCode: result.reference_code,
@@ -3009,44 +2964,13 @@ function PickupReservationView({
       pickupMode,
       courierAddress:
         pickupMode === "personal_pickup" ? null : courierAddress.trim(),
-      paymentReference: trimmedPaymentRef,
+      paymentReference: null,
     });
   };
 
-  // No invite = visitor on `/` with no booking link.
-  if (!invite) {
-    return (
-      <div className="max-w-2xl mx-auto">
-        <button
-          onClick={onBack}
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-6"
-        >
-          <ChevronLeft className="h-4 w-4" /> Back to menu
-        </button>
-        <div className="bg-card border border-border rounded-2xl p-6 md:p-8 shadow-sm text-center">
-          <div className="mx-auto h-14 w-14 rounded-full bg-mustard/30 flex items-center justify-center mb-5">
-            <ShoppingBag className="h-6 w-6 text-primary" />
-          </div>
-          <h2 className="font-display text-2xl md:text-3xl mb-2">
-            Pickup is invite-only
-          </h2>
-          <p className="text-muted-foreground text-sm leading-relaxed mb-6">
-            Sautéo runs a Messenger-based waitlist. When you reach the front
-            of the line, our team will send you a one-time pickup link.
-          </p>
-          <a
-            href="https://www.facebook.com/messages/t/1119234891273865"
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-3 text-sm font-semibold hover:opacity-90 transition"
-          >
-            Message us on Messenger
-          </a>
-        </div>
-      </div>
-    );
-  }
-
+  // Pickup is open to the public — no invite gate. Anyone hitting
+  // /pick-up can place an order; create_booking() no longer requires
+  // a token for pickup channels.
   const isCourier = pickupMode === "lalamove" || pickupMode === "grab";
 
   // Step transitions scroll the next panel into view so the user lands at
@@ -3538,79 +3462,6 @@ function PickupReservationView({
                 </div>
               </div>
             </div>
-          </div>
-
-          {/* Payment proof */}
-          <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
-            <h3 className="font-display text-lg font-semibold mb-1">
-              Payment proof
-            </h3>
-            <p className="text-xs text-muted-foreground mb-4">
-              Enter the Maya reference number OR upload a screenshot — either
-              one is enough for our team to verify.
-            </p>
-
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              Maya reference number
-            </label>
-            <input
-              type="text"
-              value={paymentRef}
-              onChange={(e) => setPaymentRef(e.target.value.slice(0, 64))}
-              placeholder="e.g. MAYA-1234567890"
-              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
-            />
-
-            <div className="text-center text-[11px] uppercase tracking-wider text-muted-foreground my-3">
-              — or —
-            </div>
-
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              Payment screenshot
-            </label>
-            <div className="flex items-center gap-3">
-              <label
-                htmlFor="payment-screenshot"
-                className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold bg-muted hover:bg-muted/70 rounded-full px-3 py-2 transition"
-              >
-                <Upload className="h-3.5 w-3.5" />
-                {paymentScreenshot ? "Replace" : "Upload"}
-              </label>
-              <input
-                id="payment-screenshot"
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                onChange={(e) =>
-                  onPaymentScreenshotChange(e.target.files?.[0] ?? null)
-                }
-                className="hidden"
-              />
-              {paymentScreenshotUrl ? (
-                <div className="h-12 w-12 rounded-lg overflow-hidden border border-border shrink-0">
-                  <img
-                    src={paymentScreenshotUrl}
-                    alt="Payment preview"
-                    className="h-full w-full object-cover"
-                  />
-                </div>
-              ) : (
-                <div className="h-12 w-12 rounded-lg border border-dashed border-border flex items-center justify-center text-muted-foreground shrink-0">
-                  <ImageIcon className="h-4 w-4" />
-                </div>
-              )}
-              {paymentScreenshot && (
-                <span className="text-xs text-muted-foreground truncate min-w-0">
-                  {paymentScreenshot.name}
-                </span>
-              )}
-            </div>
-
-            {!paymentProofOk &&
-              (paymentRef.length > 0 || paymentScreenshot) && (
-                <p className="mt-2 text-xs text-muted-foreground italic">
-                  Enter a reference number (3+ chars) or attach a screenshot.
-                </p>
-              )}
           </div>
 
           {submitError && (
