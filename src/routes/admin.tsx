@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { format, subDays } from "date-fns";
+import { format, subDays, subMonths } from "date-fns";
 import { inviteLinkPath } from "@/lib/invite";
 import { formatSlotTime12h } from "@/lib/utils";
 import {
@@ -286,6 +286,8 @@ type TopItem = {
   revenue: number;
 };
 
+type SalesRange = "week" | "month" | "year";
+
 function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
   const [stats, setStats] = useState({
     revenueToday: 0,
@@ -293,10 +295,15 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
     weekOrders: 0,
     activeMenu: 0,
   });
-  const [weekSeries, setWeekSeries] = useState<{ date: string; revenue: number }[]>([]);
+  // All confirmed bookings (with their slot_date) so we can re-bucket
+  // the sales series client-side when the range toggle changes.
+  const [confirmedBookings, setConfirmedBookings] = useState<Booking[]>([]);
   const [recent, setRecent] = useState<Booking[]>([]);
   const [topItems, setTopItems] = useState<TopItem[]>([]);
   const [loading, setLoading] = useState(true);
+  // Sales-chart range toggle. Local to the chart — KPI cards above
+  // ("Today's revenue", "Orders this week") stay fixed.
+  const [salesRange, setSalesRange] = useState<SalesRange>("week");
 
   useEffect(() => {
     (async () => {
@@ -322,14 +329,7 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
         b => b.status === "confirmed" && b.time_slots && b.time_slots.slot_date >= weekAgo
       ).length;
 
-      const series: { date: string; revenue: number }[] = [];
-      for (let i = 6; i >= 0; i--) {
-        const d = format(subDays(new Date(), i), "yyyy-MM-dd");
-        const revenue = rows
-          .filter(b => b.status === "confirmed" && b.time_slots?.slot_date === d)
-          .reduce((sum, b) => sum + Number(b.total_amount || 0), 0);
-        series.push({ date: d, revenue });
-      }
+      const confirmed = rows.filter(b => b.status === "confirmed");
 
       // Top-selling items, last 30 days, confirmed bookings only. Aggregate
       // booking_items by menu_item_id (fallback to item_name when the menu
@@ -397,15 +397,68 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
         weekOrders,
         activeMenu: activeMenu ?? 0,
       });
-      setWeekSeries(series);
-      setRecent(rows.filter(b => b.status === "confirmed").slice(0, 5));
+      setConfirmedBookings(confirmed);
+      setRecent(confirmed.slice(0, 5));
       setTopItems(topItemsFinal);
       setLoading(false);
     })();
   }, []);
 
   const hasPending = stats.pending > 0;
-  const weekRevenue = weekSeries.reduce((s, d) => s + d.revenue, 0);
+
+  // Derive the chart series from the cached confirmed-bookings list
+  // whenever the range toggle changes. No new network request.
+  const salesSeries = useMemo<{ date: string; revenue: number }[]>(() => {
+    const out: { date: string; revenue: number }[] = [];
+    if (salesRange === "week") {
+      for (let i = 6; i >= 0; i--) {
+        const d = format(subDays(new Date(), i), "yyyy-MM-dd");
+        const revenue = confirmedBookings
+          .filter(b => (b as any).time_slots?.slot_date === d)
+          .reduce((s, b) => s + Number(b.total_amount || 0), 0);
+        out.push({ date: d, revenue });
+      }
+      return out;
+    }
+    if (salesRange === "month") {
+      // 30 daily buckets. X-axis thins ticks so labels stay readable.
+      for (let i = 29; i >= 0; i--) {
+        const d = format(subDays(new Date(), i), "yyyy-MM-dd");
+        const revenue = confirmedBookings
+          .filter(b => (b as any).time_slots?.slot_date === d)
+          .reduce((s, b) => s + Number(b.total_amount || 0), 0);
+        out.push({ date: d, revenue });
+      }
+      return out;
+    }
+    // "year" — 12 monthly buckets keyed on the first day of each month.
+    for (let i = 11; i >= 0; i--) {
+      const monthDate = subMonths(new Date(), i);
+      const monthKey = format(monthDate, "yyyy-MM");
+      const revenue = confirmedBookings
+        .filter(b => {
+          const slot = (b as any).time_slots?.slot_date as string | undefined;
+          return !!slot && slot.startsWith(monthKey);
+        })
+        .reduce((s, b) => s + Number(b.total_amount || 0), 0);
+      out.push({ date: format(monthDate, "yyyy-MM-01"), revenue });
+    }
+    return out;
+  }, [confirmedBookings, salesRange]);
+
+  const salesTotal = salesSeries.reduce((s, d) => s + d.revenue, 0);
+  const salesHeading =
+    salesRange === "week"
+      ? "7-day sales"
+      : salesRange === "month"
+      ? "30-day sales"
+      : "12-month sales";
+  const salesSubtitle =
+    salesRange === "week"
+      ? "Revenue from confirmed orders."
+      : salesRange === "month"
+      ? "Daily revenue from confirmed orders."
+      : "Monthly revenue from confirmed orders.";
 
   return (
     <div className="space-y-4">
@@ -458,19 +511,52 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
       {/* Row 1: revenue area chart (8) + top selling items (4) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <section className="lg:col-span-8 bg-card border border-border rounded-2xl shadow-sm p-5">
-          <div className="flex items-baseline justify-between gap-3 mb-4">
+          <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
             <div>
-              <h2 className="font-display text-base">7-day sales</h2>
+              <h2 className="font-display text-base">{salesHeading}</h2>
               <p className="text-[11px] text-muted-foreground mt-0.5">
-                Revenue from confirmed orders.
+                {salesSubtitle}
               </p>
             </div>
-            <div className="text-right">
-              <div className="font-display text-xl font-semibold tabular-nums">
-                ₱{weekRevenue.toLocaleString("en-PH", { maximumFractionDigits: 0 })}
+            <div className="flex items-center gap-3">
+              {/* Range toggle — 7-day / 30-day / 12-month. Pure
+                  client-side re-bucketing, no extra fetch. */}
+              <div
+                role="tablist"
+                aria-label="Sales range"
+                className="inline-flex rounded-full bg-muted p-0.5"
+              >
+                {([
+                  { value: "week", label: "7d" },
+                  { value: "month", label: "30d" },
+                  { value: "year", label: "12mo" },
+                ] as const).map((opt) => {
+                  const active = salesRange === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => setSalesRange(opt.value)}
+                      className={`text-[11px] px-3 py-1 rounded-full transition ${
+                        active
+                          ? "bg-foreground text-background font-semibold"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
               </div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                total
+              <div className="text-right">
+                <div className="font-display text-xl font-semibold tabular-nums">
+                  ₱{salesTotal.toLocaleString("en-PH", { maximumFractionDigits: 0 })}
+                </div>
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                  total
+                </div>
               </div>
             </div>
           </div>
@@ -482,7 +568,7 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart
-                  data={weekSeries}
+                  data={salesSeries}
                   margin={{ top: 8, right: 8, left: -16, bottom: 0 }}
                 >
                   <defs>
@@ -499,11 +585,19 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
                   <XAxis
                     dataKey="date"
                     tickFormatter={(d: string) =>
-                      format(new Date(d), "EEEEEE")
+                      salesRange === "week"
+                        ? format(new Date(d), "EEEEEE")
+                        : salesRange === "month"
+                        ? format(new Date(d), "MMM d")
+                        : format(new Date(d), "MMM")
                     }
                     tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
                     axisLine={false}
                     tickLine={false}
+                    interval={
+                      salesRange === "month" ? 4 : "preserveStartEnd"
+                    }
+                    minTickGap={salesRange === "year" ? 8 : 16}
                   />
                   <YAxis
                     tickFormatter={(v: number) =>
@@ -524,7 +618,9 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
                       boxShadow: "0 4px 12px rgb(0 0 0 / 0.08)",
                     }}
                     labelFormatter={(d: string) =>
-                      format(new Date(d), "EEE, MMM d")
+                      salesRange === "year"
+                        ? format(new Date(d), "MMMM yyyy")
+                        : format(new Date(d), "EEE, MMM d")
                     }
                     formatter={(v: number) => [
                       `₱${v.toLocaleString("en-PH")}`,
@@ -537,7 +633,11 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
                     stroke="#D2502B"
                     strokeWidth={2}
                     fill="url(#revFill)"
-                    dot={{ r: 3, fill: "#D2502B", strokeWidth: 0 }}
+                    dot={
+                      salesRange === "week"
+                        ? { r: 3, fill: "#D2502B", strokeWidth: 0 }
+                        : false
+                    }
                     activeDot={{ r: 5, strokeWidth: 0 }}
                   />
                 </AreaChart>
