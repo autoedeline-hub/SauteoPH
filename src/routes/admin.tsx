@@ -5,6 +5,15 @@ import { format, subDays } from "date-fns";
 import { inviteLinkPath } from "@/lib/invite";
 import { formatSlotTime12h } from "@/lib/utils";
 import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
   CheckCircle2,
   LogOut,
   LayoutDashboard,
@@ -269,6 +278,14 @@ function SidebarContent({
 }
 
 /* ============ Overview ============ */
+type TopItem = {
+  menuItemId: string | null;
+  name: string;
+  imageUrl: string | null;
+  units: number;
+  revenue: number;
+};
+
 function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
   const [stats, setStats] = useState({
     revenueToday: 0,
@@ -278,6 +295,7 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
   });
   const [weekSeries, setWeekSeries] = useState<{ date: string; revenue: number }[]>([]);
   const [recent, setRecent] = useState<Booking[]>([]);
+  const [topItems, setTopItems] = useState<TopItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -285,10 +303,11 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
       setLoading(true);
       const today = format(new Date(), "yyyy-MM-dd");
       const weekAgo = format(subDays(new Date(), 6), "yyyy-MM-dd");
+      const monthAgo = format(subDays(new Date(), 29), "yyyy-MM-dd");
 
       const { data: bookingsData } = await supabase
         .from("bookings")
-        .select("*, time_slots(slot_date, slot_time), booking_items(item_name, quantity), payments(id, status, reference_number, screenshot_url)")
+        .select("*, time_slots(slot_date, slot_time), booking_items(menu_item_id, item_name, quantity, unit_price), payments(id, status, reference_number, screenshot_url)")
         .order("created_at", { ascending: false });
 
       const rows = (bookingsData ?? []) as any as Booking[];
@@ -312,6 +331,61 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
         series.push({ date: d, revenue });
       }
 
+      // Top-selling items, last 30 days, confirmed bookings only. Aggregate
+      // booking_items by menu_item_id (fallback to item_name when the menu
+      // item has since been deleted), then enrich with image_url.
+      type AggRow = {
+        menuItemId: string | null;
+        name: string;
+        units: number;
+        revenue: number;
+      };
+      const agg = new Map<string, AggRow>();
+      for (const b of rows) {
+        if (b.status !== "confirmed") continue;
+        const slotDate = (b as any).time_slots?.slot_date as string | undefined;
+        if (!slotDate || slotDate < monthAgo) continue;
+        for (const bi of ((b as any).booking_items ?? []) as Array<{
+          menu_item_id: string | null;
+          item_name: string;
+          quantity: number;
+          unit_price: number;
+        }>) {
+          const key = bi.menu_item_id ?? `name:${bi.item_name}`;
+          const prev = agg.get(key) ?? {
+            menuItemId: bi.menu_item_id,
+            name: bi.item_name,
+            units: 0,
+            revenue: 0,
+          };
+          prev.units += Number(bi.quantity) || 0;
+          prev.revenue += (Number(bi.quantity) || 0) * (Number(bi.unit_price) || 0);
+          agg.set(key, prev);
+        }
+      }
+      const topAgg = Array.from(agg.values())
+        .sort((a, b) => b.units - a.units)
+        .slice(0, 5);
+
+      const ids = topAgg.map(a => a.menuItemId).filter((x): x is string => !!x);
+      let images = new Map<string, string | null>();
+      if (ids.length > 0) {
+        const { data: imgRows } = await supabase
+          .from("menu_items")
+          .select("id, image_url")
+          .in("id", ids);
+        for (const row of (imgRows ?? []) as Array<{ id: string; image_url: string | null }>) {
+          images.set(row.id, row.image_url);
+        }
+      }
+      const topItemsFinal: TopItem[] = topAgg.map(a => ({
+        menuItemId: a.menuItemId,
+        name: a.name,
+        imageUrl: a.menuItemId ? images.get(a.menuItemId) ?? null : null,
+        units: a.units,
+        revenue: a.revenue,
+      }));
+
       const { count: activeMenu } = await supabase
         .from("menu_items")
         .select("*", { count: "exact", head: true })
@@ -325,162 +399,198 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
       });
       setWeekSeries(series);
       setRecent(rows.filter(b => b.status === "confirmed").slice(0, 5));
+      setTopItems(topItemsFinal);
       setLoading(false);
     })();
   }, []);
 
   const hasPending = stats.pending > 0;
   const weekRevenue = weekSeries.reduce((s, d) => s + d.revenue, 0);
-  const peakRevenue = Math.max(1, ...weekSeries.map(d => d.revenue));
 
   return (
-    <div className="space-y-6">
-      {/* Hero: pending verifications takes center stage when there's work to do */}
-      <button
-        onClick={hasPending ? onJumpToOrders : undefined}
-        disabled={!hasPending}
-        className={`w-full text-left rounded-2xl p-6 lg:p-7 transition border ${
-          hasPending
-            ? "bg-foreground text-background border-foreground shadow-md hover:shadow-lg hover:-translate-y-0.5 cursor-pointer"
-            : "bg-card text-foreground border-border shadow-sm cursor-default"
-        }`}
-      >
-        <div className="flex items-start gap-5">
-          <div className={`shrink-0 rounded-2xl p-3 ${hasPending ? "bg-background/15" : "bg-muted"}`}>
-            {hasPending ? <AlertCircle className="h-6 w-6" /> : <CheckCircle2 className="h-6 w-6 text-muted-foreground" />}
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className={`text-[10px] uppercase tracking-wider font-medium ${hasPending ? "text-background/70" : "text-muted-foreground"}`}>
-              Pending verifications
-            </div>
-            <div className="mt-1 flex items-baseline gap-3 flex-wrap">
-              <span className="font-display text-5xl md:text-6xl font-semibold tracking-tight">
-                {loading ? <span className="opacity-40">—</span> : stats.pending}
-              </span>
-              <span className={`text-sm ${hasPending ? "text-background/80" : "text-muted-foreground"}`}>
-                {hasPending
-                  ? stats.pending === 1 ? "order is waiting for you" : "orders are waiting for you"
-                  : "everything is verified — nice work."}
-              </span>
-            </div>
-          </div>
-          {hasPending && (
-            <div className="shrink-0 self-center inline-flex items-center gap-1.5 text-xs font-medium opacity-90">
-              Review now <ArrowRight className="h-4 w-4" />
-            </div>
-          )}
-        </div>
-      </button>
-
-      {/* Secondary KPIs — smaller, equal weight */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <SecondaryKpi
+    <div className="space-y-4">
+      {/* Compact KPI strip — Pending is one of four cards instead of a hero. */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <KpiCard
+          label="Pending"
+          value={loading ? "—" : String(stats.pending)}
+          hint={
+            hasPending
+              ? stats.pending === 1
+                ? "order awaiting verify"
+                : "orders awaiting verify"
+              : "all verified"
+          }
+          icon={hasPending ? AlertCircle : CheckCircle2}
+          tone={hasPending ? "alert" : "neutral"}
+          onClick={hasPending ? onJumpToOrders : undefined}
+          loading={loading}
+        />
+        <KpiCard
           label="Today's revenue"
-          value={`₱${stats.revenueToday.toLocaleString("en-PH", { maximumFractionDigits: 0 })}`}
+          value={
+            loading
+              ? "—"
+              : `₱${stats.revenueToday.toLocaleString("en-PH", {
+                  maximumFractionDigits: 0,
+                })}`
+          }
+          hint="from confirmed orders"
           icon={TrendingUp}
           loading={loading}
         />
-        <SecondaryKpi
+        <KpiCard
           label="Orders this week"
-          value={String(stats.weekOrders)}
+          value={loading ? "—" : String(stats.weekOrders)}
+          hint="last 7 days"
           icon={CalendarRange}
           loading={loading}
         />
-        <SecondaryKpi
+        <KpiCard
           label="Active menu items"
-          value={String(stats.activeMenu)}
+          value={loading ? "—" : String(stats.activeMenu)}
+          hint="currently sellable"
           icon={Salad}
           loading={loading}
         />
       </div>
 
-      {/* Two-col layout for chart + recent orders on large screens */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-        {/* Revenue chart */}
-        <section className="lg:col-span-2 bg-card border border-border rounded-2xl shadow-sm p-6">
-          <div className="flex items-baseline justify-between gap-3">
+      {/* Row 1: revenue area chart (8) + top selling items (4) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <section className="lg:col-span-8 bg-card border border-border rounded-2xl shadow-sm p-5">
+          <div className="flex items-baseline justify-between gap-3 mb-4">
             <div>
-              <h2 className="font-display text-xl">Last 7 days</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">Revenue from confirmed orders.</p>
+              <h2 className="font-display text-base">7-day sales</h2>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Revenue from confirmed orders.
+              </p>
             </div>
             <div className="text-right">
-              <div className="font-display text-2xl font-semibold tabular-nums">
+              <div className="font-display text-xl font-semibold tabular-nums">
                 ₱{weekRevenue.toLocaleString("en-PH", { maximumFractionDigits: 0 })}
               </div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">total</div>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                total
+              </div>
             </div>
           </div>
-          <div className="mt-6 flex items-end gap-2 h-32">
+          <div className="h-56">
             {loading ? (
-              <div className="w-full text-center text-xs text-muted-foreground self-center">Loading…</div>
+              <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
+                Loading…
+              </div>
             ) : (
-              weekSeries.map((d, i) => {
-                const heightPct = d.revenue === 0 ? 4 : Math.max(8, (d.revenue / peakRevenue) * 100);
-                const isToday = i === weekSeries.length - 1;
-                return (
-                  <div key={d.date} className="flex-1 flex flex-col items-center gap-2 min-w-0">
-                    <div className="w-full flex items-end justify-center h-full">
-                      <div
-                        title={`₱${d.revenue.toLocaleString("en-PH", { maximumFractionDigits: 0 })} on ${format(new Date(d.date), "EEE, MMM d")}`}
-                        style={{ height: `${heightPct}%` }}
-                        className={`w-full rounded-md transition ${
-                          isToday ? "bg-foreground" : d.revenue === 0 ? "bg-muted" : "bg-foreground/30 hover:bg-foreground/50"
-                        }`}
-                      />
-                    </div>
-                    <div className={`text-[10px] tabular-nums ${isToday ? "text-foreground font-medium" : "text-muted-foreground"}`}>
-                      {format(new Date(d.date), "EEEEEE")}
-                    </div>
-                  </div>
-                );
-              })
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart
+                  data={weekSeries}
+                  margin={{ top: 8, right: 8, left: -16, bottom: 0 }}
+                >
+                  <defs>
+                    <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#D2502B" stopOpacity={0.32} />
+                      <stop offset="100%" stopColor="#D2502B" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid
+                    stroke="var(--border)"
+                    strokeDasharray="2 4"
+                    vertical={false}
+                  />
+                  <XAxis
+                    dataKey="date"
+                    tickFormatter={(d: string) =>
+                      format(new Date(d), "EEEEEE")
+                    }
+                    tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tickFormatter={(v: number) =>
+                      v >= 1000 ? `₱${(v / 1000).toFixed(0)}k` : `₱${v}`
+                    }
+                    tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={48}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      background: "var(--card)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 12,
+                      fontSize: 12,
+                      fontFamily: "Inter",
+                      boxShadow: "0 4px 12px rgb(0 0 0 / 0.08)",
+                    }}
+                    labelFormatter={(d: string) =>
+                      format(new Date(d), "EEE, MMM d")
+                    }
+                    formatter={(v: number) => [
+                      `₱${v.toLocaleString("en-PH")}`,
+                      "Revenue",
+                    ]}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="revenue"
+                    stroke="#D2502B"
+                    strokeWidth={2}
+                    fill="url(#revFill)"
+                    dot={{ r: 3, fill: "#D2502B", strokeWidth: 0 }}
+                    activeDot={{ r: 5, strokeWidth: 0 }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
             )}
           </div>
         </section>
 
-        {/* Recent orders */}
-        <section className="lg:col-span-3 bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-          <div className="flex items-center justify-between px-6 py-5 border-b border-border">
-            <div>
-              <h2 className="font-display text-xl">Recent orders</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">Last 5 confirmed bookings.</p>
-            </div>
-            <button
-              onClick={onJumpToOrders}
-              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-            >
-              View all <ArrowRight className="h-3 w-3" />
-            </button>
-          </div>
-
+        <section className="lg:col-span-4 bg-card border border-border rounded-2xl shadow-sm p-5">
+          <h2 className="font-display text-base">Top selling items</h2>
+          <p className="text-[11px] text-muted-foreground mt-0.5 mb-3">
+            Most units sold · last 30 days.
+          </p>
           {loading ? (
-            <div className="px-6 py-12 text-center text-muted-foreground text-sm">Loading…</div>
-          ) : recent.length === 0 ? (
-            <EmptyState
-              icon={Inbox}
-              title="No confirmed orders yet"
-              hint="Verified bookings will show up here."
-              className="px-6 py-10"
-            />
+            <div className="text-xs text-muted-foreground py-6 text-center">
+              Loading…
+            </div>
+          ) : topItems.length === 0 ? (
+            <div className="text-xs text-muted-foreground py-6 text-center">
+              No confirmed sales yet.
+            </div>
           ) : (
-            <ul className="divide-y divide-border">
-              {recent.map(b => (
-                <li key={b.id} className="px-6 py-4 flex items-center justify-between hover:bg-muted/30 transition">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2.5">
-                      <span className="font-medium truncate">{b.customer_name}</span>
-                      <StatusBadge status={b.status} />
+            <ul className="divide-y divide-border/60">
+              {topItems.map((it, i) => (
+                <li
+                  key={it.menuItemId ?? it.name}
+                  className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0"
+                >
+                  {it.imageUrl ? (
+                    <img
+                      src={it.imageUrl}
+                      alt={it.name}
+                      className="h-10 w-10 rounded-lg object-cover bg-muted shrink-0"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="h-10 w-10 rounded-lg bg-mustard/20 shrink-0 flex items-center justify-center font-display text-sm font-semibold text-foreground/70">
+                      {it.name.charAt(0).toUpperCase()}
                     </div>
-                    <div className="text-xs text-muted-foreground mt-0.5 truncate">
-                      {b.reference_code}
-                      {b.time_slots && (
-                        <> · {format(new Date(b.time_slots.slot_date), "EEE, MMM d")} · {formatSlotTime12h(b.time_slots.slot_time)}</>
-                      )}
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium truncate">
+                      {it.name}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground tabular-nums">
+                      {it.units} sold · ₱
+                      {it.revenue.toLocaleString("en-PH", {
+                        maximumFractionDigits: 0,
+                      })}
                     </div>
                   </div>
-                  <div className="text-right shrink-0 ml-4">
-                    <div className="font-display font-semibold">₱{Number(b.total_amount).toFixed(0)}</div>
-                    <div className="text-[11px] text-muted-foreground">{b.group_size} guest{b.group_size === 1 ? "" : "s"}</div>
+                  <div className="text-[11px] font-medium text-primary tabular-nums shrink-0">
+                    #{i + 1}
                   </div>
                 </li>
               ))}
@@ -488,26 +598,155 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
           )}
         </section>
       </div>
+
+      {/* Row 2: recent orders */}
+      <section className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-border">
+          <h2 className="font-display text-base">Recent orders</h2>
+          <button
+            onClick={onJumpToOrders}
+            className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+          >
+            View all <ArrowRight className="h-3 w-3" />
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="px-5 py-10 text-center text-muted-foreground text-sm">
+            Loading…
+          </div>
+        ) : recent.length === 0 ? (
+          <EmptyState
+            icon={Inbox}
+            title="No confirmed orders yet"
+            hint="Verified bookings will show up here."
+            className="px-5 py-8"
+          />
+        ) : (
+          <ul className="divide-y divide-border">
+            {recent.map((b) => (
+              <li
+                key={b.id}
+                className="px-5 py-2.5 flex items-center justify-between hover:bg-muted/30 transition"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-sm font-medium truncate">
+                      {b.customer_name}
+                    </span>
+                    <StatusBadge status={b.status} />
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                    {b.reference_code}
+                    {b.time_slots && (
+                      <>
+                        {" "}
+                        ·{" "}
+                        {format(
+                          new Date(b.time_slots.slot_date),
+                          "EEE, MMM d",
+                        )}{" "}
+                        · {formatSlotTime12h(b.time_slots.slot_time)}
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="text-right shrink-0 ml-4">
+                  <div className="text-sm font-display font-semibold tabular-nums">
+                    ₱{Number(b.total_amount).toFixed(0)}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {b.group_size} guest{b.group_size === 1 ? "" : "s"}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }
 
-function SecondaryKpi({
-  label, value, icon: Icon, loading,
-}: { label: string; value: string; icon: React.ComponentType<{ className?: string }>; loading: boolean }) {
-  return (
-    <div className="bg-card border border-border rounded-2xl p-5 shadow-sm flex items-center gap-4">
-      <div className="bg-muted rounded-xl p-2.5 text-muted-foreground shrink-0">
-        <Icon className="h-4 w-4" />
-      </div>
-      <div className="min-w-0">
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">{label}</div>
-        <div className="mt-0.5 text-2xl font-display font-semibold tracking-tight truncate">
-          {loading ? <span className="text-muted-foreground/40">—</span> : value}
+// Compact KPI card. Same shape for all 4 in the strip; the `alert` tone
+// flips colors when there's pending work so it still draws the eye.
+function KpiCard({
+  label,
+  value,
+  hint,
+  icon: Icon,
+  tone = "neutral",
+  onClick,
+  loading,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  icon: React.ComponentType<{ className?: string }>;
+  tone?: "neutral" | "alert";
+  onClick?: () => void;
+  loading: boolean;
+}) {
+  const alert = tone === "alert";
+  const inner = (
+    <>
+      <div className="flex items-start justify-between gap-2 mb-1.5">
+        <div
+          className={`text-[10px] uppercase tracking-wider font-medium ${
+            alert ? "text-background/70" : "text-muted-foreground"
+          }`}
+        >
+          {label}
+        </div>
+        <div
+          className={`rounded-lg p-1.5 shrink-0 ${
+            alert ? "bg-background/15" : "bg-muted text-muted-foreground"
+          }`}
+        >
+          <Icon className="h-3.5 w-3.5" />
         </div>
       </div>
-    </div>
+      <div className="font-display text-2xl font-semibold tabular-nums tracking-tight truncate">
+        {loading ? (
+          <span className={alert ? "text-background/40" : "text-muted-foreground/40"}>
+            —
+          </span>
+        ) : (
+          value
+        )}
+      </div>
+      {hint && (
+        <div
+          className={`text-[11px] mt-0.5 truncate ${
+            alert ? "text-background/80" : "text-muted-foreground"
+          }`}
+        >
+          {hint}
+        </div>
+      )}
+    </>
   );
+
+  const base = `block w-full text-left rounded-xl p-4 border transition ${
+    alert
+      ? "bg-foreground text-background border-foreground shadow-sm"
+      : "bg-card text-foreground border-border shadow-sm"
+  }`;
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`${base} hover:shadow-md ${
+          alert ? "hover:-translate-y-0.5" : ""
+        }`}
+      >
+        {inner}
+      </button>
+    );
+  }
+  return <div className={base}>{inner}</div>;
 }
 
 /* ============ Shared empty state ============ */
