@@ -4016,6 +4016,27 @@ function ReceiptView({
         )}
       </div>
 
+      {/* Payment reminder — sits outside the receipt card so it doesn't end
+          up on the printed copy. Tells the guest the final step they need to
+          take (send proof to Messenger) so the Sautéo team can verify and
+          confirm the order in the admin Orders dashboard. */}
+      <div className="bg-mustard/20 border border-mustard/40 rounded-2xl p-5 md:p-6 mb-6 text-center print:hidden">
+        <p className="text-sm md:text-base text-foreground leading-relaxed mb-4">
+          <span className="font-semibold">
+            Please send your Proof of Payment to Messenger
+          </span>{" "}
+          so the Sautéo team can confirm your order.
+        </p>
+        <a
+          href="https://www.facebook.com/messages/t/1119234891273865"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:opacity-90 transition"
+        >
+          Message us on Messenger
+        </a>
+      </div>
+
       <style>{`
         @media print {
           header, footer, button { display: none !important; }
