@@ -398,7 +398,11 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
         activeMenu: activeMenu ?? 0,
       });
       setConfirmedBookings(confirmed);
-      setRecent(confirmed.slice(0, 5));
+      // Hold the most recent 20 confirmed bookings so the Recent orders
+      // panel has enough to scroll through without re-fetching. The panel
+      // caps its own height; anything beyond what fits triggers the
+      // internal scrollbar.
+      setRecent(confirmed.slice(0, 20));
       setTopItems(topItemsFinal);
       setLoading(false);
     })();
@@ -723,7 +727,10 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
             className="px-5 py-8"
           />
         ) : (
-          <ul className="divide-y divide-border">
+          // Scroll is scoped to the list. Cap height so the panel doesn't
+          // grow indefinitely as the Recent orders backlog gets longer —
+          // admin scrolls inside instead of pushing the page down.
+          <ul className="divide-y divide-border max-h-96 overflow-y-auto">
             {recent.map((b) => (
               <li
                 key={b.id}
@@ -1121,7 +1128,7 @@ function BookingsTab() {
       <div className="hidden xl:block bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
         <div className="overflow-auto max-h-[calc(100vh-280px)]">
           <table className="w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-muted/40 text-muted-foreground text-[11px] uppercase tracking-wider shadow-[0_1px_0_0_var(--border)]">
+            <thead className="sticky top-0 z-20 bg-muted text-muted-foreground text-[11px] uppercase tracking-wider border-b border-border">
               <tr>
                 <th className="px-3 py-3 font-medium text-center">Ref</th>
                 <th className="px-3 py-3 font-medium text-center">Customer</th>
@@ -1146,7 +1153,7 @@ function BookingsTab() {
                   />
                 </td></tr>
               ) : filtered.map(b => (
-                <tr key={b.id} className="border-t border-border align-middle hover:bg-muted/30 transition">
+                <tr key={b.id} className="border-t border-border align-middle hover:bg-muted/70 transition">
                   <td className="px-3 py-3 font-mono text-[11px] text-muted-foreground whitespace-nowrap text-center">
                     {b.reference_code}
                     {b.source && b.source !== "web" && (
@@ -4312,6 +4319,35 @@ function InvitesTab() {
     return c;
   }, [invites]);
 
+  // KPI strip. Surfaces "what needs my attention today" at the page level.
+  const kpis = useMemo(() => {
+    const now = Date.now();
+    const dayMs = 24 * 36e5;
+    const sevenDaysAgo = now - 7 * dayMs;
+    const thirtyDaysAgo = now - 30 * dayMs;
+
+    let expiringSoon = 0;
+    let usedThisWeek = 0;
+    let usedLast30 = 0;
+    let expiredLast30 = 0;
+    for (const i of invites) {
+      const s = inviteStatus(i);
+      const expiresMs = new Date(i.expires_at).getTime();
+      if (s === "unused" && expiresMs - now < dayMs) expiringSoon += 1;
+      if (s === "used" && i.used_at && new Date(i.used_at).getTime() >= sevenDaysAgo) {
+        usedThisWeek += 1;
+      }
+      const created = new Date(i.created_at).getTime();
+      if (created >= thirtyDaysAgo) {
+        if (s === "used") usedLast30 += 1;
+        if (s === "expired") expiredLast30 += 1;
+      }
+    }
+    const denom = usedLast30 + expiredLast30;
+    const conversion = denom > 0 ? Math.round((usedLast30 / denom) * 100) : null;
+    return { expiringSoon, usedThisWeek, conversion };
+  }, [invites]);
+
   const linkFor = (inv: BookingInvite) => {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
     return `${origin}${inviteLinkPath(inv.channel, inv.token)}`;
@@ -4349,127 +4385,109 @@ function InvitesTab() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap gap-1.5">
-            {(["all", "unused", "used", "expired"] as const).map(s => (
-              <CategoryChip
-                key={s}
-                label={s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
-                count={counts[s]}
-                active={statusFilter === s}
-                onClick={() => setStatusFilter(s)}
-              />
-            ))}
-          </div>
-          <button
-            onClick={() => setCreatorOpen(true)}
-            className="inline-flex items-center gap-1.5 border border-border text-foreground rounded-full px-3.5 py-2 text-xs font-medium hover:bg-muted/50 transition"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Manual invite
-          </button>
-        </div>
-        <p className="text-[11px] text-muted-foreground">
-          Most invites are generated straight from the{" "}
-          <span className="text-foreground font-medium">Contacts</span> tab — find
-          the waitlisted guest and hit "Generate invite" on their row. Use
-          "Manual invite" here only when the guest isn't in contacts yet.
-        </p>
+    <div className="space-y-4">
+      {/* KPI strip — one-glance read on what needs attention today. */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <InviteKpiCard
+          label="Unused"
+          value={counts.unused}
+          sub="Active links"
+          accent="primary"
+          loading={loading}
+        />
+        <InviteKpiCard
+          label="Expiring < 24h"
+          value={kpis.expiringSoon}
+          sub="Send a nudge"
+          accent="mustard"
+          loading={loading}
+        />
+        <InviteKpiCard
+          label="Used this week"
+          value={kpis.usedThisWeek}
+          sub="Converted to booking"
+          accent="success"
+          loading={loading}
+        />
+        <InviteKpiCard
+          label="Conversion rate"
+          value={kpis.conversion == null ? "—" : `${kpis.conversion}%`}
+          sub="Last 30 days"
+          accent={null}
+          loading={loading}
+        />
       </div>
 
+      {/* Filter row — chromeless segmented control + primary CTA. */}
+      <div className="flex items-center justify-between gap-3 px-1">
+        <div className="inline-flex bg-muted/60 rounded-full p-1 gap-0.5">
+          {(["all", "unused", "used", "expired"] as const).map((s) => {
+            const active = statusFilter === s;
+            return (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setStatusFilter(s)}
+                className={`px-3 py-1.5 rounded-full text-[11px] font-semibold transition inline-flex items-center gap-1.5 ${
+                  active
+                    ? "bg-card text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
+                <span
+                  className={`tabular-nums ${
+                    active ? "text-muted-foreground" : "text-muted-foreground/70"
+                  }`}
+                >
+                  {counts[s]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <button
+          onClick={() => setCreatorOpen(true)}
+          className="inline-flex items-center gap-1.5 bg-primary text-primary-foreground rounded-full px-4 py-2 text-xs font-semibold hover:opacity-90 shadow-sm transition"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Manual invite
+        </button>
+      </div>
+
+      {/* List container — internal scroll so the page itself stays put as
+          invites pile up. Sticky header inside the scroll keeps context. */}
       {loading ? (
-        <div className="bg-card border border-border rounded-2xl py-12 text-center text-muted-foreground text-sm shadow-sm">
+        <div className="bg-card border border-border rounded-2xl py-12 text-center text-muted-foreground text-sm">
           Loading invites…
         </div>
       ) : filtered.length === 0 ? (
-        <div className="bg-card border border-border rounded-2xl shadow-sm">
+        <div className="bg-card border border-border rounded-2xl">
           <EmptyState
             icon={Inbox}
-            title={statusFilter === "all" ? "No invites yet" : `No ${statusFilter} invites`}
-            hint="Generate one to send a waitlisted customer their one-time booking link."
+            title={EMPTY_COPY[statusFilter].title}
+            hint={EMPTY_COPY[statusFilter].hint}
           />
         </div>
       ) : (
-        <div className="space-y-3">
-          {filtered.map(inv => {
-            const status = inviteStatus(inv);
-            const expiresIn = Math.round(
-              (new Date(inv.expires_at).getTime() - Date.now()) / 36e5
-            );
-            return (
-              <div
+        <div className="rounded-2xl border border-border bg-muted/30 p-2 max-h-[calc(100vh-22rem)] overflow-y-auto">
+          <div className="sticky top-0 z-10 bg-muted/30 backdrop-blur-sm px-2 py-1.5 flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground/70 font-medium">
+            <span>
+              Showing {filtered.length} of {invites.length}
+            </span>
+            <span>Newest first</span>
+          </div>
+          <ul className="space-y-2 mt-1">
+            {filtered.map((inv) => (
+              <InviteRow
                 key={inv.id}
-                className="bg-card border border-border rounded-2xl shadow-sm p-4 sm:p-5"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium text-foreground">{inv.customer_name}</span>
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${
-                        status === "unused"
-                          ? "bg-primary/10 text-primary"
-                          : status === "used"
-                          ? "bg-muted text-muted-foreground"
-                          : "bg-destructive/10 text-destructive"
-                      }`}>
-                        {status}
-                      </span>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-muted text-muted-foreground">
-                        {inv.channel === "dine_in" ? "Dine-in" : "Pickup"}
-                      </span>
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground space-y-0.5">
-                      {(inv.customer_email || inv.customer_phone) && (
-                        <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-                          {inv.customer_email && <span>{inv.customer_email}</span>}
-                          {inv.customer_phone && <span>{inv.customer_phone}</span>}
-                          {inv.group_size && <span>Party of {inv.group_size}</span>}
-                        </div>
-                      )}
-                      <div>
-                        {status === "unused" && (
-                          <>Expires in {expiresIn}h ({format(new Date(inv.expires_at), "MMM d, h:mm a")})</>
-                        )}
-                        {status === "used" && inv.used_at && (
-                          <>Used {format(new Date(inv.used_at), "MMM d, h:mm a")}</>
-                        )}
-                        {status === "expired" && (
-                          <>Expired {format(new Date(inv.expires_at), "MMM d, h:mm a")}</>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {status === "unused" && (
-                      <button
-                        onClick={() => copyLink(inv)}
-                        className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-2 bg-foreground text-background hover:opacity-90 transition"
-                      >
-                        {copiedId === inv.id ? (
-                          <>
-                            <CheckCircle2 className="h-3.5 w-3.5" /> Copied!
-                          </>
-                        ) : (
-                          <>Copy link</>
-                        )}
-                      </button>
-                    )}
-                    {!inv.used_at && (
-                      <button
-                        onClick={() => revokeInvite(inv)}
-                        aria-label="Delete invite"
-                        className="p-2 text-muted-foreground hover:text-destructive hover:bg-muted/50 rounded-full transition"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+                inv={inv}
+                copied={copiedId === inv.id}
+                onCopy={() => copyLink(inv)}
+                onRevoke={() => revokeInvite(inv)}
+              />
+            ))}
+          </ul>
         </div>
       )}
 
@@ -4480,6 +4498,231 @@ function InvitesTab() {
         />
       )}
     </div>
+  );
+}
+
+// Compact stats card used by the InvitesTab strip. Optional left-accent
+// border surfaces urgency without competing with the value text.
+function InviteKpiCard({
+  label,
+  value,
+  sub,
+  accent,
+  loading,
+}: {
+  label: string;
+  value: number | string;
+  sub: string;
+  accent: "primary" | "mustard" | "success" | null;
+  loading: boolean;
+}) {
+  const accentClass =
+    accent === "primary"
+      ? "border-l-4 border-l-primary"
+      : accent === "mustard"
+      ? "border-l-4 border-l-mustard"
+      : accent === "success"
+      ? "border-l-4 border-l-emerald-500"
+      : "";
+  return (
+    <div
+      className={`bg-card border border-border rounded-2xl p-4 shadow-sm ${accentClass}`}
+    >
+      <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+        {label}
+      </div>
+      <div className="font-display text-3xl text-foreground leading-none mt-2 tabular-nums">
+        {loading ? <span className="text-muted-foreground/40">—</span> : value}
+      </div>
+      <div className="text-[11px] text-muted-foreground mt-1">{sub}</div>
+    </div>
+  );
+}
+
+// Per-filter empty-state copy. Lives outside the component so the JSX
+// stays clean and the strings are easy to find / edit.
+const EMPTY_COPY: Record<
+  "all" | "unused" | "used" | "expired",
+  { title: string; hint: string }
+> = {
+  all: {
+    title: "No invites issued yet",
+    hint:
+      "Generate one from the Contacts tab, or hit Manual invite to issue a link for a guest who isn't a contact yet.",
+  },
+  unused: {
+    title: "Inbox zero",
+    hint: "Every invite is either used or expired — nice work staying on top of it.",
+  },
+  used: {
+    title: "No conversions yet",
+    hint: "Used invites land here with the booking they created.",
+  },
+  expired: {
+    title: "No expired invites",
+    hint: "You're staying on top of those 24-hour links.",
+  },
+};
+
+// Single invite row. Three zones (channel icon · identity+meta · actions)
+// with a left status accent and an urgency-colored countdown for unused
+// links. Delete only shows on hover so Copy link gets the spotlight.
+function InviteRow({
+  inv,
+  copied,
+  onCopy,
+  onRevoke,
+}: {
+  inv: BookingInvite;
+  copied: boolean;
+  onCopy: () => void;
+  onRevoke: () => void;
+}) {
+  const status = inviteStatus(inv);
+  const hoursLeft =
+    (new Date(inv.expires_at).getTime() - Date.now()) / 36e5;
+
+  // Status accent on the left edge — reads like a Kanban swimlane stripe.
+  const accentClass =
+    status === "unused"
+      ? hoursLeft < 12
+        ? "border-l-2 border-l-destructive"
+        : hoursLeft < 24
+        ? "border-l-2 border-l-mustard"
+        : "border-l-2 border-l-emerald-500"
+      : status === "used"
+      ? "border-l-2 border-l-muted-foreground/30"
+      : "border-l-2 border-l-destructive/40";
+
+  // Channel icon square — instant left-edge scan of dine-in vs pickup.
+  const channelIsDineIn = inv.channel === "dine_in";
+
+  // Subtle status pill (replaces the old loud uppercase pill).
+  const statusPill =
+    status === "unused"
+      ? "bg-emerald-500/10 text-emerald-700"
+      : status === "used"
+      ? "bg-muted text-muted-foreground"
+      : "bg-destructive/10 text-destructive";
+
+  // Countdown color rules for unused invites.
+  const countdownColor =
+    hoursLeft < 12
+      ? "text-destructive font-medium"
+      : hoursLeft < 24
+      ? "text-mustard"
+      : "text-emerald-600";
+
+  return (
+    <li
+      className={`group relative bg-card ${accentClass} border border-border rounded-xl px-4 py-3 hover:border-foreground/20 hover:shadow-sm transition ${
+        status === "expired" ? "opacity-60" : ""
+      }`}
+    >
+      <div className="flex items-center gap-4">
+        {/* Zone A — channel indicator */}
+        <div
+          className={`flex items-center justify-center h-10 w-10 rounded-lg shrink-0 ${
+            channelIsDineIn
+              ? "bg-mustard/20 text-foreground"
+              : "bg-primary/10 text-primary"
+          }`}
+          title={channelIsDineIn ? "Dine-in" : "Pickup"}
+        >
+          {channelIsDineIn ? (
+            <UtensilsCrossed className="h-4 w-4" />
+          ) : (
+            <ShoppingBag className="h-4 w-4" />
+          )}
+        </div>
+
+        {/* Zone B — identity + meta */}
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-foreground truncate">
+              {inv.customer_name}
+            </span>
+            <span
+              className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${statusPill}`}
+            >
+              {status}
+            </span>
+            {inv.source && inv.source !== "messenger" && (
+              <span className="text-[10px] text-muted-foreground/70 uppercase tracking-wide">
+                · {inv.source}
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground truncate">
+            {[
+              inv.customer_email,
+              inv.customer_phone,
+              inv.group_size ? `Party of ${inv.group_size}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </div>
+          <div className="text-[11px]">
+            {status === "unused" && (
+              <span className={`inline-flex items-center gap-1 ${countdownColor}`}>
+                <Clock className="h-3 w-3" />
+                Expires in {Math.max(0, Math.round(hoursLeft))}h
+                <span className="text-muted-foreground/70 ml-1">
+                  ({format(new Date(inv.expires_at), "MMM d, h:mm a")})
+                </span>
+              </span>
+            )}
+            {status === "used" && inv.used_at && (
+              <span className="inline-flex items-center gap-1 text-muted-foreground">
+                <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                Used {format(new Date(inv.used_at), "MMM d, h:mm a")}
+                {inv.used_booking_id && (
+                  <>
+                    {" "}
+                    →{" "}
+                    <span className="font-mono">
+                      {inv.used_booking_id.slice(0, 8)}
+                    </span>
+                  </>
+                )}
+              </span>
+            )}
+            {status === "expired" && (
+              <span className="text-muted-foreground/70">
+                Expired {format(new Date(inv.expires_at), "MMM d, h:mm a")}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Zone C — actions */}
+        <div className="shrink-0 flex items-center gap-1">
+          {status === "unused" && (
+            <button
+              onClick={onCopy}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3.5 py-2 bg-foreground text-background hover:opacity-90 transition"
+            >
+              {copied ? (
+                <>
+                  <CheckCircle2 className="h-3.5 w-3.5" /> Copied
+                </>
+              ) : (
+                <>Copy link</>
+              )}
+            </button>
+          )}
+          {!inv.used_at && (
+            <button
+              onClick={onRevoke}
+              aria-label="Delete invite"
+              className="opacity-0 group-hover:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/5"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      </div>
+    </li>
   );
 }
 
@@ -4765,6 +5008,9 @@ type PipelineBooking = {
   customer_phone: string | null;
   facebook_handle: string | null;
   time_slots?: { slot_date: string; slot_time: string };
+  // Latest payment shell, so the Pipeline's Verify button can flip it
+  // to 'verified' in the same operation that confirms the booking.
+  payments?: { id: string; status: string | null }[];
 };
 
 type PipelineCard = {
@@ -4852,6 +5098,9 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
   // Per-card busy flag for the "Mark complete" action so the button can
   // show a spinner without blocking the rest of the board.
   const [completingId, setCompletingId] = useState<string | null>(null);
+  // Per-card busy flag for the "Verify" action so the button can show
+  // its own spinner without blocking the rest of the board.
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -4874,7 +5123,7 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
         supabase
           .from("bookings")
           .select(
-            "id, reference_code, status, created_at, confirmed_at, completed_at, pickup_mode, total_amount, customer_email, customer_phone, facebook_handle, time_slots(slot_date, slot_time)",
+            "id, reference_code, status, created_at, confirmed_at, completed_at, pickup_mode, total_amount, customer_email, customer_phone, facebook_handle, time_slots(slot_date, slot_time), payments(id, status)",
           )
           .order("created_at", { ascending: false })
           .limit(500),
@@ -4965,6 +5214,37 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
     );
   };
 
+  // Verifies a pending booking directly from the pipeline card. Same
+  // two writes the Orders tab's Verify button performs:
+  //   1. payments.status → 'verified' (if a shell exists)
+  //   2. bookings.status → 'confirmed' + stamp confirmed_at
+  // The card moves to the CONFIRMED column on the next load() because
+  // deriveStage() now sees latestBooking.status === 'confirmed'.
+  const verifyBooking = async (bookingId: string, paymentId: string | null) => {
+    setVerifyingId(bookingId);
+    if (paymentId) {
+      const { error: payErr } = await supabase
+        .from("payments")
+        .update({ status: "verified", verified_at: new Date().toISOString() })
+        .eq("id", paymentId);
+      if (payErr) {
+        setVerifyingId(null);
+        alert(`Couldn't mark payment verified: ${payErr.message}`);
+        return;
+      }
+    }
+    const { error: bookingErr } = await supabase
+      .from("bookings")
+      .update({ status: "confirmed", confirmed_at: new Date().toISOString() })
+      .eq("id", bookingId);
+    setVerifyingId(null);
+    if (bookingErr) {
+      alert(`Couldn't confirm booking: ${bookingErr.message}`);
+      return;
+    }
+    load();
+  };
+
   // Stamps completed_at on the latest confirmed booking. RLS already lets
   // admin UPDATE bookings, so no RPC needed here.
   const markCompleted = async (bookingId: string) => {
@@ -5050,11 +5330,19 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
                       ? completingId === card.latestBooking.id
                       : false
                   }
+                  verifying={
+                    card.latestBooking
+                      ? verifyingId === card.latestBooking.id
+                      : false
+                  }
                   onGenerateInvite={() => setInviteFor(card.contact)}
                   onCopyInvite={(token) =>
                     copyInviteLink(card.contact.id, token)
                   }
                   onJumpToOrders={onJumpToOrders}
+                  onVerify={(bookingId, paymentId) =>
+                    verifyBooking(bookingId, paymentId)
+                  }
                   onMarkComplete={(bookingId) => markCompleted(bookingId)}
                 />
               )}
@@ -5141,18 +5429,22 @@ function PipelineCardView({
   channel,
   copied,
   completing,
+  verifying,
   onGenerateInvite,
   onCopyInvite,
   onJumpToOrders,
+  onVerify,
   onMarkComplete,
 }: {
   card: PipelineCard;
   channel: PipelineChannel;
   copied: boolean;
   completing: boolean;
+  verifying: boolean;
   onGenerateInvite: () => void;
   onCopyInvite: (token: string) => void;
   onJumpToOrders: () => void;
+  onVerify: (bookingId: string, paymentId: string | null) => void;
   onMarkComplete: (bookingId: string) => void;
 }) {
   const { contact, stage, activeInvite, latestBooking } = card;
@@ -5217,12 +5509,27 @@ function PipelineCardView({
           )}
         </button>
       )}
-      {(stage === "booked" || stage === "confirmed") && (
+      {stage === "booked" && latestBooking && (
+        <button
+          onClick={() =>
+            onVerify(
+              latestBooking.id,
+              latestBooking.payments?.[0]?.id ?? null,
+            )
+          }
+          disabled={verifying}
+          className="w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold rounded-full px-2.5 py-1.5 bg-foreground text-background hover:opacity-90 transition disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <CheckCircle2 className="h-3 w-3" />
+          {verifying ? "Verifying…" : "Verify"}
+        </button>
+      )}
+      {stage === "confirmed" && (
         <button
           onClick={onJumpToOrders}
           className="w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold rounded-full px-2.5 py-1.5 bg-muted hover:bg-muted/70 transition"
         >
-          {stage === "booked" ? "Verify in Orders" : "Open in Orders"}
+          Open in Orders
           <ArrowRight className="h-3 w-3" />
         </button>
       )}
