@@ -294,6 +294,12 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
     pending: 0,
     weekOrders: 0,
     activeMenu: 0,
+    // Revenue + headcount of confirmed bookings whose dining date is
+    // today-or-later. Surfaces money already verified for upcoming
+    // service — bookings that the chart's "by date confirmed" axis no
+    // longer surfaces as backward-looking activity.
+    upcomingRevenue: 0,
+    upcomingCount: 0,
   });
   // All confirmed bookings (with their slot_date) so we can re-bucket
   // the sales series client-side when the range toggle changes.
@@ -330,6 +336,15 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
       ).length;
 
       const confirmed = rows.filter(b => b.status === "confirmed");
+
+      const upcoming = confirmed.filter(
+        b => b.time_slots && b.time_slots.slot_date >= today
+      );
+      const upcomingRevenue = upcoming.reduce(
+        (s, b) => s + Number(b.total_amount || 0),
+        0
+      );
+      const upcomingCount = upcoming.length;
 
       // Top-selling items, last 30 days, confirmed bookings only. Aggregate
       // booking_items by menu_item_id (fallback to item_name when the menu
@@ -396,6 +411,8 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
         pending,
         weekOrders,
         activeMenu: activeMenu ?? 0,
+        upcomingRevenue,
+        upcomingCount,
       });
       setConfirmedBookings(confirmed);
       // Hold the most recent 20 confirmed bookings so the Recent orders
@@ -412,14 +429,27 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
 
   // Derive the chart series from the cached confirmed-bookings list
   // whenever the range toggle changes. No new network request.
+  //
+  // Buckets by `confirmed_at` (when admin clicked Verify and revenue was
+  // recognized), falling back to `created_at` for legacy rows missing the
+  // stamp. Previously we bucketed by `time_slots.slot_date` — the future
+  // dining date — which meant a booking confirmed today for next week
+  // vanished from the 7d/30d backward-looking views.
   const salesSeries = useMemo<{ date: string; revenue: number }[]>(() => {
+    const bucketed = confirmedBookings.map(b => {
+      const ts = (b as any).confirmed_at || (b as any).created_at;
+      return {
+        dateKey: ts ? String(ts).slice(0, 10) : "",
+        revenue: Number(b.total_amount || 0),
+      };
+    });
     const out: { date: string; revenue: number }[] = [];
     if (salesRange === "week") {
       for (let i = 6; i >= 0; i--) {
         const d = format(subDays(new Date(), i), "yyyy-MM-dd");
-        const revenue = confirmedBookings
-          .filter(b => (b as any).time_slots?.slot_date === d)
-          .reduce((s, b) => s + Number(b.total_amount || 0), 0);
+        const revenue = bucketed
+          .filter(x => x.dateKey === d)
+          .reduce((s, x) => s + x.revenue, 0);
         out.push({ date: d, revenue });
       }
       return out;
@@ -428,9 +458,9 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
       // 30 daily buckets. X-axis thins ticks so labels stay readable.
       for (let i = 29; i >= 0; i--) {
         const d = format(subDays(new Date(), i), "yyyy-MM-dd");
-        const revenue = confirmedBookings
-          .filter(b => (b as any).time_slots?.slot_date === d)
-          .reduce((s, b) => s + Number(b.total_amount || 0), 0);
+        const revenue = bucketed
+          .filter(x => x.dateKey === d)
+          .reduce((s, x) => s + x.revenue, 0);
         out.push({ date: d, revenue });
       }
       return out;
@@ -439,12 +469,9 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
     for (let i = 11; i >= 0; i--) {
       const monthDate = subMonths(new Date(), i);
       const monthKey = format(monthDate, "yyyy-MM");
-      const revenue = confirmedBookings
-        .filter(b => {
-          const slot = (b as any).time_slots?.slot_date as string | undefined;
-          return !!slot && slot.startsWith(monthKey);
-        })
-        .reduce((s, b) => s + Number(b.total_amount || 0), 0);
+      const revenue = bucketed
+        .filter(x => x.dateKey.startsWith(monthKey))
+        .reduce((s, x) => s + x.revenue, 0);
       out.push({ date: format(monthDate, "yyyy-MM-01"), revenue });
     }
     return out;
@@ -459,15 +486,15 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
       : "12-month sales";
   const salesSubtitle =
     salesRange === "week"
-      ? "Revenue from confirmed orders."
+      ? "Daily revenue from confirmed orders. By date confirmed."
       : salesRange === "month"
-      ? "Daily revenue from confirmed orders."
-      : "Monthly revenue from confirmed orders.";
+      ? "Daily revenue from confirmed orders. By date confirmed."
+      : "Monthly revenue from confirmed orders. By month confirmed.";
 
   return (
     <div className="space-y-4">
       {/* Compact KPI strip — Pending is one of four cards instead of a hero. */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <KpiCard
           label="Pending"
           value={loading ? "—" : String(stats.pending)}
@@ -492,8 +519,25 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
                   maximumFractionDigits: 0,
                 })}`
           }
-          hint="from confirmed orders"
+          hint="confirmed today"
           icon={TrendingUp}
+          loading={loading}
+        />
+        <KpiCard
+          label="Upcoming"
+          value={
+            loading
+              ? "—"
+              : `₱${stats.upcomingRevenue.toLocaleString("en-PH", {
+                  maximumFractionDigits: 0,
+                })}`
+          }
+          hint={
+            stats.upcomingCount === 1
+              ? "1 confirmed booking ahead"
+              : `${stats.upcomingCount} confirmed bookings ahead`
+          }
+          icon={CalendarPlus}
           loading={loading}
         />
         <KpiCard
