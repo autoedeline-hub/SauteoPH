@@ -2956,6 +2956,10 @@ type ContactRow = {
   // Send API recipient, so the InviteCreator copies this into
   // booking_invites.platform_id on submit.
   messenger_psid: string | null;
+  // What the bot captured on Messenger — number of guests for dine-in or
+  // number of meals for pickup. Pre-fills the InviteCreator's group_size
+  // input so admin doesn't fall back to the "2" default.
+  last_party_size: number | null;
   source: string | null;
   tags: string[];
   notes: string | null;
@@ -3231,7 +3235,13 @@ function ContactsTab() {
               const isPickup = c.tags.includes("pickup");
               const inviteEligible = isWaitlist || isPickup;
               const invStatus = inviteStatusFor(c.id);
-              const guests = guestsFor(c.id);
+              // Guests column priority:
+              //   1. last_party_size on the contact — what the bot captured
+              //      on Messenger / Airtable, available even before any
+              //      invite is generated.
+              //   2. Latest invite's group_size — for legacy contacts whose
+              //      party size predates the column.
+              const guests = c.last_party_size ?? guestsFor(c.id);
               const showInviteAction =
                 inviteEligible || invStatus.state !== "none";
 
@@ -3261,9 +3271,9 @@ function ContactsTab() {
                     </div>
                   </button>
 
-                  {/* Guests — party size pulled from the latest invite the
-                      admin generated for this contact (mirrors the waitlist
-                      details they collected over Messenger). */}
+                  {/* Guests — party size from the contact's last_party_size
+                      column (bot-captured on Messenger/Airtable), falling
+                      back to the latest invite's group_size for older rows. */}
                   <div className="sm:text-center text-xs text-muted-foreground tabular-nums">
                     <span className="sm:hidden uppercase tracking-wider text-[10px] mr-2">Guests</span>
                     {guests != null ? (
@@ -3376,6 +3386,7 @@ function ContactsTab() {
             email: inviteFor.email,
             phone: inviteFor.phone,
             messengerPsid: inviteFor.messenger_psid,
+            groupSize: inviteFor.last_party_size ?? extractPartySize(inviteFor.notes),
             // Best-guess of the original messaging channel — defaults to
             // 'messenger' since that's where both waitlist + pickup
             // customers usually come in from.
@@ -4741,7 +4752,23 @@ type InviteCreatorPrefill = {
   // the contact's tags ("waitlist" → dine_in, "pickup" → pickup) so the
   // admin doesn't have to remember which channel the guest came in through.
   channel?: "dine_in" | "pickup";
+  // Pre-fill the party-size field from whatever the customer told the
+  // bot on the waitlist. Avoids the admin defaulting to "2" when the
+  // guest already said "4" in Messenger.
+  groupSize?: number;
 };
+
+// The Airtable waitlist + pickup importers stash party size into the
+// contact's free-text notes ("Party size on waitlist: 4" or
+// "Requested meals: 4"). Pull it back out so the InviteCreator can
+// pre-fill the group_size field instead of defaulting to 2.
+function extractPartySize(notes: string | null | undefined): number | undefined {
+  if (!notes) return undefined;
+  const m = notes.match(/(?:Party size on waitlist|Requested meals)[^:]*:\s*(\d+)/i);
+  if (!m) return undefined;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) && n >= 1 && n <= 50 ? n : undefined;
+}
 
 function InviteCreator({
   prefill,
@@ -4763,7 +4790,7 @@ function InviteCreator({
   const [name, setName] = useState(prefill?.name ?? "");
   const [email, setEmail] = useState(prefill?.email ?? "");
   const [phone, setPhone] = useState(prefill?.phone ?? "");
-  const [groupSize, setGroupSize] = useState<number | "">(2);
+  const [groupSize, setGroupSize] = useState<number | "">(prefill?.groupSize ?? 2);
   const [source, setSource] = useState<"messenger" | "instagram" | "manual">(
     prefill?.source ?? "messenger",
   );
@@ -5088,7 +5115,7 @@ function bookingMatchesContact(b: PipelineBooking, c: ContactRow): boolean {
 }
 
 function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
-  const [channel, setChannel] = useState<PipelineChannel>("pickup");
+  const [channel, setChannel] = useState<PipelineChannel>("dine_in");
   const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [allInvites, setAllInvites] = useState<BookingInvite[]>([]);
   const [allBookings, setAllBookings] = useState<PipelineBooking[]>([]);
@@ -5280,7 +5307,7 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
       <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="inline-flex rounded-full bg-muted p-0.5">
-            {(["pickup", "dine_in"] as const).map((c) => (
+            {(["dine_in", "pickup"] as const).map((c) => (
               <button
                 key={c}
                 type="button"
@@ -5368,6 +5395,7 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
             email: inviteFor.email,
             phone: inviteFor.phone,
             messengerPsid: inviteFor.messenger_psid,
+            groupSize: inviteFor.last_party_size ?? extractPartySize(inviteFor.notes),
             source:
               inviteFor.channels.includes("instagram")
                 ? "instagram"
