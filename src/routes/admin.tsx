@@ -2687,6 +2687,7 @@ const PICKUP_VISIBLE_TIMES = ["16:00:00", "18:00:00", "20:00:00"] as const;
 function SlotsTab() {
   const [slots, setSlots] = useState<TimeSlot[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeWindow, setActiveWindow] = useState<"dine_in" | "pickup">("dine_in");
   // null = closed; "dine_in"/"pickup" = creator dialog open with that channel.
   const [creatorOpenFor, setCreatorOpenFor] = useState<
     "dine_in" | "pickup" | null
@@ -2724,6 +2725,17 @@ function SlotsTab() {
     () => slots.filter((s) => s.channel === "pickup"),
     [slots],
   );
+  const activeSlots = activeWindow === "dine_in" ? dineInSlots : pickupSlots;
+  const activeDayCount = useMemo(
+    () => new Set(activeSlots.map((s) => s.slot_date)).size,
+    [activeSlots],
+  );
+  const activeTitle =
+    activeWindow === "dine_in" ? "Dine-in Window" : "Pick-up Window";
+  const activeEmptyHint =
+    activeWindow === "dine_in"
+      ? "No dine-in slots yet — open windows so guests can reserve a table."
+      : "No pickup slots yet — open 4 PM / 6 PM / 8 PM windows for guests to order.";
 
   const toggle = async (id: string, isOpen: boolean) => {
     setSlots(prev => prev.map(s => (s.id === id ? { ...s, is_open: !isOpen } : s)));
@@ -2744,26 +2756,45 @@ function SlotsTab() {
   };
 
   return (
-    <div className="space-y-10">
-      <ChannelSlotsSection
-        channel="dine_in"
-        title="Dine-in slots"
-        emptyHint="No dine-in slots yet — open windows so guests can reserve a table."
-        slots={dineInSlots}
-        loading={loading}
-        onNewClick={() => setCreatorOpenFor("dine_in")}
-        onToggle={toggle}
-        onUpdateCap={updateCap}
-        onDelete={deleteSlot}
-      />
+    <div className="space-y-6">
+      <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="inline-flex rounded-full bg-muted p-0.5">
+            {(["dine_in", "pickup"] as const).map((windowKey) => {
+              const active = activeWindow === windowKey;
+              const Icon = windowKey === "dine_in" ? UtensilsCrossed : ShoppingBag;
+              return (
+                <button
+                  key={windowKey}
+                  type="button"
+                  onClick={() => setActiveWindow(windowKey)}
+                  className={`inline-flex items-center gap-1.5 text-sm px-4 py-1.5 rounded-full transition ${
+                    active
+                      ? "bg-foreground text-background font-semibold"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {windowKey === "dine_in" ? "Dine-in Window" : "Pick-up Window"}
+                </button>
+              );
+            })}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {loading
+              ? "Loading…"
+              : `${activeSlots.length} slot${activeSlots.length === 1 ? "" : "s"} across ${activeDayCount} day${activeDayCount === 1 ? "" : "s"}`}
+          </div>
+        </div>
+      </div>
 
       <ChannelSlotsSection
-        channel="pickup"
-        title="Pickup slots"
-        emptyHint="No pickup slots yet — open 4 PM / 6 PM / 8 PM windows for guests to order."
-        slots={pickupSlots}
+        channel={activeWindow}
+        title={activeTitle}
+        emptyHint={activeEmptyHint}
+        slots={activeSlots}
         loading={loading}
-        onNewClick={() => setCreatorOpenFor("pickup")}
+        onNewClick={() => setCreatorOpenFor(activeWindow)}
         onToggle={toggle}
         onUpdateCap={updateCap}
         onDelete={deleteSlot}

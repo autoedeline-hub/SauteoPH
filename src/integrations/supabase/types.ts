@@ -263,7 +263,7 @@ export type Database = {
       time_slots: {
         Row: {
           capacity: number
-          channel: string
+          channel: "dine_in" | "pickup"
           created_at: string
           id: string
           is_open: boolean
@@ -273,7 +273,7 @@ export type Database = {
         }
         Insert: {
           capacity?: number
-          channel?: string
+          channel?: "dine_in" | "pickup"
           created_at?: string
           id?: string
           is_open?: boolean
@@ -283,7 +283,7 @@ export type Database = {
         }
         Update: {
           capacity?: number
-          channel?: string
+          channel?: "dine_in" | "pickup"
           created_at?: string
           id?: string
           is_open?: boolean
