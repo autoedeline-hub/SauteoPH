@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   Image as ImageIcon,
   Loader2,
+  MessageCircle,
   Minus,
   Pencil,
   Plus,
@@ -22,7 +23,6 @@ import {
   ShoppingBag,
   Sparkles,
   Trash2,
-  Truck,
   Upload,
   User as UserIcon,
   X,
@@ -71,7 +71,21 @@ type MenuItem = {
 //   - item with no variant       -> key = item.id
 //   - item with a chosen variant -> key = item.id + "::" + variantIndex
 type Cart = Record<string, number>;
-type View = "menu" | "payment" | "receipt";
+// Top-level view machine:
+//   - "menu" — non-invite homepage browse (SEO surface). Today's behavior.
+//   - "wizard" — invite checkout, or the invite-only gate for bare visitors
+//     who hit Checkout without an invite. Invite users see a 4-step
+//     wizard: slot → menu → details/payment → receipt.
+//   - "receipt" — post-confirm.
+type View = "menu" | "wizard" | "receipt";
+// Dine-in uses 1 | 2 | 3 (its stepper renders 4 as the unreachable "Done"
+// placeholder). Pickup uses the full 1 | 2 | 3 | 4 — its visible steps are
+// Date/Time → Menu → Info → Pay, plus receipt rendered outside the wizard.
+type WizardStep = 1 | 2 | 3 | 4;
+
+// Sautéo's public Messenger conversation. Used by the pre-invite gate, the
+// /dine-in marketing page, and the receipt's "send payment screenshot" CTA.
+const MESSENGER_URL = "https://www.facebook.com/messages/t/1119234891273865";
 
 const CART_KEY_DELIM = "::";
 
@@ -204,7 +218,13 @@ export function MenuPage({
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<MenuItem[]>([]);
   const [cart, setCart] = useState<Cart>({});
-  const [view, setView] = useState<View>("menu");
+  // Invite users go straight into the booking wizard (slot first). Bare
+  // visitors start on the menu so the homepage is still browseable.
+  const [view, setView] = useState<View>(invite ? "wizard" : "menu");
+  // Lifted out of the wizard so MenuPage can swap the page layout when the
+  // guest is on the menu step (which wants a fixed-height layout + sticky
+  // cart bar, unlike the other wizard steps).
+  const [wizardStep, setWizardStep] = useState<WizardStep>(1);
   const [receipt, setReceipt] = useState<ReceiptShape | null>(null);
   // Senior/PWD claims survive going back to the menu so the guest doesn't
   // have to re-enter IDs if they tweak the cart. Reset when an order is
@@ -369,9 +389,16 @@ export function MenuPage({
     setCart({});
     setClaimants([]);
     setView("receipt");
+    // Reset for the next booking — receipt view drives the user back to
+    // step 1 if they tap "Place another order".
+    setWizardStep(1);
   };
 
-  const isMenuView = view === "menu";
+  // The menu UI (whether the standalone browse or step 2 inside the wizard)
+  // keeps the existing fixed-height layout + sticky cart bar. All other
+  // views use the standard scrolling page layout.
+  const isMenuView =
+    view === "menu" || (view === "wizard" && wizardStep === 2);
 
   return (
     <div
@@ -398,10 +425,10 @@ export function MenuPage({
             addToCart={addToCart}
             total={total}
             cartCount={cartCount}
-            onCheckout={() => setView("payment")}
+            onCheckout={() => setView("wizard")}
           />
         )}
-        {view === "payment" &&
+        {view === "wizard" &&
           (effectiveChannel === "pickup" ? (
             <PickupReservationView
               invite={invite}
@@ -412,6 +439,20 @@ export function MenuPage({
               claimants={claimants}
               setClaimants={setClaimants}
               discountSummary={discountSummary}
+              step={wizardStep}
+              setStep={setWizardStep}
+              renderMenu={() => (
+                <MenuView
+                  categories={categories}
+                  items={items}
+                  cart={cart}
+                  updateQty={updateQty}
+                  addToCart={addToCart}
+                  total={total}
+                  cartCount={cartCount}
+                  onCheckout={() => setWizardStep(3)}
+                />
+              )}
               onBack={() => setView("menu")}
               onConfirm={placeOrder}
             />
@@ -425,6 +466,20 @@ export function MenuPage({
               claimants={claimants}
               setClaimants={setClaimants}
               discountSummary={discountSummary}
+              step={wizardStep}
+              setStep={setWizardStep}
+              renderMenu={() => (
+                <MenuView
+                  categories={categories}
+                  items={items}
+                  cart={cart}
+                  updateQty={updateQty}
+                  addToCart={addToCart}
+                  total={total}
+                  cartCount={cartCount}
+                  onCheckout={() => setWizardStep(3)}
+                />
+              )}
               onBack={() => setView("menu")}
               onConfirm={placeOrder}
             />
@@ -1789,6 +1844,9 @@ function DineInReservationView({
   claimants,
   setClaimants,
   discountSummary,
+  step,
+  setStep,
+  renderMenu,
   onBack,
   onConfirm,
 }: {
@@ -1800,6 +1858,18 @@ function DineInReservationView({
   claimants: Claimant[];
   setClaimants: React.Dispatch<React.SetStateAction<Claimant[]>>;
   discountSummary: DiscountSummary;
+  // Step state is lifted to MenuPage so the page layout can switch to the
+  // fixed-height menu layout when the guest is on step 2. Dine-in only uses
+  // 1 | 2 | 3; the 4th pill is the "Done" placeholder (receipt rendered
+  // outside this component). Typed as the full union for symmetry with the
+  // pickup wizard.
+  step: WizardStep;
+  setStep: React.Dispatch<React.SetStateAction<WizardStep>>;
+  // The menu UI as a render slot — MenuPage owns the cart/items/categories
+  // and just hands us a ready-to-render <MenuView/> for step 2.
+  renderMenu: () => React.ReactNode;
+  // Pre-invite gate's "Back to menu" affordance; not used by the 4-step
+  // wizard itself (each step has its own back nav inside the wizard).
   onBack: () => void;
   onConfirm: (args: ConfirmArgs) => void;
 }) {
@@ -1830,12 +1900,23 @@ function DineInReservationView({
   // payment card still renders gracefully without the image.
   const [qrImgError, setQrImgError] = useState(false);
 
-  // Wizard step. Matches the pickup checkout: each step fits one screen
-  // so the customer never has to scroll past a long form to pay.
-  //   1 — Your details (name/email/phone/group/notes)
-  //   2 — Slot (date + time picker)
-  //   3 — Discount + payment (senior toggle + Maya QR + proof) → Confirm
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  // Wizard step is owned by MenuPage (so the page layout can swap on step 2
+  // for the menu's fixed-height layout). The user-visible ordering is:
+  //   1 — Slot (date + time picker) + guests
+  //   2 — Menu items (renderMenu slot from MenuPage)
+  //   3 — Details + payment, internally split into two sub-steps:
+  //         "details" — name/email/phone/notes + senior/PWD claims
+  //         "pay"     — Maya QR + reference + Confirm
+  //   4 — Receipt (rendered outside this component by MenuPage)
+  const [paymentSubStep, setPaymentSubStep] = useState<"details" | "pay">(
+    "details",
+  );
+
+  // Whenever we land on step 3, restart at the details sub-step. Avoids the
+  // guest landing mid-form after they tap the stepper to jump back.
+  useEffect(() => {
+    if (step === 3) setPaymentSubStep("details");
+  }, [step]);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -1868,6 +1949,7 @@ function DineInReservationView({
       const { data, error } = await supabase
         .from("time_slots")
         .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
+        .eq("channel", "dine_in")
         .gte("slot_date", today)
         .eq("is_open", true)
         .order("slot_date")
@@ -1933,19 +2015,28 @@ function DineInReservationView({
   // Per-step validity gates. Continue is enabled only when the current
   // step's required fields are all valid. Final submit gate (`canSubmit`)
   // re-checks everything as a defense in depth.
-  const step1Valid = nameValid && emailValid && phoneValid && groupSizeValid;
-  const step2Valid = !!selectedSlot && slotCapacityOk;
-  const step3Valid = !claimFormOpen || allClaimsValid;
+  //   1 — Slot picked + capacity ok + valid group size
+  //   2 — Cart has at least one item
+  //   3a — Customer details valid
+  //   3b — Senior/PWD claim rows valid (or none open)
+  const step1Valid =
+    !!selectedSlot && slotCapacityOk && groupSizeValid;
+  const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
+  const step2Valid = cartCount > 0;
+  const step3aValid = nameValid && emailValid && phoneValid;
+  const step3bValid = !claimFormOpen || allClaimsValid;
 
   const canSubmit =
     !submitting &&
     cartUnitCount > 0 &&
     step1Valid &&
     step2Valid &&
-    step3Valid;
+    step3aValid &&
+    step3bValid;
 
   // Step transitions scroll the next panel into view so the user lands at
-  // the top of the new step instead of mid-page.
+  // the top of the new step instead of mid-page. Dine-in only ever passes
+  // 1 | 2 | 3 here — the 4th pill ("Done") is never click-reachable.
   const goToStep = (s: 1 | 2 | 3) => {
     setStep(s);
     if (typeof window !== "undefined") {
@@ -2181,7 +2272,7 @@ function DineInReservationView({
             pre-filled.
           </p>
           <a
-            href="https://www.facebook.com/messages/t/1119234891273865"
+            href={MESSENGER_URL}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-3 text-sm font-semibold hover:opacity-90 transition"
@@ -2193,15 +2284,20 @@ function DineInReservationView({
     );
   }
 
-  return (
-    <div className="max-w-2xl mx-auto">
-      <button
-        onClick={onBack}
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-6"
-      >
-        <ChevronLeft className="h-4 w-4" /> Back to menu
-      </button>
+  // Step 2 (menu) needs the wider, fixed-height layout to host MenuView's
+  // sticky cart bar; the other steps use the standard centered wizard
+  // wrapper. Page-level layout (h-screen vs min-h-screen) is also swapped
+  // by MenuPage via `isMenuView`.
+  const isMenuStep = step === 2;
 
+  return (
+    <div
+      className={
+        isMenuStep
+          ? "max-w-3xl mx-auto flex-1 flex flex-col min-h-0 w-full"
+          : "max-w-2xl mx-auto"
+      }
+    >
       <div className="flex items-center gap-2 mb-2">
         <Sparkles className="h-6 w-6 text-primary" />
         <h2 className="font-display text-3xl md:text-4xl">
@@ -2209,31 +2305,39 @@ function DineInReservationView({
         </h2>
       </div>
       <p className="text-muted-foreground mb-5">
-        Step {step} of 3 — your total is{" "}
+        Step {step} of 4 — your total is{" "}
         <span className="font-semibold text-primary">
           ₱{payable.toFixed(0)}
         </span>
         .
       </p>
 
-      {/* Progress indicator — three labelled pills with a connector bar.
+      {/* Progress indicator — four labelled pills with a connector bar.
           Completed steps are clickable so the user can jump back; future
-          steps are not (must satisfy current step first). Mirrors the
-          pickup checkout's progress nav. */}
+          steps are not (must satisfy current step first). Step 4 = receipt,
+          rendered by MenuPage; here it's a forward-looking placeholder. */}
       <div className="mb-6">
         <ol className="flex items-center gap-2">
           {([
-            { n: 1 as const, label: "Your details", done: step > 1 || step1Valid },
-            { n: 2 as const, label: "Slot", done: step > 2 || step2Valid },
-            { n: 3 as const, label: "Payment", done: false },
+            { n: 1 as const, label: "Slot", done: step > 1 },
+            { n: 2 as const, label: "Menu", done: step > 2 },
+            { n: 3 as const, label: "Pay", done: false },
+            { n: 4 as const, label: "Done", done: false },
           ]).map((s, i, arr) => {
             const active = step === s.n;
-            const reachable = s.n <= step;
+            // Step 4 (receipt) lives outside the wizard, so it's never
+            // reachable as a click target here.
+            const reachable = s.n !== 4 && s.n <= step;
             return (
               <li key={s.n} className="flex items-center gap-2 flex-1">
                 <button
                   type="button"
-                  onClick={() => reachable && goToStep(s.n)}
+                  onClick={() => {
+                    // `reachable` already excludes step 4 (the receipt),
+                    // so this guard is sufficient. goToStep accepts 1|2|3.
+                    if (!reachable) return;
+                    goToStep(s.n as 1 | 2 | 3);
+                  }}
                   disabled={!reachable}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition ${
                     active
@@ -2273,13 +2377,13 @@ function DineInReservationView({
         </ol>
       </div>
 
-      {/* ============ STEP 3 — Senior/PWD discount (rendered with payment) ============
+      {/* ============ STEP 3b — Senior/PWD discount (rendered with payment) ============
           Renders the toggle by default; when on,
           expands into N claim rows (one per cardholder). Each row collects
           the fields RA 9994 requires for the OR: full name, ID number,
           address, ID photo. The number of rows is capped at the number of
           cart units so we can't promise more discount than there's items. */}
-      {step === 3 && (
+      {step === 3 && paymentSubStep === "pay" && (
       <div className="bg-card border border-border rounded-2xl p-5 mb-8 shadow-sm">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -2385,10 +2489,12 @@ function DineInReservationView({
       </div>
       )}
 
-      {/* ============ STEP 2 — Slot picker ============
+      {/* ============ STEP 1 — Slot picker + party size ============
           Dates grouped, time chips per date. RLS lets anon read
-          time_slots; we filter to is_open=true and seats remaining. */}
-      {step === 2 && (
+          time_slots; we filter to is_open=true and seats remaining.
+          Guests count lives here so the capacity check has a real number
+          when the customer picks a slot. */}
+      {step === 1 && (
       <div className="bg-card border border-border rounded-2xl p-5 mb-8 shadow-sm">
         <div className="flex items-center gap-2 mb-1">
           <CalendarClock className="h-4 w-4 text-primary" />
@@ -2401,6 +2507,42 @@ function DineInReservationView({
             ? "Sautéo reserved this time for you — just confirm below."
             : "Only the dates and times Sautéo has opened are shown."}
         </p>
+
+        {/* Party size — compact stepper. Drives the slot capacity check
+            below so unavailable slots get correctly disabled. */}
+        <div className="mb-4 flex items-center justify-between bg-muted/40 border border-border rounded-xl px-4 py-2.5">
+          <div className="min-w-0">
+            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Guests
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              How many in your party (1–50)?
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              aria-label="Decrease guests"
+              onClick={() => setGroupSize((g) => Math.max(1, g - 1))}
+              disabled={groupSize <= 1}
+              className="h-9 w-9 rounded-full bg-background border border-border text-foreground hover:bg-muted transition disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              −
+            </button>
+            <span className="font-display text-lg font-semibold tabular-nums w-8 text-center">
+              {groupSize}
+            </span>
+            <button
+              type="button"
+              aria-label="Increase guests"
+              onClick={() => setGroupSize((g) => Math.min(50, g + 1))}
+              disabled={groupSize >= 50}
+              className="h-9 w-9 rounded-full bg-background border border-border text-foreground hover:bg-muted transition disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              +
+            </button>
+          </div>
+        </div>
 
         {isSlotLocked ? (
           slotsLoading ? (
@@ -2489,32 +2631,56 @@ function DineInReservationView({
       </div>
       )}
 
-      {/* Step 2 nav — Back to details / Continue to payment. */}
-      {step === 2 && (
+      {/* Step 1 nav — Continue to menu. (No Back: this is the first step.) */}
+      {step === 1 && (
         <div className="flex items-center gap-3 mb-8">
+          <button
+            type="button"
+            onClick={() => goToStep(2)}
+            disabled={!step1Valid}
+            className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-foreground text-background font-semibold hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Continue to menu
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* ============ STEP 2 — Menu items ============
+          Renders the standard MenuView inside the wizard. MenuView's
+          "Checkout" button advances to step 3 via the renderMenu slot
+          wired up by MenuPage. */}
+      {step === 2 && (
+        <div className="flex-1 flex flex-col min-h-0 -mx-4 sm:-mx-6">
+          {renderMenu()}
+        </div>
+      )}
+
+      {/* Step 2 nav — Back to slot. (Continue lives inside MenuView's
+          sticky cart bar.) */}
+      {step === 2 && (
+        <div className="flex items-center gap-3 mb-8 mt-3">
           <button
             type="button"
             onClick={() => goToStep(1)}
             className="inline-flex items-center justify-center gap-1.5 px-5 py-3 rounded-full bg-muted text-foreground text-sm font-semibold hover:bg-muted/70 transition"
           >
             <ChevronLeft className="h-4 w-4" />
-            Back
+            Back to slot
           </button>
-          <button
-            type="button"
-            onClick={() => goToStep(3)}
-            disabled={!step2Valid}
-            className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-foreground text-background font-semibold hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Continue to payment
-            <ChevronRight className="h-4 w-4" />
-          </button>
+          {!step2Valid && (
+            <p className="text-xs text-muted-foreground italic">
+              Add at least one item to continue.
+            </p>
+          )}
         </div>
       )}
 
-      {/* ============ STEP 1 — Your details ============
-          Customer info — fields mirror create_booking() server validation. */}
-      {step === 1 && (
+      {/* ============ STEP 3a — Your details ============
+          Customer info — fields mirror create_booking() server validation.
+          Group size is captured on step 1 alongside the slot picker, so
+          this card stays focused on contact info + notes. */}
+      {step === 3 && paymentSubStep === "details" && (
       <div className="bg-card border border-border rounded-2xl p-5 mb-8 shadow-sm">
         <div className="flex items-center gap-2 mb-4">
           <UserIcon className="h-4 w-4 text-primary" />
@@ -2559,22 +2725,6 @@ function DineInReservationView({
               className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
             />
           </div>
-          <div>
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              Group size
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={50}
-              value={groupSize}
-              onChange={(e) => {
-                const n = Number(e.target.value);
-                setGroupSize(Number.isFinite(n) ? Math.max(1, Math.min(50, Math.floor(n))) : 1);
-              }}
-              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
-            />
-          </div>
           <div className="sm:col-span-2">
             <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
               Notes (optional)
@@ -2594,27 +2744,35 @@ function DineInReservationView({
       </div>
       )}
 
-      {/* Step 1 nav — Continue to slot. */}
-      {step === 1 && (
+      {/* Step 3a nav — Back to menu / Continue to payment. */}
+      {step === 3 && paymentSubStep === "details" && (
         <div className="flex items-center gap-3 mb-8">
           <button
             type="button"
             onClick={() => goToStep(2)}
-            disabled={!step1Valid}
+            className="inline-flex items-center justify-center gap-1.5 px-5 py-3 rounded-full bg-muted text-foreground text-sm font-semibold hover:bg-muted/70 transition"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            Back to menu
+          </button>
+          <button
+            type="button"
+            onClick={() => setPaymentSubStep("pay")}
+            disabled={!step3aValid}
             className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-foreground text-background font-semibold hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Continue to slot
+            Continue to payment
             <ChevronRight className="h-4 w-4" />
           </button>
         </div>
       )}
 
-      {/* ============ STEP 3 — Payment ============
+      {/* ============ STEP 3b — Payment ============
           Sautéo Payment QR — same Maya / InstaPay account customers see
           on the pickup flow. The receipt's totals + payment-verification
           path are shared with pickup so the admin Orders dashboard sees
           dine-in payments through the same lens. */}
-      {step === 3 && (
+      {step === 3 && paymentSubStep === "pay" && (
       <>
       <div className="bg-charcoal text-cream rounded-2xl p-6 mb-6">
         <div className="flex flex-col md:flex-row md:items-center gap-4 md:gap-6">
@@ -2676,7 +2834,7 @@ function DineInReservationView({
       <div className="flex items-center gap-3">
         <button
           type="button"
-          onClick={() => goToStep(2)}
+          onClick={() => setPaymentSubStep("details")}
           disabled={submitting}
           className="inline-flex items-center justify-center gap-1.5 px-5 py-3 rounded-full bg-muted text-foreground text-sm font-semibold hover:bg-muted/70 transition disabled:opacity-50"
         >
@@ -2713,30 +2871,11 @@ function DineInReservationView({
 
    The Senior/PWD claim section is shared in shape with dine-in but lives
    in this component's body so the two flows stay independently editable
-   per Sautéo's request.                                                   */
-type PickupMode = "personal_pickup" | "lalamove" | "grab";
+   per Sautéo's request.
 
-const PICKUP_MODE_OPTIONS: Array<{
-  value: PickupMode;
-  label: string;
-  hint: string;
-}> = [
-  {
-    value: "personal_pickup",
-    label: "Personal pickup",
-    hint: "Pick up your order at Sautéo at the time below.",
-  },
-  {
-    value: "lalamove",
-    label: "Lalamove",
-    hint: "Send a Lalamove rider — we'll have the order ready.",
-  },
-  {
-    value: "grab",
-    label: "Grab",
-    hint: "Send a Grab rider — we'll have the order ready.",
-  },
-];
+   As of the 5-step rebuild, pickup is walk-in only — Lalamove / Grab
+   delivery modes were retired. Older bookings may still carry those
+   pickup_mode values; the admin Orders tab still labels them correctly. */
 
 function PickupReservationView({
   invite,
@@ -2747,6 +2886,9 @@ function PickupReservationView({
   claimants,
   setClaimants,
   discountSummary,
+  step,
+  setStep,
+  renderMenu,
   onBack,
   onConfirm,
 }: {
@@ -2758,13 +2900,21 @@ function PickupReservationView({
   claimants: Claimant[];
   setClaimants: React.Dispatch<React.SetStateAction<Claimant[]>>;
   discountSummary: DiscountSummary;
+  // Lifted to MenuPage so the page layout can swap on step 2 (menu).
+  step: WizardStep;
+  setStep: React.Dispatch<React.SetStateAction<WizardStep>>;
+  // MenuView slot for step 2 — MenuPage owns cart/items/categories.
+  renderMenu: () => React.ReactNode;
+  // Unused by pickup itself (no pre-invite gate — pickup is public per
+  // 20260524120000_open_pickup_bookings.sql) but kept for prop symmetry
+  // with the dine-in wizard.
   onBack: () => void;
   onConfirm: (args: ConfirmArgs) => void;
 }) {
   const claimFormOpen = claimants.length > 0;
   const payable = discountSummary.net;
 
-  // Slot picker state (same shape as dine-in).
+  // Slot picker state.
   const [slots, setSlots] = useState<AvailableSlot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(true);
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
@@ -2773,42 +2923,46 @@ function PickupReservationView({
   // read-only instead of the picker. Harmless when the invite isn't locked.
   const isSlotLocked = !!invite?.lockedSlotId;
 
-  // Customer info — prefilled from invite. `groupSize` is repurposed as
-  // "number of meals" for pickup but uses the same RPC field.
+  // Customer info — prefilled from invite when present. `groupSize` is
+  // repurposed as "number of meals" for pickup but uses the same RPC field.
   const [customerName, setCustomerName] = useState(invite?.customerName ?? "");
   const [customerEmail, setCustomerEmail] = useState(invite?.customerEmail ?? "");
   const [customerPhone, setCustomerPhone] = useState(invite?.customerPhone ?? "");
-  // Auto-derived from the cart. The field stays visible (the RPC still
-  // needs group_size) but the customer doesn't type it — every item they
-  // added bumps the count. Falls back to 1 when the cart is empty so the
-  // slot picker's capacity check has a sane minimum.
+  // Auto-derived from the cart. The RPC still needs group_size; the
+  // customer doesn't type it — every item they added bumps the count.
+  // Falls back to 1 when the cart is empty so the slot picker's capacity
+  // check has a sane minimum on step 1 (cart is built on step 2).
   const numberOfMeals = Math.max(cartUnitCount, 1);
   const [notes, setNotes] = useState("");
 
-  // Pickup-specific state.
-  const [pickupMode, setPickupMode] = useState<PickupMode>("personal_pickup");
-  const [courierAddress, setCourierAddress] = useState("");
   // QR display fallback — flips to true when /maya-qr.png 404s.
   const [qrImgError, setQrImgError] = useState(false);
 
-  // Wizard step. The pickup checkout was a single long-scroll page; users
-  // bailed before reaching payment. Three steps each fit on one screen:
-  //   1 — Your details (name/email/phone/meals/notes)
-  //   2 — Pickup setup (window + mode + courier address if applicable)
-  //   3 — Discount + Maya QR → Confirm (payment verified off-platform)
-  // Each step has its own validity check; Continue is disabled until valid.
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  // Wizard step is owned by MenuPage (so the page layout can swap on
+  // step 2 for the menu's fixed-height layout). Visible ordering:
+  //   1 — Window + pickup mode + courier address (the "logistics" step)
+  //   2 — Menu items (renderMenu slot from MenuPage)
+  //   3 — Details + payment (sub-step "details" → "pay")
+  //   4 — QR payment + senior/PWD claims + Confirm
+  //   5 — Receipt (rendered outside this component by MenuPage)
+  // No sub-steps — each visible step has its own stepper pill.
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // Load upcoming, open slots.
+  // Pickup windows are restricted to 3 fixed times per day; admin opens
+  // them in the Slots tab. Anything else gets filtered out of the picker.
+  const PICKUP_SLOT_TIMES = ["16:00:00", "18:00:00", "20:00:00"] as const;
+
+  // Load upcoming, open slots. Filtered to the 3 pickup times so non-pickup
+  // (dine-in) slots and any off-schedule rows don't leak into the picker.
   useEffect(() => {
     (async () => {
       setSlotsLoading(true);
-      // Slot-locked invite: fetch only the locked slot (real row, so the
-      // capacity guard still applies if it filled up after the invite was
-      // sent) and select it immediately. No picker is shown.
+      // Slot-locked invite: fetch only the locked slot by id and trust it
+      // (the time filter doesn't apply — the admin issued this specific
+      // slot to this guest). The capacity guard still applies if the slot
+      // filled up after the invite was sent.
       if (invite?.lockedSlotId) {
         const { data, error } = await supabase
           .from("time_slots")
@@ -2829,8 +2983,10 @@ function PickupReservationView({
       const { data, error } = await supabase
         .from("time_slots")
         .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
+        .eq("channel", "pickup")
         .gte("slot_date", today)
         .eq("is_open", true)
+        .in("slot_time", PICKUP_SLOT_TIMES as unknown as string[])
         .order("slot_date")
         .order("slot_time");
       if (error) {
@@ -2845,6 +3001,8 @@ function PickupReservationView({
       }
       setSlotsLoading(false);
     })();
+    // PICKUP_SLOT_TIMES is module-stable; only the locked-id changes the query
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invite?.lockedSlotId]);
 
   const slotsByDate = useMemo(() => {
@@ -2869,10 +3027,6 @@ function PickupReservationView({
     !selectedSlot ||
     selectedSlot.seats_taken + numberOfMeals <= selectedSlot.capacity;
 
-  // Courier requires an address; personal pickup doesn't.
-  const courierAddressOk =
-    pickupMode === "personal_pickup" || courierAddress.trim().length >= 4;
-
   const allClaimsValid = useMemo(
     () =>
       claimants.every(
@@ -2888,17 +3042,26 @@ function PickupReservationView({
 
   // Per-step validity gates. Continue is enabled only when the current
   // step's required fields are all valid. Final submit gate (`canSubmit`)
-  // re-checks everything as a defense in depth.
-  const step1Valid = nameValid && emailValid && phoneValid && mealsValid;
-  const step2Valid = !!selectedSlot && slotCapacityOk && courierAddressOk;
-  const step3Valid = !claimFormOpen || allClaimsValid;
+  // re-checks everything as a defense in depth. Five visible steps:
+  //   1 — Slot picked + capacity ok (meal count is 1 here until cart is
+  //       built on step 2; capacity tightens once the cart fills).
+  //   2 — Cart has at least one item.
+  //   3 — Customer details valid.
+  //   4 — Senior/PWD claim rows valid (or none open).
+  //   5 — Receipt (rendered outside the wizard).
+  const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
+  const step1Valid = !!selectedSlot && slotCapacityOk;
+  const step2Valid = cartCount > 0 && mealsValid;
+  const step3Valid = nameValid && emailValid && phoneValid;
+  const step4Valid = !claimFormOpen || allClaimsValid;
 
   const canSubmit =
     !submitting &&
     cartUnitCount > 0 &&
     step1Valid &&
     step2Valid &&
-    step3Valid;
+    step3Valid &&
+    step4Valid;
 
   // Trim claimants to cart size (same guard as dine-in).
   useEffect(() => {
@@ -3034,9 +3197,9 @@ function PickupReservationView({
       customer_phone: customerPhone.trim(),
       group_size: numberOfMeals,
       notes: combinedNotes || null,
-      pickup_mode: pickupMode,
-      courier_address:
-        pickupMode === "personal_pickup" ? null : courierAddress.trim(),
+      // Walk-in pickup only — Lalamove/Grab modes were retired with the
+      // 5-step pickup flow. Older bookings may still have other values.
+      pickup_mode: "personal_pickup",
       items: Object.entries(qtyByMenuItemId).map(
         ([menu_item_id, quantity]) => ({ menu_item_id, quantity }),
       ),
@@ -3066,9 +3229,8 @@ function PickupReservationView({
       slot: selectedSlot,
       customerName: customerName.trim(),
       groupSize: numberOfMeals,
-      pickupMode,
-      courierAddress:
-        pickupMode === "personal_pickup" ? null : courierAddress.trim(),
+      pickupMode: "personal_pickup",
+      courierAddress: null,
       paymentReference: null,
     });
   };
@@ -3076,26 +3238,29 @@ function PickupReservationView({
   // Pickup is open to the public — no invite gate. Anyone hitting
   // /pick-up can place an order; create_booking() no longer requires
   // a token for pickup channels.
-  const isCourier = pickupMode === "lalamove" || pickupMode === "grab";
 
   // Step transitions scroll the next panel into view so the user lands at
-  // the top of the new step instead of mid-page.
-  const goToStep = (s: 1 | 2 | 3) => {
+  // the top of the new step instead of mid-page. Visible range is 1..4;
+  // pill 5 ("Done") on the stepper is the receipt placeholder.
+  const goToStep = (s: 1 | 2 | 3 | 4) => {
     setStep(s);
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
   };
 
-  return (
-    <div className="max-w-2xl mx-auto">
-      <button
-        onClick={onBack}
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-6"
-      >
-        <ChevronLeft className="h-4 w-4" /> Back to menu
-      </button>
+  // Step 2 (menu) needs the wider, fixed-height layout to host MenuView's
+  // sticky cart bar; the other steps use the standard centered wrapper.
+  const isMenuStep = step === 2;
 
+  return (
+    <div
+      className={
+        isMenuStep
+          ? "max-w-3xl mx-auto flex-1 flex flex-col min-h-0 w-full"
+          : "max-w-2xl mx-auto"
+      }
+    >
       <div className="flex items-center gap-2 mb-2">
         <ShoppingBag className="h-6 w-6 text-primary" />
         <h2 className="font-display text-3xl md:text-4xl">
@@ -3103,30 +3268,36 @@ function PickupReservationView({
         </h2>
       </div>
       <p className="text-muted-foreground mb-5">
-        Step {step} of 3 — your total is{" "}
+        Step {step} of 5 — your total is{" "}
         <span className="font-semibold text-primary">
           ₱{payable.toFixed(0)}
         </span>
         .
       </p>
 
-      {/* Progress indicator — three labelled pills with a connector bar.
-          Completed steps are clickable so the user can jump back; future
-          steps are not (must satisfy current step first). */}
+      {/* Progress indicator — five labelled pills. Step 5 (receipt) lives
+          outside the wizard so it's never click-reachable here. */}
       <div className="mb-6">
         <ol className="flex items-center gap-2">
           {([
-            { n: 1 as const, label: "Your details", done: step > 1 || step1Valid },
-            { n: 2 as const, label: "Pickup", done: step > 2 || step2Valid },
-            { n: 3 as const, label: "Payment", done: false },
+            { n: 1 as const, label: "Date & time", done: step > 1 },
+            { n: 2 as const, label: "Menu", done: step > 2 },
+            { n: 3 as const, label: "Info", done: step > 3 },
+            { n: 4 as const, label: "Pay", done: false },
+            { n: 5 as const, label: "Done", done: false },
           ]).map((s, i, arr) => {
             const active = step === s.n;
-            const reachable = s.n <= step;
+            const reachable = s.n !== 5 && s.n <= step;
             return (
               <li key={s.n} className="flex items-center gap-2 flex-1">
                 <button
                   type="button"
-                  onClick={() => reachable && goToStep(s.n)}
+                  onClick={() => {
+                    // `reachable` already excludes step 5 (the receipt),
+                    // so this guard is sufficient. goToStep accepts 1|2|3|4.
+                    if (!reachable) return;
+                    goToStep(s.n as 1 | 2 | 3 | 4);
+                  }}
                   disabled={!reachable}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition ${
                     active
@@ -3166,8 +3337,10 @@ function PickupReservationView({
         </ol>
       </div>
 
-      {/* ============ STEP 1 — Your details ============ */}
-      {step === 1 && (
+      {/* ============ STEP 3 — Customer information ============
+          Customer contact info. Meal count is auto-derived from the cart
+          (built in step 2), so it lives only on the receipt summary. */}
+      {step === 3 && (
         <>
           <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
             <div className="flex items-center gap-2 mb-4">
@@ -3213,24 +3386,6 @@ function PickupReservationView({
                   className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
                 />
               </div>
-              <div>
-                <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                  Number of meals
-                </label>
-                <input
-                  type="number"
-                  value={numberOfMeals}
-                  readOnly
-                  aria-describedby="meal-count-hint"
-                  className="w-full bg-muted/40 border border-border rounded-lg px-3 py-2 text-sm tabular-nums cursor-not-allowed focus:outline-none"
-                />
-                <div
-                  id="meal-count-hint"
-                  className="mt-1 text-[10px] text-muted-foreground"
-                >
-                  Matches your order — adjust items in the cart to change.
-                </div>
-              </div>
               <div className="sm:col-span-2">
                 <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
                   Notes (optional)
@@ -3249,20 +3404,30 @@ function PickupReservationView({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => goToStep(2)}
-            disabled={!step1Valid}
-            className="w-full inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Continue
-            <ChevronRight className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => goToStep(2)}
+              className="inline-flex items-center justify-center gap-1.5 px-5 py-3 rounded-full bg-muted text-foreground text-sm font-semibold hover:bg-muted/70 transition"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Back to menu
+            </button>
+            <button
+              type="button"
+              onClick={() => goToStep(4)}
+              disabled={!step3Valid}
+              className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-foreground text-background font-semibold hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Continue to payment
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
         </>
       )}
 
-      {/* ============ STEP 2 — Pickup setup ============ */}
-      {step === 2 && (
+      {/* ============ STEP 1 — Date & time only ============ */}
+      {step === 1 && (
         <>
           {/* Slot picker */}
           <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
@@ -3364,86 +3529,52 @@ function PickupReservationView({
 
             {selectedSlot && !slotCapacityOk && (
               <div className="mt-3 text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-2.5">
-                That window only has {selectedSlot.capacity - selectedSlot.seats_taken} seats left — pick fewer meals (step 1) or another slot.
+                That window only has {selectedSlot.capacity - selectedSlot.seats_taken} meal{selectedSlot.capacity - selectedSlot.seats_taken === 1 ? "" : "s"} left — order fewer items or pick another window.
               </div>
             )}
           </div>
 
-          {/* Pickup mode selector */}
-          <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
-            <div className="flex items-center gap-2 mb-3">
-              <Truck className="h-4 w-4 text-primary" />
-              <h3 className="font-display text-lg font-semibold">
-                How would you like to get it?
-              </h3>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {PICKUP_MODE_OPTIONS.map((opt) => {
-                const active = pickupMode === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => setPickupMode(opt.value)}
-                    aria-pressed={active}
-                    className={`text-left rounded-xl border p-3 transition ${
-                      active
-                        ? "border-foreground bg-muted"
-                        : "border-border bg-background hover:bg-muted/50"
-                    }`}
-                  >
-                    <div className="font-semibold text-sm">{opt.label}</div>
-                    <div className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
-                      {opt.hint}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {isCourier && (
-              <div className="mt-4">
-                <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                  Drop-off address *
-                </label>
-                <input
-                  type="text"
-                  value={courierAddress}
-                  onChange={(e) => setCourierAddress(e.target.value)}
-                  placeholder="Street, Barangay, City"
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
-                />
-                <p className="text-[10px] text-muted-foreground mt-1">
-                  Required for {pickupMode === "lalamove" ? "Lalamove" : "Grab"}.
-                </p>
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => goToStep(1)}
-              className="inline-flex items-center justify-center gap-1.5 px-5 py-3 rounded-full bg-muted text-foreground text-sm font-semibold hover:bg-muted/70 transition"
-            >
-              <ChevronLeft className="h-4 w-4" />
-              Back
-            </button>
-            <button
-              type="button"
-              onClick={() => goToStep(3)}
-              disabled={!step2Valid}
-              className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Continue to payment
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => goToStep(2)}
+            disabled={!step1Valid}
+            className="w-full inline-flex items-center justify-center gap-2 px-6 py-4 rounded-full bg-primary text-primary-foreground font-medium hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Continue to menu
+            <ChevronRight className="h-4 w-4" />
+          </button>
         </>
       )}
 
-      {/* ============ STEP 3 — Discount + Payment ============ */}
-      {step === 3 && (
+      {/* ============ STEP 2 — Menu items ============
+          Renders MenuView inside the wizard via the renderMenu slot wired
+          up by MenuPage. "Checkout" advances to step 3. */}
+      {step === 2 && (
+        <div className="flex-1 flex flex-col min-h-0 -mx-4 sm:-mx-6">
+          {renderMenu()}
+        </div>
+      )}
+
+      {step === 2 && (
+        <div className="flex items-center gap-3 mb-8 mt-3">
+          <button
+            type="button"
+            onClick={() => goToStep(1)}
+            className="inline-flex items-center justify-center gap-1.5 px-5 py-3 rounded-full bg-muted text-foreground text-sm font-semibold hover:bg-muted/70 transition"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            Back to window
+          </button>
+          {!step2Valid && (
+            <p className="text-xs text-muted-foreground italic">
+              Add at least one item to continue.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ============ STEP 4 — Discount + Payment + Confirm ============ */}
+      {step === 4 && (
         <>
           {/* Senior / PWD discount section. */}
           <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
@@ -3608,7 +3739,7 @@ function PickupReservationView({
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => goToStep(2)}
+              onClick={() => goToStep(3)}
               disabled={submitting}
               className="inline-flex items-center justify-center gap-1.5 px-5 py-3 rounded-full bg-muted text-foreground text-sm font-semibold hover:bg-muted/70 transition disabled:opacity-50"
             >
@@ -3945,6 +4076,11 @@ function ReceiptView({
         <div className="h-20 w-20 rounded-full bg-mustard/30 mx-auto flex items-center justify-center mb-6">
           <CheckCircle2 className="h-10 w-10 text-primary" />
         </div>
+        {/* Closes out the 4-step booking flow: Slot → Menu → Pay → Done. */}
+        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary/10 text-primary text-[10px] font-semibold uppercase tracking-wider mb-3">
+          <CheckCircle2 className="h-3 w-3" />
+          Step 4 of 4 — Confirmed
+        </div>
         <h2 className="font-display text-4xl mb-2">Order received!</h2>
         <p className="text-muted-foreground">Thanks. Here's your receipt.</p>
       </div>
@@ -4141,15 +4277,21 @@ function ReceiptView({
           <span className="font-semibold">
             Please send your Proof of Payment to Messenger
           </span>{" "}
-          so the Sautéo team can confirm your order.
+          so the Sautéo team can confirm your order. Include the reference
+          code{" "}
+          <span className="font-mono text-primary font-semibold">
+            {receipt.ref}
+          </span>{" "}
+          when you message us.
         </p>
         <a
-          href="https://www.facebook.com/messages/t/1119234891273865"
+          href={MESSENGER_URL}
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:opacity-90 transition"
         >
-          Message us on Messenger
+          <MessageCircle className="h-4 w-4" />
+          Chat on Messenger
         </a>
       </div>
 

@@ -1,9 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { CalendarClock, ChevronRight, MessageCircle, Users } from "lucide-react";
+import { CalendarClock, MessageCircle, Users } from "lucide-react";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
-import { MenuPage } from "./index";
+
+// Public-facing dine-in marketing page. Booking is invite-only — guests
+// reach the actual reservation flow only via /dine-in/<token>, which the
+// admin issues from the Waitlist tab after the Messenger waitlist clears.
+// This page therefore funnels visitors straight to Messenger; it does NOT
+// render the menu or any checkout UI of its own.
+const MESSENGER_URL = "https://www.facebook.com/messages/t/1119234891273865";
 
 export const Route = createFileRoute("/dine-in")({
   component: DineInPage,
@@ -20,12 +25,6 @@ export const Route = createFileRoute("/dine-in")({
 });
 
 function DineInPage() {
-  const [started, setStarted] = useState(false);
-  if (started) return <MenuPage forcedChannel="dine_in" />;
-  return <DineInIntro onStart={() => setStarted(true)} />;
-}
-
-function DineInIntro({ onStart }: { onStart: () => void }) {
   return (
     <div className="min-h-screen flex flex-col">
       <Header />
@@ -62,12 +61,15 @@ function DineInIntro({ onStart }: { onStart: () => void }) {
         </div>
 
         <div className="flex justify-center">
-          <button
-            onClick={onStart}
+          <a
+            href={MESSENGER_URL}
+            target="_blank"
+            rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm md:text-base font-semibold hover:opacity-90 transition"
           >
-            View menu & book <ChevronRight className="h-4 w-4" />
-          </button>
+            <MessageCircle className="h-4 w-4" />
+            Chat on Messenger
+          </a>
         </div>
       </main>
       <Footer />

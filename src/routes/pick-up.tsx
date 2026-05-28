@@ -13,7 +13,7 @@ export const Route = createFileRoute("/pick-up")({
       {
         name: "description",
         content:
-          "Order Sautéo for pickup. Choose personal pickup or have it delivered by Lalamove or Grab. Pay ahead with Maya QR.",
+          "Order Sautéo for pickup. Choose your time, pick from our menu, and pay with Maya QR.",
       },
     ],
   }),
@@ -38,8 +38,8 @@ function PickupIntro({ onStart }: { onStart: () => void }) {
             Order Sautéo for pickup
           </h1>
           <p className="text-muted-foreground text-base md:text-lg max-w-xl mx-auto">
-            Get your favorite dishes to go. Pick it up yourself, or have it
-            delivered by Lalamove or Grab.
+            Get your favorite dishes to go. Pick your window (4 PM, 6 PM, or
+            8 PM), choose from the menu, and pay with Maya QR.
           </p>
         </div>
 

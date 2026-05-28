@@ -2668,6 +2668,9 @@ function VariantRowList({
 /* ============ Slots Manager ============ */
 type TimeSlot = {
   id: string;
+  // Added by 20260530120000_time_slots_channel.sql — separates dine-in
+  // and pickup slot pools so each channel tracks its own capacity.
+  channel: "dine_in" | "pickup";
   slot_date: string;
   slot_time: string;
   capacity: number;
@@ -2675,10 +2678,19 @@ type TimeSlot = {
   is_open: boolean;
 };
 
+// Time-of-day strings the public pickup flow actually shows to customers
+// (`PickupReservationView.PICKUP_SLOT_TIMES` mirrors this). Admin is free
+// to create pickup slots at other times, but the SlotsTab flags them with
+// a warning chip since customers won't see them.
+const PICKUP_VISIBLE_TIMES = ["16:00:00", "18:00:00", "20:00:00"] as const;
+
 function SlotsTab() {
   const [slots, setSlots] = useState<TimeSlot[]>([]);
   const [loading, setLoading] = useState(true);
-  const [creatorOpen, setCreatorOpen] = useState(false);
+  // null = closed; "dine_in"/"pickup" = creator dialog open with that channel.
+  const [creatorOpenFor, setCreatorOpenFor] = useState<
+    "dine_in" | "pickup" | null
+  >(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -2702,6 +2714,17 @@ function SlotsTab() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  // Split into dine-in / pickup pools. Each section renders independently
+  // with its own grouping, header counts, and creator action.
+  const dineInSlots = useMemo(
+    () => slots.filter((s) => s.channel === "dine_in"),
+    [slots],
+  );
+  const pickupSlots = useMemo(
+    () => slots.filter((s) => s.channel === "pickup"),
+    [slots],
+  );
+
   const toggle = async (id: string, isOpen: boolean) => {
     setSlots(prev => prev.map(s => (s.id === id ? { ...s, is_open: !isOpen } : s)));
     await supabase.from("time_slots").update({ is_open: !isOpen }).eq("id", id);
@@ -2720,50 +2743,112 @@ function SlotsTab() {
     await supabase.from("time_slots").delete().eq("id", s.id);
   };
 
+  return (
+    <div className="space-y-10">
+      <ChannelSlotsSection
+        channel="dine_in"
+        title="Dine-in slots"
+        emptyHint="No dine-in slots yet — open windows so guests can reserve a table."
+        slots={dineInSlots}
+        loading={loading}
+        onNewClick={() => setCreatorOpenFor("dine_in")}
+        onToggle={toggle}
+        onUpdateCap={updateCap}
+        onDelete={deleteSlot}
+      />
+
+      <ChannelSlotsSection
+        channel="pickup"
+        title="Pickup slots"
+        emptyHint="No pickup slots yet — open 4 PM / 6 PM / 8 PM windows for guests to order."
+        slots={pickupSlots}
+        loading={loading}
+        onNewClick={() => setCreatorOpenFor("pickup")}
+        onToggle={toggle}
+        onUpdateCap={updateCap}
+        onDelete={deleteSlot}
+      />
+
+      {creatorOpenFor && (
+        <SlotCreator
+          channel={creatorOpenFor}
+          existing={slots}
+          onClose={() => setCreatorOpenFor(null)}
+          onCreated={() => { setCreatorOpenFor(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// One channel's slate of upcoming slots — header (count + "New slots"
+// button), empty state, or the same date-grouped grid the tab had before
+// the split. Lives next to SlotsTab so the two channel pools render
+// independently within one tab.
+function ChannelSlotsSection({
+  channel,
+  title,
+  emptyHint,
+  slots,
+  loading,
+  onNewClick,
+  onToggle,
+  onUpdateCap,
+  onDelete,
+}: {
+  channel: "dine_in" | "pickup";
+  title: string;
+  emptyHint: string;
+  slots: TimeSlot[];
+  loading: boolean;
+  onNewClick: () => void;
+  onToggle: (id: string, isOpen: boolean) => void;
+  onUpdateCap: (id: string, cap: number) => void;
+  onDelete: (s: TimeSlot) => void;
+}) {
   const grouped = useMemo(() => {
     const g: Record<string, TimeSlot[]> = {};
     slots.forEach(s => { (g[s.slot_date] ||= []).push(s); });
     return g;
   }, [slots]);
-
+  const dayCount = Object.keys(grouped).length;
+  const newLabel = channel === "dine_in" ? "New dine-in slots" : "New pickup slots";
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h2 className="font-display text-xl">Upcoming slots</h2>
+          <h2 className="font-display text-xl">{title}</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             {loading
               ? "Loading…"
-              : `${slots.length} slot${slots.length === 1 ? "" : "s"} across ${Object.keys(grouped).length} day${Object.keys(grouped).length === 1 ? "" : "s"}.`}
+              : `${slots.length} slot${slots.length === 1 ? "" : "s"} across ${dayCount} day${dayCount === 1 ? "" : "s"}.`}
           </p>
         </div>
         <button
-          onClick={() => setCreatorOpen(true)}
+          onClick={onNewClick}
           className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition"
         >
           <CalendarPlus className="h-4 w-4" />
-          New slots
+          {newLabel}
         </button>
       </div>
 
-      {/* Body */}
       {loading ? (
         <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">
           Loading slots…
         </div>
-      ) : Object.keys(grouped).length === 0 ? (
+      ) : dayCount === 0 ? (
         <div className="bg-card border border-border rounded-2xl shadow-sm">
           <EmptyState
             icon={CalendarClock}
-            title="No upcoming slots"
-            hint="Create slots so guests can book a table."
+            title={`No upcoming ${channel === "dine_in" ? "dine-in" : "pickup"} slots`}
+            hint={emptyHint}
             action={
               <button
-                onClick={() => setCreatorOpen(true)}
+                onClick={onNewClick}
                 className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition"
               >
-                <CalendarPlus className="h-4 w-4" /> Create slots
+                <CalendarPlus className="h-4 w-4" /> {newLabel}
               </button>
             }
           />
@@ -2785,23 +2870,15 @@ function SlotsTab() {
                   <SlotCard
                     key={s.id}
                     slot={s}
-                    onToggle={() => toggle(s.id, s.is_open)}
-                    onUpdateCap={cap => updateCap(s.id, cap)}
-                    onDelete={() => deleteSlot(s)}
+                    onToggle={() => onToggle(s.id, s.is_open)}
+                    onUpdateCap={cap => onUpdateCap(s.id, cap)}
+                    onDelete={() => onDelete(s)}
                   />
                 ))}
               </div>
             </div>
           );
         })
-      )}
-
-      {creatorOpen && (
-        <SlotCreator
-          existing={slots}
-          onClose={() => setCreatorOpen(false)}
-          onCreated={() => { setCreatorOpen(false); load(); }}
-        />
       )}
     </div>
   );
@@ -2816,6 +2893,12 @@ function SlotCard({
   onDelete: () => void;
 }) {
   const full = slot.seats_taken >= slot.capacity;
+  // Pickup customers only see slots at the 3 fixed times (4/6/8 PM).
+  // Admin can technically create other times but the customer-facing
+  // booking flow filters them out — flag the card so admin notices.
+  const offSchedulePickup =
+    slot.channel === "pickup" &&
+    !(PICKUP_VISIBLE_TIMES as readonly string[]).includes(slot.slot_time);
   return (
     <div
       className={`relative p-3 rounded-xl border transition ${
@@ -2841,6 +2924,15 @@ function SlotCard({
         {slot.seats_taken}/{slot.capacity}
         {full && slot.is_open && <span className="ml-1 font-medium text-charcoal">· full</span>}
       </div>
+      {offSchedulePickup && (
+        <div
+          title="Pickup customers only see 4 PM, 6 PM, and 8 PM slots."
+          className="mt-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-destructive/10 text-destructive text-[9px] font-medium leading-none"
+        >
+          <AlertCircle className="h-2.5 w-2.5" />
+          Hidden from customers
+        </div>
+      )}
       <input
         type="number"
         min={0}
@@ -2863,15 +2955,26 @@ function SlotCard({
 }
 
 function SlotCreator({
-  existing, onClose, onCreated,
-}: { existing: TimeSlot[]; onClose: () => void; onCreated: () => void }) {
+  channel,
+  existing,
+  onClose,
+  onCreated,
+}: {
+  channel: "dine_in" | "pickup";
+  existing: TimeSlot[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
   const todayStr = format(new Date(), "yyyy-MM-dd");
   const [mode, setMode] = useState<"single" | "range">("single");
   const [date, setDate] = useState(todayStr);
   const [endDate, setEndDate] = useState(todayStr);
-  const [startTime, setStartTime] = useState("18:00");
-  const [endTime, setEndTime] = useState("20:00");
-  const [interval, setInterval] = useState("30");
+  // Defaults differ per channel — pickup pre-fills the 4 PM / 6 PM / 8 PM
+  // schedule so the most common case is one click away. Admin can override.
+  const isPickup = channel === "pickup";
+  const [startTime, setStartTime] = useState(isPickup ? "16:00" : "18:00");
+  const [endTime, setEndTime] = useState(isPickup ? "20:00" : "20:00");
+  const [interval, setInterval] = useState(isPickup ? "120" : "30");
   const [capacity, setCapacity] = useState("10");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -2913,14 +3016,21 @@ function SlotCreator({
       times.push(`${h}:${m}:00`);
     }
 
-    const existingKey = new Set(existing.map(s => `${s.slot_date}|${s.slot_time}`));
+    // Dedup against existing slots in the SAME channel — an 18:00 dine-in
+    // slot shouldn't block an 18:00 pickup slot creation, since they're
+    // independent rows after the channel split.
+    const existingKey = new Set(
+      existing
+        .filter((s) => s.channel === channel)
+        .map((s) => `${s.slot_date}|${s.slot_time}`),
+    );
     const rows: { slot_date: string; slot_time: string }[] = [];
     for (const d of dates) for (const t of times) {
       const key = `${d}|${t}`;
       if (!existingKey.has(key)) rows.push({ slot_date: d, slot_time: t });
     }
     return rows;
-  }, [mode, date, endDate, startTime, endTime, interval, capacity, existing]);
+  }, [mode, date, endDate, startTime, endTime, interval, capacity, existing, channel]);
 
   const skipped = useMemo(() => {
     // How many would-be slots got deduped against existing ones.
@@ -2954,7 +3064,13 @@ function SlotCreator({
 
     setBusy(true);
     try {
-      const rows = planned.map(r => ({ slot_date: r.slot_date, slot_time: r.slot_time, capacity: cap, is_open: true }));
+      const rows = planned.map(r => ({
+        slot_date: r.slot_date,
+        slot_time: r.slot_time,
+        capacity: cap,
+        is_open: true,
+        channel,
+      }));
       const { error } = await supabase.from("time_slots").insert(rows);
       if (error) throw new Error(error.message);
       onCreated();
@@ -2974,7 +3090,9 @@ function SlotCreator({
       <div className="absolute inset-0 bg-black/40" onClick={busy ? undefined : onClose} />
       <div className="relative z-10 w-full sm:max-w-xl sm:my-8 mx-0 sm:mx-auto bg-card sm:rounded-2xl shadow-2xl border border-border max-h-[100vh] sm:max-h-[90vh] flex flex-col overflow-hidden">
         <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-b border-border">
-          <h3 className="font-display text-lg">New slots</h3>
+          <h3 className="font-display text-lg">
+            {channel === "dine_in" ? "New dine-in slots" : "New pickup slots"}
+          </h3>
           <button
             type="button"
             onClick={onClose}
@@ -3052,6 +3170,11 @@ function SlotCreator({
             {skipped > 0 && (
               <div className="mt-1 text-muted-foreground">
                 {skipped} duplicate{skipped === 1 ? "" : "s"} will be skipped.
+              </div>
+            )}
+            {isPickup && (
+              <div className="mt-1 text-muted-foreground">
+                Pickup customers only see 4 PM, 6 PM, and 8 PM slots — anything else will be hidden from the booking flow.
               </div>
             )}
             {planned.length > 0 && (
@@ -3163,12 +3286,16 @@ function WaitlistTab() {
   const load = useCallback(async () => {
     setLoading(true);
 
-    // Open, upcoming slots — used to resolve a requested date+time to a real
-    // slot for bulk invites. Same query shape as the public booking page.
+    // Open, upcoming dine-in slots — used to resolve a requested date+time
+    // to a real slot for bulk invites. Waitlist invites are always issued
+    // for the dine-in channel (sendBulkInvites below sets channel:"dine_in"),
+    // so we filter to dine-in here to avoid grabbing a pickup slot that
+    // happens to share the same date+time.
     const today = new Date().toISOString().slice(0, 10);
     const { data: slotData } = await supabase
       .from("time_slots")
-      .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
+      .select("id, channel, slot_date, slot_time, capacity, seats_taken, is_open")
+      .eq("channel", "dine_in")
       .gte("slot_date", today)
       .eq("is_open", true)
       .order("slot_date")
