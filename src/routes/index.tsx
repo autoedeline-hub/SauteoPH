@@ -1534,6 +1534,20 @@ function CartPreviewSheet({
                       <Plus className="h-3.5 w-3.5" />
                     </button>
                   </div>
+
+                  {/* One-tap remove — pulls qty straight to 0 so the line
+                      drops out instead of having to spam the minus button.
+                      Same control on desktop (CartSidePanel) so the gesture
+                      transfers between breakpoints. */}
+                  <button
+                    type="button"
+                    onClick={() => updateQty(li.key, -li.qty)}
+                    aria-label={`Remove ${li.name}`}
+                    title="Remove from order"
+                    className="h-8 w-8 rounded-full border border-border bg-background inline-flex items-center justify-center text-muted-foreground hover:text-destructive hover:border-destructive/40 transition shrink-0"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
                 </li>
               ))}
             </ul>
@@ -1648,15 +1662,19 @@ function CartSidePanel({
                   className="flex items-start justify-between gap-3"
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium text-foreground leading-snug line-clamp-2">
+                    {/* Item name kept at `text-xs` (smaller than the
+                        section heading) so the typical menu names fit on
+                        one line in a 320px panel; falls back to a 2-line
+                        clamp for the long set-menu titles. */}
+                    <div className="text-xs font-semibold text-foreground leading-snug line-clamp-2">
                       {li.name}
                     </div>
                     {li.variantName && (
-                      <div className="text-xs text-muted-foreground mt-0.5 leading-tight line-clamp-1">
+                      <div className="text-[11px] text-muted-foreground mt-0.5 leading-tight line-clamp-1">
                         {li.variantName}
                       </div>
                     )}
-                    <div className="text-xs text-muted-foreground mt-0.5">
+                    <div className="text-[11px] text-muted-foreground mt-0.5">
                       ₱{li.price.toFixed(0)}
                     </div>
                   </div>
@@ -1664,25 +1682,41 @@ function CartSidePanel({
                     <div className="text-sm font-semibold text-foreground tabular-nums">
                       ₱{(li.price * li.qty).toFixed(0)}
                     </div>
-                    <div className="inline-flex items-center rounded-full border border-border bg-background">
+                    {/* Stepper first, trash on the right — matches the
+                        mobile cart sheet so the gesture is the same on
+                        either breakpoint. One-tap remove pulls qty
+                        straight to 0; the existing updateQty drops the
+                        key when q <= 0. */}
+                    <div className="inline-flex items-center gap-1.5">
+                      <div className="inline-flex items-center rounded-full border border-border bg-background">
+                        <button
+                          type="button"
+                          onClick={() => updateQty(li.key, -1)}
+                          aria-label={`Decrease ${li.name}`}
+                          className="h-6 w-6 flex items-center justify-center text-muted-foreground hover:text-foreground transition"
+                        >
+                          <Minus className="h-3 w-3" />
+                        </button>
+                        <span className="w-5 text-center text-xs font-semibold tabular-nums">
+                          {li.qty}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => updateQty(li.key, 1)}
+                          aria-label={`Increase ${li.name}`}
+                          className="h-6 w-6 flex items-center justify-center text-muted-foreground hover:text-foreground transition"
+                        >
+                          <Plus className="h-3 w-3" />
+                        </button>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => updateQty(li.key, -1)}
-                        aria-label={`Decrease ${li.name}`}
-                        className="h-6 w-6 flex items-center justify-center text-muted-foreground hover:text-foreground transition"
+                        onClick={() => updateQty(li.key, -li.qty)}
+                        aria-label={`Remove ${li.name}`}
+                        title="Remove from order"
+                        className="h-6 w-6 rounded-full border border-border bg-background inline-flex items-center justify-center text-muted-foreground hover:text-destructive hover:border-destructive/40 transition"
                       >
-                        <Minus className="h-3 w-3" />
-                      </button>
-                      <span className="w-5 text-center text-xs font-semibold tabular-nums">
-                        {li.qty}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => updateQty(li.key, 1)}
-                        aria-label={`Increase ${li.name}`}
-                        className="h-6 w-6 flex items-center justify-center text-muted-foreground hover:text-foreground transition"
-                      >
-                        <Plus className="h-3 w-3" />
+                        <Trash2 className="h-3 w-3" />
                       </button>
                     </div>
                   </div>
