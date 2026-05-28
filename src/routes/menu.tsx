@@ -39,6 +39,8 @@ type MenuItem = {
   image_url: string | null;
   category_id: string;
   active: boolean;
+  available_dine_in: boolean;
+  available_pickup: boolean;
   sort_order: number;
   variants: MenuVariant[] | null;
 };
@@ -65,7 +67,13 @@ function MenuViewerPage() {
         .order("sort_order"),
     ]);
     setCats((c ?? []) as MenuCategory[]);
-    setItems(((i ?? []) as unknown) as MenuItem[]);
+    setItems(
+      (((i ?? []) as unknown) as MenuItem[]).map((item) => ({
+        ...item,
+        available_dine_in: item.available_dine_in ?? true,
+        available_pickup: item.available_pickup ?? true,
+      })),
+    );
     setLoading(false);
   }, []);
   useEffect(() => {

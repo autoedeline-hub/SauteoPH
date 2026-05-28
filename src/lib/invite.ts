@@ -18,6 +18,12 @@ export type LoadedInvite = {
   customerPhone: string | null;
   groupSize: number | null;
   expiresAt: string; // ISO 8601
+  // When the invite was issued for a specific time slot (admin "Waitlist" tab
+  // bulk-invite), the booking page renders that slot read-only instead of a
+  // picker and create_booking enforces it. Null for un-locked invites.
+  lockedSlotId: string | null;
+  lockedSlotDate: string | null; // YYYY-MM-DD
+  lockedSlotTime: string | null; // HH:MM:SS
 };
 
 export const InviteContext = createContext<LoadedInvite | null>(null);
@@ -45,6 +51,7 @@ export function inviteLinkPath(
 //   'invite_already_used'     P0003
 //   'invite_expired'          P0004
 //   'invite_channel_mismatch' P0005
+//   'invite_slot_mismatch'    P0006
 // Falls through to the raw message for anything we didn't anticipate so
 // debugging stays possible.
 export function friendlyBookingError(message: string | undefined): string {
@@ -63,6 +70,9 @@ export function friendlyBookingError(message: string | undefined): string {
   }
   if (m.includes("invite_channel_mismatch")) {
     return "This invite was issued for a different booking type. Please message us on Messenger.";
+  }
+  if (m.includes("invite_slot_mismatch")) {
+    return "This invite is locked to a specific time slot — please use the link as we sent it, or message us on Messenger.";
   }
   if (m.includes("time slot is full")) {
     return "That time slot just filled up — please pick another.";

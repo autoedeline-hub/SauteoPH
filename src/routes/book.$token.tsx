@@ -28,7 +28,8 @@ function BookRouteComponent() {
 type LookupResult =
   | { status: "valid"; channel: "dine_in" | "pickup"; customer_name: string;
       customer_email: string | null; customer_phone: string | null;
-      group_size: number | null; expires_at: string }
+      group_size: number | null; expires_at: string;
+      slot_id: string | null; slot_date: string | null; slot_time: string | null }
   | { status: "invalid" }
   | { status: "used" }
   | { status: "expired" };
@@ -70,6 +71,9 @@ export function BookByInvite({ token }: { token: string }) {
           customerPhone: result.customer_phone,
           groupSize: result.group_size,
           expiresAt: result.expires_at,
+          lockedSlotId: result.slot_id,
+          lockedSlotDate: result.slot_date,
+          lockedSlotTime: result.slot_time,
         },
       });
     })();

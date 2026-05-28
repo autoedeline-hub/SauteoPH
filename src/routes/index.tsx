@@ -63,6 +63,8 @@ type MenuItem = {
   price: number;
   image_url: string | null;
   active: boolean;
+  available_dine_in: boolean;
+  available_pickup: boolean;
   variants: MenuItemVariant[] | null;
 };
 // Cart key scheme:
@@ -214,15 +216,32 @@ export function MenuPage({
     (async () => {
       const [{ data: c }, { data: i }] = await Promise.all([
         supabase.from("menu_categories").select("*").order("sort_order"),
-        supabase.from("menu_items").select("*").eq("active", true).order("sort_order"),
+        supabase
+          .from("menu_items")
+          .select("*")
+          .eq("active", true)
+          .eq(
+            effectiveChannel === "pickup"
+              ? "available_pickup"
+              : "available_dine_in",
+            true,
+          )
+          .order("sort_order"),
       ]);
       setCategories((c ?? []) as Category[]);
       // Cast via unknown because the generated Supabase types don't yet
       // include the recently-added `variants` jsonb column. The runtime row
       // shape matches MenuItem.
-      setItems(((i ?? []) as unknown as MenuItem[]).map((it) => ({ ...it, price: Number(it.price) })));
+      setItems(
+        ((i ?? []) as unknown as MenuItem[]).map((it) => ({
+          ...it,
+          price: Number(it.price),
+          available_dine_in: it.available_dine_in ?? true,
+          available_pickup: it.available_pickup ?? true,
+        })),
+      );
     })();
-  }, []);
+  }, [effectiveChannel]);
 
   // Expand the cart into per-unit rows so the discount engine can pick the
   // N highest-priced units for N claimants. Each (cart key × qty) becomes
@@ -1792,6 +1811,11 @@ function DineInReservationView({
   const [slotsLoading, setSlotsLoading] = useState(true);
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
 
+  // When the invite was issued for a specific slot (admin "Waitlist" bulk
+  // invite), the customer doesn't pick — we show that one slot read-only and
+  // create_booking enforces it server-side.
+  const isSlotLocked = !!invite?.lockedSlotId;
+
   // Customer info — prefilled from the invite when available so the customer
   // only has to pick a slot. Fields stay editable (in case the waitlist had
   // typos) BUT we surface a hint that the name/email/phone match what
@@ -1821,6 +1845,25 @@ function DineInReservationView({
   useEffect(() => {
     (async () => {
       setSlotsLoading(true);
+      // Slot-locked invite: fetch only the locked slot (real row, so the
+      // capacity guard still applies if it filled up after the invite was
+      // sent) and select it immediately. No picker is shown.
+      if (invite?.lockedSlotId) {
+        const { data, error } = await supabase
+          .from("time_slots")
+          .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
+          .eq("id", invite.lockedSlotId)
+          .maybeSingle();
+        if (error || !data) {
+          console.warn("[slots] locked slot load failed:", error);
+          setSlots([]);
+        } else {
+          setSlots([data as AvailableSlot]);
+          setSelectedSlotId((data as AvailableSlot).id);
+        }
+        setSlotsLoading(false);
+        return;
+      }
       const today = new Date().toISOString().slice(0, 10);
       const { data, error } = await supabase
         .from("time_slots")
@@ -1841,7 +1884,7 @@ function DineInReservationView({
       }
       setSlotsLoading(false);
     })();
-  }, []);
+  }, [invite?.lockedSlotId]);
 
   const slotsByDate = useMemo(() => {
     const m: Record<string, AvailableSlot[]> = {};
@@ -2349,13 +2392,39 @@ function DineInReservationView({
       <div className="bg-card border border-border rounded-2xl p-5 mb-8 shadow-sm">
         <div className="flex items-center gap-2 mb-1">
           <CalendarClock className="h-4 w-4 text-primary" />
-          <h3 className="font-display text-lg font-semibold">Pick your slot</h3>
+          <h3 className="font-display text-lg font-semibold">
+            {isSlotLocked ? "Your reserved slot" : "Pick your slot"}
+          </h3>
         </div>
         <p className="text-xs text-muted-foreground mb-4">
-          Only the dates and times Sautéo has opened are shown.
+          {isSlotLocked
+            ? "Sautéo reserved this time for you — just confirm below."
+            : "Only the dates and times Sautéo has opened are shown."}
         </p>
 
-        {slotsLoading ? (
+        {isSlotLocked ? (
+          slotsLoading ? (
+            <div className="text-sm text-muted-foreground">Loading your slot…</div>
+          ) : selectedSlot ? (
+            <div className="rounded-xl border border-foreground bg-foreground/5 p-4">
+              <div className="font-display text-lg font-semibold">
+                {new Date(selectedSlot.slot_date + "T00:00:00").toLocaleDateString(undefined, {
+                  weekday: "long",
+                  month: "long",
+                  day: "numeric",
+                  year: "numeric",
+                })}
+              </div>
+              <div className="text-sm text-muted-foreground mt-0.5">
+                {formatSlotTime12h(selectedSlot.slot_time)}
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground bg-muted/40 border border-border rounded-lg p-3">
+              We couldn't load your reserved slot — please reply on Messenger and we'll help you out.
+            </div>
+          )
+        ) : slotsLoading ? (
           <div className="text-sm text-muted-foreground">Loading slots…</div>
         ) : slots.length === 0 ? (
           <div className="text-sm text-muted-foreground bg-muted/40 border border-border rounded-lg p-3">
@@ -2700,6 +2769,10 @@ function PickupReservationView({
   const [slotsLoading, setSlotsLoading] = useState(true);
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
 
+  // Slot-locked invite (admin bulk invite) — show the one locked slot
+  // read-only instead of the picker. Harmless when the invite isn't locked.
+  const isSlotLocked = !!invite?.lockedSlotId;
+
   // Customer info — prefilled from invite. `groupSize` is repurposed as
   // "number of meals" for pickup but uses the same RPC field.
   const [customerName, setCustomerName] = useState(invite?.customerName ?? "");
@@ -2733,6 +2806,25 @@ function PickupReservationView({
   useEffect(() => {
     (async () => {
       setSlotsLoading(true);
+      // Slot-locked invite: fetch only the locked slot (real row, so the
+      // capacity guard still applies if it filled up after the invite was
+      // sent) and select it immediately. No picker is shown.
+      if (invite?.lockedSlotId) {
+        const { data, error } = await supabase
+          .from("time_slots")
+          .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
+          .eq("id", invite.lockedSlotId)
+          .maybeSingle();
+        if (error || !data) {
+          console.warn("[slots] locked slot load failed:", error);
+          setSlots([]);
+        } else {
+          setSlots([data as AvailableSlot]);
+          setSelectedSlotId((data as AvailableSlot).id);
+        }
+        setSlotsLoading(false);
+        return;
+      }
       const today = new Date().toISOString().slice(0, 10);
       const { data, error } = await supabase
         .from("time_slots")
@@ -2753,7 +2845,7 @@ function PickupReservationView({
       }
       setSlotsLoading(false);
     })();
-  }, []);
+  }, [invite?.lockedSlotId]);
 
   const slotsByDate = useMemo(() => {
     const m: Record<string, AvailableSlot[]> = {};
@@ -3177,14 +3269,38 @@ function PickupReservationView({
             <div className="flex items-center gap-2 mb-1">
               <CalendarClock className="h-4 w-4 text-primary" />
               <h3 className="font-display text-lg font-semibold">
-                Pick your pickup window
+                {isSlotLocked ? "Your reserved window" : "Pick your pickup window"}
               </h3>
             </div>
             <p className="text-xs text-muted-foreground mb-4">
-              When you'd like the food ready.
+              {isSlotLocked
+                ? "Sautéo reserved this window for you — just confirm below."
+                : "When you'd like the food ready."}
             </p>
 
-            {slotsLoading ? (
+            {isSlotLocked ? (
+              slotsLoading ? (
+                <div className="text-sm text-muted-foreground">Loading your window…</div>
+              ) : selectedSlot ? (
+                <div className="rounded-xl border border-foreground bg-foreground/5 p-4">
+                  <div className="font-display text-lg font-semibold">
+                    {new Date(selectedSlot.slot_date + "T00:00:00").toLocaleDateString(undefined, {
+                      weekday: "long",
+                      month: "long",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </div>
+                  <div className="text-sm text-muted-foreground mt-0.5">
+                    {formatSlotTime12h(selectedSlot.slot_time)}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground bg-muted/40 border border-border rounded-lg p-3">
+                  We couldn't load your reserved window — reply on Messenger and we'll help you out.
+                </div>
+              )
+            ) : slotsLoading ? (
               <div className="text-sm text-muted-foreground">Loading slots…</div>
             ) : slots.length === 0 ? (
               <div className="text-sm text-muted-foreground bg-muted/40 border border-border rounded-lg p-3">
