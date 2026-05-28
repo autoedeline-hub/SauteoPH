@@ -5631,7 +5631,7 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
 
       {/* Main 5-column kanban — horizontal scroll on narrow screens. */}
       <div className="overflow-x-auto -mx-2 px-2">
-        <div className="grid grid-cols-5 gap-3 min-w-[1000px]">
+        <div className="grid grid-cols-[repeat(5,minmax(240px,1fr))] gap-3 min-w-[1260px]">
           {mainStages.map((stage) => (
             <PipelineColumn
               key={stage}
@@ -5725,7 +5725,7 @@ function PipelineColumn({
   const headerTone =
     tone === "success" ? "text-primary" : "text-foreground";
   return (
-    <div className="bg-muted/30 border border-border rounded-2xl flex flex-col min-h-[200px]">
+    <div className="bg-muted/30 border border-border rounded-2xl flex flex-col min-h-[200px] min-w-0">
       <div className="px-3 py-2.5 border-b border-border flex items-center justify-between gap-2">
         <div className={`text-[11px] uppercase tracking-wider font-semibold ${headerTone}`}>
           {label}
