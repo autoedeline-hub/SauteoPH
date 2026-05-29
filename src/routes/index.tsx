@@ -42,7 +42,7 @@ import {
   useInvite,
   type LoadedInvite,
 } from "@/lib/invite";
-import { formatSlotTime12h } from "@/lib/utils";
+import { formatSlotTime12h, localToday } from "@/lib/utils";
 
 // Bare `/` redirects to the read-only /menu page. The booking flows
 // (/dine-in, /pick-up) stay reachable only via the tokenized invite
@@ -233,6 +233,98 @@ type AvailableSlot = {
   seats_taken: number;
 };
 
+// Shared slot loader for both wizards. Two paths:
+//   1. lockedSlotId set (admin Waitlist bulk invite, or any future
+//      pickup-locked invite) — fetch that one slot by id and select it
+//      immediately. The customer doesn't get a picker.
+//   2. otherwise — fetch all open, upcoming `channel` slots from today
+//      forward, optionally filtered to a small set of valid times
+//      (pickup's 4/6/8 PM rule).
+// Returns the same shape both wizards built inline.
+function useReservationSlots({
+  channel,
+  lockedSlotId,
+  filterTimes,
+}: {
+  channel: "dine_in" | "pickup";
+  lockedSlotId: string | null | undefined;
+  filterTimes?: readonly string[];
+}) {
+  const [slots, setSlots] = useState<AvailableSlot[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(true);
+  const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      setSlotsLoading(true);
+      if (lockedSlotId) {
+        const { data, error } = await supabase
+          .from("time_slots")
+          .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
+          .eq("id", lockedSlotId)
+          .maybeSingle();
+        if (error || !data) {
+          console.warn("[slots] locked slot load failed:", error);
+          setSlots([]);
+        } else {
+          setSlots([data as AvailableSlot]);
+          setSelectedSlotId((data as AvailableSlot).id);
+        }
+        setSlotsLoading(false);
+        return;
+      }
+      const today = localToday();
+      let query = supabase
+        .from("time_slots")
+        .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
+        .eq("channel", channel)
+        .gte("slot_date", today)
+        .eq("is_open", true);
+      if (filterTimes && filterTimes.length > 0) {
+        query = query.in("slot_time", filterTimes as unknown as string[]);
+      }
+      const { data, error } = await query
+        .order("slot_date")
+        .order("slot_time");
+      if (error) {
+        console.warn("[slots] load failed:", error);
+        setSlots([]);
+      } else {
+        setSlots(
+          ((data ?? []) as AvailableSlot[]).filter(
+            (s) => s.seats_taken < s.capacity,
+          ),
+        );
+      }
+      setSlotsLoading(false);
+    })();
+    // `filterTimes` is a module-stable readonly tuple in every current
+    // caller, so it isn't in deps. `channel` changes never happen at
+    // runtime today either, but keep it tracked for future flexibility.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel, lockedSlotId]);
+
+  const slotsByDate = useMemo(() => {
+    const m: Record<string, AvailableSlot[]> = {};
+    for (const s of slots) (m[s.slot_date] ||= []).push(s);
+    return m;
+  }, [slots]);
+
+  const selectedSlot = useMemo(
+    () => slots.find((s) => s.id === selectedSlotId) ?? null,
+    [slots, selectedSlotId],
+  );
+
+  return {
+    slots,
+    slotsLoading,
+    selectedSlotId,
+    setSelectedSlotId,
+    slotsByDate,
+    selectedSlot,
+  };
+}
+
 // Per-claimant ID-extraction status. Shared by ReservationView (state)
 // and ClaimantCard (rendered hint), so it lives at module scope.
 type AutoFillStatus =
@@ -241,6 +333,139 @@ type AutoFillStatus =
   | { state: "filled"; confidence: number }
   | { state: "off" }
   | { state: "failed" };
+
+// 4-pill (dine-in) / 5-pill (pickup) progress indicator at the top of each
+// wizard. The trailing pill (receipt placeholder) is never click-reachable;
+// every other pill is reachable iff it's <= `current` (i.e. you can jump
+// back but not skip ahead). `done` is a presentational flag — callers
+// decide whether earlier steps are visually checked off.
+function WizardStepper({
+  steps,
+  current,
+  onJump,
+}: {
+  steps: ReadonlyArray<{ n: number; label: string; done: boolean }>;
+  current: number;
+  onJump: (n: number) => void;
+}) {
+  const finalN = steps[steps.length - 1]?.n;
+  return (
+    <div className="mb-6">
+      <ol className="flex items-center gap-2">
+        {steps.map((s, i, arr) => {
+          const active = current === s.n;
+          const reachable = s.n !== finalN && s.n <= current;
+          return (
+            <li key={s.n} className="flex items-center gap-2 flex-1">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!reachable) return;
+                  onJump(s.n);
+                }}
+                disabled={!reachable}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition ${
+                  active
+                    ? "bg-foreground text-background"
+                    : s.done
+                      ? "bg-primary/10 text-primary"
+                      : "bg-muted text-muted-foreground"
+                } disabled:cursor-not-allowed`}
+              >
+                <span
+                  className={`h-5 w-5 rounded-full inline-flex items-center justify-center text-[10px] tabular-nums ${
+                    active
+                      ? "bg-background/20 text-background"
+                      : s.done
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background text-muted-foreground"
+                  }`}
+                >
+                  {s.done && !active ? <Check className="h-3 w-3" /> : s.n}
+                </span>
+                <span className="hidden sm:inline">{s.label}</span>
+              </button>
+              {i < arr.length - 1 && (
+                <span
+                  className={`flex-1 h-px ${
+                    arr[i + 1].done || current > s.n ? "bg-primary/30" : "bg-border"
+                  }`}
+                />
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+// Subtotal / SC-PWD discount / Amount-due rows, shared across the desktop
+// cart sidebar, the mobile cart sheet, both wizard "Order summary" cards,
+// and the receipt. Variants differ in copy density and typography only;
+// everything reads from `DiscountSummary` so a copy or rate change lands
+// in one place. Renders nothing when there's no discount and `showTotal`
+// is false (compact sheet, where the total lives in the header).
+function DiscountBreakdown({
+  summary,
+  variant,
+  showTotal = true,
+  totalLabelDiscount = "Amount due",
+  totalLabelNone = "Total",
+}: {
+  summary: DiscountSummary;
+  variant: "panel" | "wizard" | "receipt";
+  // The mobile cart sheet hides its total in the header, so it asks for
+  // rows only. Everything else renders the total inline.
+  showTotal?: boolean;
+  totalLabelDiscount?: string;
+  totalLabelNone?: string;
+}) {
+  const hasDiscount = summary.discount > 0;
+  if (!hasDiscount && !showTotal) return null;
+
+  const lineCls =
+    variant === "wizard" ? "text-sm" : variant === "receipt" ? "text-xs" : "text-[11px]";
+  const discountLabel =
+    variant === "wizard"
+      ? `Senior / PWD discount (${Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% × ${summary.effectiveClaimants})`
+      : variant === "receipt"
+        ? "Total discount"
+        : "SC/PWD discount";
+
+  return (
+    <>
+      {hasDiscount && (
+        <>
+          <div className={`flex justify-between ${lineCls} text-muted-foreground`}>
+            <span>Subtotal</span>
+            <span className="tabular-nums">₱{summary.gross.toFixed(0)}</span>
+          </div>
+          <div className={`flex justify-between ${lineCls} text-primary`}>
+            <span>{discountLabel}</span>
+            <span className="tabular-nums">−₱{summary.discount.toFixed(0)}</span>
+          </div>
+        </>
+      )}
+      {showTotal && variant === "panel" && (
+        <div className="flex items-baseline justify-between pt-1.5">
+          <span className="text-xs uppercase tracking-wider text-muted-foreground">
+            {hasDiscount ? totalLabelDiscount : totalLabelNone}
+          </span>
+          <span className="font-display text-2xl font-semibold tabular-nums">
+            ₱{summary.net.toFixed(0)}
+          </span>
+        </div>
+      )}
+      {showTotal && variant === "wizard" && (
+        <div className="flex justify-between font-semibold text-foreground pt-1">
+          <span>{hasDiscount ? totalLabelDiscount : totalLabelNone}</span>
+          <span className="tabular-nums">₱{summary.net.toFixed(0)}</span>
+        </div>
+      )}
+    </>
+  );
+}
 
 // Exported for the /book/$token, /dine-in, and /pick-up routes, which
 // render this same page either wrapped in InviteContext.Provider (token
@@ -886,9 +1111,7 @@ function MenuView({
         claims={claims}
         items={items}
         updateQty={updateQty}
-        total={total}
-        net={discountSummary.net}
-        discount={discountSummary.discount}
+        summary={discountSummary}
         cartCount={cartCount}
         onCheckout={onCheckout}
       />
@@ -918,8 +1141,7 @@ function MenuView({
         items={items}
         updateQty={handleUpdateQty}
         total={discountSummary.net}
-        discount={discountSummary.discount}
-        gross={total}
+        summary={discountSummary}
         onCheckout={() => {
           setSheetOpen(false);
           onCheckout();
@@ -1113,9 +1335,14 @@ function VariantSelectModal({
       setQty(1);
       setShowAdded(false);
       // Fresh modal session — reset the claim form so a stale ID from a
-      // prior item doesn't bleed across opens.
+      // prior item doesn't bleed across opens. Revoke the previous photo
+      // URL inside the functional updater so we always free the *current*
+      // blob (a `[]`-dep unmount effect would close over the initial null).
       setClaimKind("regular");
-      setClaim(makeBlankClaimant("senior"));
+      setClaim((prev) => {
+        if (prev.idPhotoUrl) URL.revokeObjectURL(prev.idPhotoUrl);
+        return makeBlankClaimant("senior");
+      });
       setClaimAutoFill({ state: "idle" });
       claimExtractAbort.current?.abort();
       claimExtractAbort.current = null;
@@ -1124,6 +1351,16 @@ function VariantSelectModal({
     const t = window.setTimeout(() => {
       setMounted(false);
       setDisplayed(null);
+      // Modal fully unmounting — revoke any photo URL still held and
+      // abort any in-flight OCR. Lives inside the updater so the latest
+      // claim's blob is freed (vs an `[]`-dep effect that captures the
+      // initial-render null).
+      setClaim((prev) => {
+        if (prev.idPhotoUrl) URL.revokeObjectURL(prev.idPhotoUrl);
+        return prev.idPhotoUrl ? { ...prev, idPhotoUrl: null, idPhotoFile: null } : prev;
+      });
+      claimExtractAbort.current?.abort();
+      claimExtractAbort.current = null;
     }, 200);
     return () => window.clearTimeout(t);
   }, [item]);
@@ -1141,19 +1378,14 @@ function VariantSelectModal({
         return makeBlankClaimant("senior");
       });
       setClaimAutoFill({ state: "idle" });
-      setQty(1);
     } else {
       setClaim((prev) => ({ ...prev, kind: claimKind }));
-      setQty(1);
     }
+    // Claimed adds are always qty=1 (one ID = one unit, RA 9994). Setting
+    // it here covers both directions so qty never gets out of sync with
+    // the disabled stepper.
+    setQty(1);
   }, [claimKind]);
-
-  // Revoke any held object URL when the modal fully unmounts.
-  useEffect(() => () => {
-    if (claim.idPhotoUrl) URL.revokeObjectURL(claim.idPhotoUrl);
-    claimExtractAbort.current?.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const onClaimPhotoChange = (file: File | null) => {
     setClaim((prev) => {
@@ -1672,8 +1904,7 @@ function CartPreviewSheet({
   items,
   updateQty,
   total,
-  gross,
-  discount,
+  summary,
   onCheckout,
 }: {
   open: boolean;
@@ -1684,11 +1915,9 @@ function CartPreviewSheet({
   updateQty: (key: string, delta: number) => void;
   // Net (after discount). Headline number shown on the sheet header.
   total: number;
-  // Sum of sticker prices. Drives the strikethrough comparison when any
-  // line is claimed; equal to `total` when the cart has no claims.
-  gross: number;
-  // Total peso amount discounted across all claimed lines.
-  discount: number;
+  // Full discount summary (gross/discount/net + claim attribution). Drives
+  // the footer Subtotal/Discount rows via <DiscountBreakdown />.
+  summary: DiscountSummary;
   onCheckout: () => void;
 }) {
   // Keep the sheet mounted for one render after close so the slide-down animates.
@@ -1896,25 +2125,14 @@ function CartPreviewSheet({
           )}
         </div>
 
-        {/* Footer */}
-        <div className="px-5 pt-4 pb-5 border-t border-border/60 shrink-0 bg-card">
-          {discount > 0 && (
-            <div className="mb-3 flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">Subtotal</span>
-              <span className="tabular-nums">₱{gross.toFixed(0)}</span>
-            </div>
-          )}
-          {discount > 0 && (
-            <div className="mb-3 flex items-center justify-between text-xs text-primary">
-              <span>RA 9994 / RA 10754 discount</span>
-              <span className="tabular-nums">−₱{discount.toFixed(0)}</span>
-            </div>
-          )}
+        {/* Footer — discount rows only (total lives in the header). */}
+        <div className="px-5 pt-4 pb-5 border-t border-border/60 shrink-0 bg-card space-y-1.5">
+          <DiscountBreakdown summary={summary} variant="panel" showTotal={false} />
           <button
             type="button"
             onClick={onCheckout}
             disabled={lineItems.length === 0}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-foreground text-background px-5 py-3 text-sm font-semibold hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+            className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-foreground text-background px-5 py-3 text-sm font-semibold hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed mt-2"
           >
             Proceed to checkout
             <ChevronRight className="h-4 w-4" />
@@ -1931,9 +2149,7 @@ function CartSidePanel({
   claims,
   items,
   updateQty,
-  total,
-  net,
-  discount,
+  summary,
   cartCount,
   onCheckout,
 }: {
@@ -1941,13 +2157,9 @@ function CartSidePanel({
   claims: ClaimsByCartKey;
   items: MenuItem[];
   updateQty: (key: string, delta: number) => void;
-  // Gross (sticker price) total. Used for the strikethrough comparison
-  // when any line is claimed; equal to `net` when there are no claims.
-  total: number;
-  // Net (after discount). Headline number shown in the footer.
-  net: number;
-  // Total peso amount discounted across all claimed lines.
-  discount: number;
+  // Full discount summary (gross/discount/net + claim attribution). The
+  // footer's Subtotal/Discount/Total are rendered via <DiscountBreakdown />.
+  summary: DiscountSummary;
   cartCount: number;
   onCheckout: () => void;
 }) {
@@ -2126,32 +2338,13 @@ function CartSidePanel({
         )}
 
         {/* Footer */}
-        <div className="px-5 pt-4 pb-5 border-t border-border/60 shrink-0 bg-card">
-          {discount > 0 && (
-            <div className="flex items-center justify-between mb-1.5 text-[11px]">
-              <span className="text-muted-foreground">Subtotal</span>
-              <span className="tabular-nums">₱{total.toFixed(0)}</span>
-            </div>
-          )}
-          {discount > 0 && (
-            <div className="flex items-center justify-between mb-2 text-[11px] text-primary">
-              <span>SC/PWD discount</span>
-              <span className="tabular-nums">−₱{discount.toFixed(0)}</span>
-            </div>
-          )}
-          <div className="flex items-baseline justify-between mb-4">
-            <span className="text-xs uppercase tracking-wider text-muted-foreground">
-              {discount > 0 ? "Amount due" : "Total"}
-            </span>
-            <span className="font-display text-2xl font-semibold tabular-nums">
-              ₱{net.toFixed(0)}
-            </span>
-          </div>
+        <div className="px-5 pt-4 pb-5 border-t border-border/60 shrink-0 bg-card space-y-1.5">
+          <DiscountBreakdown summary={summary} variant="panel" />
           <button
             type="button"
             onClick={onCheckout}
             disabled={isEmpty}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-foreground text-background px-5 py-3 text-sm font-semibold hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+            className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-foreground text-background px-5 py-3 text-sm font-semibold hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed mt-3"
           >
             Review order
             <ChevronRight className="h-4 w-4" />
@@ -2320,10 +2513,19 @@ function DineInReservationView({
   const payable = discountSummary.net;
   const hasDiscount = discountSummary.discount > 0;
 
-  // Slot picker state.
-  const [slots, setSlots] = useState<AvailableSlot[]>([]);
-  const [slotsLoading, setSlotsLoading] = useState(true);
-  const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
+  // Slot picker state — delegated to the shared hook so dine-in + pickup
+  // load slots through the same code path.
+  const {
+    slots,
+    slotsLoading,
+    selectedSlotId,
+    setSelectedSlotId,
+    slotsByDate,
+    selectedSlot,
+  } = useReservationSlots({
+    channel: "dine_in",
+    lockedSlotId: invite?.lockedSlotId,
+  });
 
   // When the invite was issued for a specific slot (admin "Waitlist" bulk
   // invite), the customer doesn't pick — we show that one slot read-only and
@@ -2364,64 +2566,6 @@ function DineInReservationView({
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-
-  // Load upcoming, open slots with remaining capacity. The RLS policy on
-  // time_slots permits public SELECT, so this works with the anon key.
-  useEffect(() => {
-    (async () => {
-      setSlotsLoading(true);
-      // Slot-locked invite: fetch only the locked slot (real row, so the
-      // capacity guard still applies if it filled up after the invite was
-      // sent) and select it immediately. No picker is shown.
-      if (invite?.lockedSlotId) {
-        const { data, error } = await supabase
-          .from("time_slots")
-          .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
-          .eq("id", invite.lockedSlotId)
-          .maybeSingle();
-        if (error || !data) {
-          console.warn("[slots] locked slot load failed:", error);
-          setSlots([]);
-        } else {
-          setSlots([data as AvailableSlot]);
-          setSelectedSlotId((data as AvailableSlot).id);
-        }
-        setSlotsLoading(false);
-        return;
-      }
-      const today = new Date().toISOString().slice(0, 10);
-      const { data, error } = await supabase
-        .from("time_slots")
-        .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
-        .eq("channel", "dine_in")
-        .gte("slot_date", today)
-        .eq("is_open", true)
-        .order("slot_date")
-        .order("slot_time");
-      if (error) {
-        console.warn("[slots] load failed:", error);
-        setSlots([]);
-      } else {
-        setSlots(
-          ((data ?? []) as AvailableSlot[]).filter(
-            (s) => s.seats_taken < s.capacity,
-          ),
-        );
-      }
-      setSlotsLoading(false);
-    })();
-  }, [invite?.lockedSlotId]);
-
-  const slotsByDate = useMemo(() => {
-    const m: Record<string, AvailableSlot[]> = {};
-    for (const s of slots) (m[s.slot_date] ||= []).push(s);
-    return m;
-  }, [slots]);
-
-  const selectedSlot = useMemo(
-    () => slots.find((s) => s.id === selectedSlotId) ?? null,
-    [slots, selectedSlotId],
-  );
 
   // ---- Validation -----------------------------------------------------
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail.trim());
@@ -2626,70 +2770,16 @@ function DineInReservationView({
         .
       </p>
 
-      {/* Progress indicator — four labelled pills with a connector bar.
-          Completed steps are clickable so the user can jump back; future
-          steps are not (must satisfy current step first). Step 4 = receipt,
-          rendered by MenuPage; here it's a forward-looking placeholder. */}
-      <div className="mb-6">
-        <ol className="flex items-center gap-2">
-          {([
-            { n: 1 as const, label: "Slot", done: step > 1 },
-            { n: 2 as const, label: "Menu", done: step > 2 },
-            { n: 3 as const, label: "Pay", done: false },
-            { n: 4 as const, label: "Done", done: false },
-          ]).map((s, i, arr) => {
-            const active = step === s.n;
-            // Step 4 (receipt) lives outside the wizard, so it's never
-            // reachable as a click target here.
-            const reachable = s.n !== 4 && s.n <= step;
-            return (
-              <li key={s.n} className="flex items-center gap-2 flex-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    // `reachable` already excludes step 4 (the receipt),
-                    // so this guard is sufficient. goToStep accepts 1|2|3.
-                    if (!reachable) return;
-                    goToStep(s.n as 1 | 2 | 3);
-                  }}
-                  disabled={!reachable}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition ${
-                    active
-                      ? "bg-foreground text-background"
-                      : s.done
-                      ? "bg-primary/10 text-primary"
-                      : "bg-muted text-muted-foreground"
-                  } disabled:cursor-not-allowed`}
-                >
-                  <span
-                    className={`h-5 w-5 rounded-full inline-flex items-center justify-center text-[10px] tabular-nums ${
-                      active
-                        ? "bg-background/20 text-background"
-                        : s.done
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-background text-muted-foreground"
-                    }`}
-                  >
-                    {s.done && !active ? (
-                      <Check className="h-3 w-3" />
-                    ) : (
-                      s.n
-                    )}
-                  </span>
-                  <span className="hidden sm:inline">{s.label}</span>
-                </button>
-                {i < arr.length - 1 && (
-                  <span
-                    className={`flex-1 h-px ${
-                      arr[i + 1].done || step > s.n ? "bg-primary/30" : "bg-border"
-                    }`}
-                  />
-                )}
-              </li>
-            );
-          })}
-        </ol>
-      </div>
+      <WizardStepper
+        current={step}
+        onJump={(n) => goToStep(n as 1 | 2 | 3)}
+        steps={[
+          { n: 1, label: "Slot", done: step > 1 },
+          { n: 2, label: "Menu", done: step > 2 },
+          { n: 3, label: "Pay", done: false },
+          { n: 4, label: "Done", done: false },
+        ]}
+      />
 
       {/* ============ STEP 3b — Order summary (rendered with payment) ============
           Discount attribution moved to item-add time, so this card is now
@@ -2702,46 +2792,12 @@ function DineInReservationView({
           <Sparkles className="h-4 w-4 text-primary shrink-0" />
           <h3 className="font-display text-lg font-semibold">Order summary</h3>
         </div>
-        <div className="space-y-1.5 text-sm">
-          {hasDiscount ? (
-            <>
-              <div className="flex justify-between text-muted-foreground">
-                <span>Subtotal</span>
-                <span className="tabular-nums">₱{gross.toFixed(0)}</span>
-              </div>
-              <div className="flex justify-between text-primary">
-                <span>
-                  Senior / PWD discount ({Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% × {discountSummary.effectiveClaimants})
-                </span>
-                <span className="tabular-nums">
-                  −₱{discountSummary.discount.toFixed(0)}
-                </span>
-              </div>
-              <div className="flex justify-between font-semibold text-foreground pt-1">
-                <span>Amount due</span>
-                <span className="tabular-nums">₱{payable.toFixed(0)}</span>
-              </div>
-              <p className="text-[11px] text-muted-foreground pt-2 leading-relaxed">
-                Discount applied to each qualifying line at the cart. To
-                claim another ID, go back and add the item again under
-                Senior / PWD.
-              </p>
-            </>
-          ) : (
-            <>
-              <div className="flex justify-between font-semibold text-foreground">
-                <span>Total</span>
-                <span className="tabular-nums">₱{payable.toFixed(0)}</span>
-              </div>
-              <p className="text-[11px] text-muted-foreground pt-2 leading-relaxed">
-                Eligible for a Senior / PWD discount? Go back to the menu
-                and tap your item — pick Senior or PWD before adding to
-                receive {Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% off
-                that line.
-              </p>
-            </>
-          )}
-        </div>
+        <DiscountBreakdown summary={discountSummary} variant="wizard" />
+        <p className="text-[11px] text-muted-foreground pt-2 leading-relaxed">
+          {hasDiscount
+            ? "Discount applied to each qualifying line at the cart. To claim another ID, go back and add the item again under Senior / PWD."
+            : `Eligible for a Senior / PWD discount? Go back to the menu and tap your item — pick Senior or PWD before adding to receive ${Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% off that line.`}
+        </p>
       </div>
       )}
 
@@ -3169,10 +3225,24 @@ function PickupReservationView({
   const payable = discountSummary.net;
   const hasDiscount = discountSummary.discount > 0;
 
-  // Slot picker state.
-  const [slots, setSlots] = useState<AvailableSlot[]>([]);
-  const [slotsLoading, setSlotsLoading] = useState(true);
-  const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
+  // Pickup windows are restricted to 3 fixed times per day; admin opens
+  // them in the Slots tab. Anything else gets filtered out of the picker.
+  const PICKUP_SLOT_TIMES = ["16:00:00", "18:00:00", "20:00:00"] as const;
+
+  // Slot picker state — shared loader. Pickup adds the 4/6/8 PM filter
+  // via `filterTimes`; the same locked-slot bypass applies.
+  const {
+    slots,
+    slotsLoading,
+    selectedSlotId,
+    setSelectedSlotId,
+    slotsByDate,
+    selectedSlot,
+  } = useReservationSlots({
+    channel: "pickup",
+    lockedSlotId: invite?.lockedSlotId,
+    filterTimes: PICKUP_SLOT_TIMES,
+  });
 
   // Slot-locked invite (admin bulk invite) — show the one locked slot
   // read-only instead of the picker. Harmless when the invite isn't locked.
@@ -3204,72 +3274,6 @@ function PickupReservationView({
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-
-  // Pickup windows are restricted to 3 fixed times per day; admin opens
-  // them in the Slots tab. Anything else gets filtered out of the picker.
-  const PICKUP_SLOT_TIMES = ["16:00:00", "18:00:00", "20:00:00"] as const;
-
-  // Load upcoming, open slots. Filtered to the 3 pickup times so non-pickup
-  // (dine-in) slots and any off-schedule rows don't leak into the picker.
-  useEffect(() => {
-    (async () => {
-      setSlotsLoading(true);
-      // Slot-locked invite: fetch only the locked slot by id and trust it
-      // (the time filter doesn't apply — the admin issued this specific
-      // slot to this guest). The capacity guard still applies if the slot
-      // filled up after the invite was sent.
-      if (invite?.lockedSlotId) {
-        const { data, error } = await supabase
-          .from("time_slots")
-          .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
-          .eq("id", invite.lockedSlotId)
-          .maybeSingle();
-        if (error || !data) {
-          console.warn("[slots] locked slot load failed:", error);
-          setSlots([]);
-        } else {
-          setSlots([data as AvailableSlot]);
-          setSelectedSlotId((data as AvailableSlot).id);
-        }
-        setSlotsLoading(false);
-        return;
-      }
-      const today = new Date().toISOString().slice(0, 10);
-      const { data, error } = await supabase
-        .from("time_slots")
-        .select("id, slot_date, slot_time, capacity, seats_taken, is_open")
-        .eq("channel", "pickup")
-        .gte("slot_date", today)
-        .eq("is_open", true)
-        .in("slot_time", PICKUP_SLOT_TIMES as unknown as string[])
-        .order("slot_date")
-        .order("slot_time");
-      if (error) {
-        console.warn("[slots] load failed:", error);
-        setSlots([]);
-      } else {
-        setSlots(
-          ((data ?? []) as AvailableSlot[]).filter(
-            (s) => s.seats_taken < s.capacity,
-          ),
-        );
-      }
-      setSlotsLoading(false);
-    })();
-    // PICKUP_SLOT_TIMES is module-stable; only the locked-id changes the query
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [invite?.lockedSlotId]);
-
-  const slotsByDate = useMemo(() => {
-    const m: Record<string, AvailableSlot[]> = {};
-    for (const s of slots) (m[s.slot_date] ||= []).push(s);
-    return m;
-  }, [slots]);
-
-  const selectedSlot = useMemo(
-    () => slots.find((s) => s.id === selectedSlotId) ?? null,
-    [slots, selectedSlotId],
-  );
 
   // Validation ---------------------------------------------------------
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail.trim());
@@ -3417,67 +3421,17 @@ function PickupReservationView({
         .
       </p>
 
-      {/* Progress indicator — five labelled pills. Step 5 (receipt) lives
-          outside the wizard so it's never click-reachable here. */}
-      <div className="mb-6">
-        <ol className="flex items-center gap-2">
-          {([
-            { n: 1 as const, label: "Date & time", done: step > 1 },
-            { n: 2 as const, label: "Menu", done: step > 2 },
-            { n: 3 as const, label: "Info", done: step > 3 },
-            { n: 4 as const, label: "Pay", done: false },
-            { n: 5 as const, label: "Done", done: false },
-          ]).map((s, i, arr) => {
-            const active = step === s.n;
-            const reachable = s.n !== 5 && s.n <= step;
-            return (
-              <li key={s.n} className="flex items-center gap-2 flex-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    // `reachable` already excludes step 5 (the receipt),
-                    // so this guard is sufficient. goToStep accepts 1|2|3|4.
-                    if (!reachable) return;
-                    goToStep(s.n as 1 | 2 | 3 | 4);
-                  }}
-                  disabled={!reachable}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition ${
-                    active
-                      ? "bg-foreground text-background"
-                      : s.done
-                      ? "bg-primary/10 text-primary"
-                      : "bg-muted text-muted-foreground"
-                  } disabled:cursor-not-allowed`}
-                >
-                  <span
-                    className={`h-5 w-5 rounded-full inline-flex items-center justify-center text-[10px] tabular-nums ${
-                      active
-                        ? "bg-background/20 text-background"
-                        : s.done
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-background text-muted-foreground"
-                    }`}
-                  >
-                    {s.done && !active ? (
-                      <Check className="h-3 w-3" />
-                    ) : (
-                      s.n
-                    )}
-                  </span>
-                  <span className="hidden sm:inline">{s.label}</span>
-                </button>
-                {i < arr.length - 1 && (
-                  <span
-                    className={`flex-1 h-px ${
-                      arr[i + 1].done || step > s.n ? "bg-primary/30" : "bg-border"
-                    }`}
-                  />
-                )}
-              </li>
-            );
-          })}
-        </ol>
-      </div>
+      <WizardStepper
+        current={step}
+        onJump={(n) => goToStep(n as 1 | 2 | 3 | 4)}
+        steps={[
+          { n: 1, label: "Date & time", done: step > 1 },
+          { n: 2, label: "Menu", done: step > 2 },
+          { n: 3, label: "Info", done: step > 3 },
+          { n: 4, label: "Pay", done: false },
+          { n: 5, label: "Done", done: false },
+        ]}
+      />
 
       {/* ============ STEP 3 — Customer information ============
           Customer contact info. Meal count is auto-derived from the cart
@@ -3726,46 +3680,12 @@ function PickupReservationView({
               <Sparkles className="h-4 w-4 text-primary shrink-0" />
               <h3 className="font-display text-lg font-semibold">Order summary</h3>
             </div>
-            <div className="space-y-1.5 text-sm">
-              {hasDiscount ? (
-                <>
-                  <div className="flex justify-between text-muted-foreground">
-                    <span>Subtotal</span>
-                    <span className="tabular-nums">₱{gross.toFixed(0)}</span>
-                  </div>
-                  <div className="flex justify-between text-primary">
-                    <span>
-                      Senior / PWD discount ({Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% × {discountSummary.effectiveClaimants})
-                    </span>
-                    <span className="tabular-nums">
-                      −₱{discountSummary.discount.toFixed(0)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between font-semibold text-foreground pt-1">
-                    <span>Amount due</span>
-                    <span className="tabular-nums">₱{payable.toFixed(0)}</span>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground pt-2 leading-relaxed">
-                    Discount applied to each qualifying line at the cart.
-                    To claim another ID, go back and add the item again
-                    under Senior / PWD.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <div className="flex justify-between font-semibold text-foreground">
-                    <span>Total</span>
-                    <span className="tabular-nums">₱{payable.toFixed(0)}</span>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground pt-2 leading-relaxed">
-                    Eligible for a Senior / PWD discount? Go back to the
-                    menu, tap your item, and pick Senior or PWD before
-                    adding to receive {Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}%
-                    off that line.
-                  </p>
-                </>
-              )}
-            </div>
+            <DiscountBreakdown summary={discountSummary} variant="wizard" />
+            <p className="text-[11px] text-muted-foreground pt-2 leading-relaxed">
+              {hasDiscount
+                ? "Discount applied to each qualifying line at the cart. To claim another ID, go back and add the item again under Senior / PWD."
+                : `Eligible for a Senior / PWD discount? Go back to the menu, tap your item, and pick Senior or PWD before adding to receive ${Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% off that line.`}
+            </p>
           </div>
 
           {/* Maya QR block */}

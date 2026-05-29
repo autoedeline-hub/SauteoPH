@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { format, subDays, subMonths } from "date-fns";
 import { inviteLinkPath } from "@/lib/invite";
-import { formatSlotTime12h } from "@/lib/utils";
+import { formatSlotTime12h, localToday } from "@/lib/utils";
 import {
   Area,
   AreaChart,
@@ -3322,7 +3322,7 @@ function WaitlistTab() {
     // for the dine-in channel (sendBulkInvites below sets channel:"dine_in"),
     // so we filter to dine-in here to avoid grabbing a pickup slot that
     // happens to share the same date+time.
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localToday();
     const { data: slotData } = await supabase
       .from("time_slots")
       .select("id, channel, slot_date, slot_time, capacity, seats_taken, is_open")
