@@ -28,6 +28,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  type ClaimsByCartKey,
   SENIOR_PWD_DISCOUNT_RATE,
   type CartUnit,
   type Claimant,
@@ -87,18 +88,61 @@ type WizardStep = 1 | 2 | 3 | 4;
 // /dine-in marketing page, and the receipt's "send payment screenshot" CTA.
 const MESSENGER_URL = "https://www.facebook.com/messages/t/1119234891273865";
 
+// Cart key shape:
+//   - `<itemId>`                                          — no variant, no claim
+//   - `<itemId>::<variantIndex>`                          — variant chosen
+//   - `<itemId>::_::claim:<shortId>`                      — claimed line, no variant
+//   - `<itemId>::<variantIndex>::claim:<shortId>`         — claimed line + variant
+// The optional `::claim:<shortId>` suffix turns a claimed line into its own
+// cart entry (qty locked at 1) so it never merges with anonymous adds of the
+// same item/variant. Per RA 9994: one ID covers exactly one unit.
 const CART_KEY_DELIM = "::";
+const CLAIM_PREFIX = "claim:";
+const CLAIM_VARIANT_PLACEHOLDER = "_";
 
 function makeCartKey(itemId: string, variantIndex: number | null): string {
   return variantIndex == null ? itemId : `${itemId}${CART_KEY_DELIM}${variantIndex}`;
 }
 
+function makeClaimCartKey(
+  itemId: string,
+  variantIndex: number | null,
+  claimId: string,
+): string {
+  const variantSeg = variantIndex == null ? CLAIM_VARIANT_PLACEHOLDER : String(variantIndex);
+  return `${itemId}${CART_KEY_DELIM}${variantSeg}${CART_KEY_DELIM}${CLAIM_PREFIX}${claimId}`;
+}
+
+// Short, URL-safe id good enough to disambiguate cart lines within a
+// single browsing session — collision risk is negligible at cart sizes.
+function makeClaimId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID().slice(0, 8);
+  }
+  return Math.random().toString(36).slice(2, 10);
+}
+
 function parseCartKey(key: string): { itemId: string; variantIndex: number | null } {
-  const idx = key.indexOf(CART_KEY_DELIM);
-  if (idx === -1) return { itemId: key, variantIndex: null };
-  const itemId = key.slice(0, idx);
-  const vi = Number(key.slice(idx + CART_KEY_DELIM.length));
+  const parts = key.split(CART_KEY_DELIM);
+  const itemId = parts[0];
+  if (parts.length < 2) return { itemId, variantIndex: null };
+  // Second segment is either the variant index (anonymous line) or the
+  // placeholder "_" (claimed line without a variant). Anything else is the
+  // claim segment (in which case there's no variant in this position).
+  const second = parts[1];
+  if (second === CLAIM_VARIANT_PLACEHOLDER) return { itemId, variantIndex: null };
+  if (second.startsWith(CLAIM_PREFIX)) return { itemId, variantIndex: null };
+  const vi = Number(second);
   return { itemId, variantIndex: Number.isFinite(vi) ? vi : null };
+}
+
+// Returns the claim short-id if this cart key represents a claimed line,
+// else null. The caller can index `ClaimsByCartKey` directly with the full
+// key — this helper is for badge/UI checks that don't need the value.
+function getClaimId(key: string): string | null {
+  const parts = key.split(CART_KEY_DELIM);
+  const last = parts[parts.length - 1];
+  return last.startsWith(CLAIM_PREFIX) ? last.slice(CLAIM_PREFIX.length) : null;
 }
 
 function getLinePrice(item: MenuItem, variantIndex: number | null): number {
@@ -218,19 +262,24 @@ export function MenuPage({
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<MenuItem[]>([]);
   const [cart, setCart] = useState<Cart>({});
-  // Invite users go straight into the booking wizard (slot first). Bare
-  // visitors start on the menu so the homepage is still browseable.
-  const [view, setView] = useState<View>(invite ? "wizard" : "menu");
+  // cartKey → Claimant for claimed (senior/PWD) lines. Keyed by the *full*
+  // cart key so the entry is dropped automatically when the line is. The
+  // VariantSelectModal collects the claim at item-add time; per-line trash
+  // / qty=0 routes through `removeCartKey` below to clean both maps.
+  const [claims, setClaims] = useState<ClaimsByCartKey>({});
+  // Invite users go straight into the booking wizard. Pickup is public —
+  // visitors of /pick-up (no token) also drop straight into the wizard so
+  // they start at step 1 (Date & time). Bare dine-in visitors stay on the
+  // menu so the SEO homepage is browseable; tapping Checkout sends them
+  // into the wizard where the invite-only gate fires.
+  const [view, setView] = useState<View>(
+    invite || effectiveChannel === "pickup" ? "wizard" : "menu",
+  );
   // Lifted out of the wizard so MenuPage can swap the page layout when the
   // guest is on the menu step (which wants a fixed-height layout + sticky
   // cart bar, unlike the other wizard steps).
   const [wizardStep, setWizardStep] = useState<WizardStep>(1);
   const [receipt, setReceipt] = useState<ReceiptShape | null>(null);
-  // Senior/PWD claims survive going back to the menu so the guest doesn't
-  // have to re-enter IDs if they tweak the cart. Reset when an order is
-  // placed (after the receipt renders) or when the receipt → new order
-  // transition fires.
-  const [claimants, setClaimants] = useState<Claimant[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -263,9 +312,10 @@ export function MenuPage({
     })();
   }, [effectiveChannel]);
 
-  // Expand the cart into per-unit rows so the discount engine can pick the
-  // N highest-priced units for N claimants. Each (cart key × qty) becomes
-  // qty distinct CartUnit entries.
+  // Expand the cart into per-unit rows so the discount engine can attribute
+  // a discount to any claimed line. Each (cart key × qty) becomes qty
+  // distinct CartUnit entries; claimed lines are qty=1, so they contribute
+  // exactly one discounted unit each.
   const cartUnits = useMemo<CartUnit[]>(() => {
     const out: CartUnit[] = [];
     for (const [key, qty] of Object.entries(cart)) {
@@ -294,13 +344,12 @@ export function MenuPage({
     [cartUnits],
   );
 
-  // Live discount summary based on however many claimants are currently
-  // staged. Used in PaymentView for the live-updating total. Even partly-
-  // filled claimant rows count toward the discount preview — the form
-  // gates the actual checkout with a per-row validity check.
+  // Live discount summary driven by which cart lines carry a Claimant.
+  // Used by the cart panels and by the payment-step breakdown card so the
+  // total updates the moment a senior/PWD line is added or removed.
   const discountSummary: DiscountSummary = useMemo(
-    () => summarizeDiscount(cartUnits, claimants.length),
-    [cartUnits, claimants.length],
+    () => summarizeDiscount(cartUnits, claims),
+    [cartUnits, claims],
   );
 
   // The menu-view "Total" button still shows the sticker total (no claim
@@ -308,7 +357,9 @@ export function MenuPage({
   const total = gross;
   const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
 
-  // Generic stepper — operates on a composite cart key (id or id::variantIndex).
+  // Generic stepper — operates on a composite cart key. When the qty hits
+  // 0, also revoke any object URL the line's claim photo created and clear
+  // the matching `claims` entry so the two maps stay in sync.
   const updateQty = (key: string, delta: number) => {
     setCart((prev) => {
       const q = (prev[key] || 0) + delta;
@@ -317,12 +368,45 @@ export function MenuPage({
       else next[key] = q;
       return next;
     });
+    if (claims[key]) {
+      const photoUrl = claims[key].idPhotoUrl;
+      setCart((prev) => {
+        // No-op state read so React batches with the setCart above; the
+        // real check is whether the qty would zero out, which we evaluate
+        // off the previous claims map.
+        const prevQty = prev[key] || 0;
+        if (prevQty + delta <= 0 && photoUrl) URL.revokeObjectURL(photoUrl);
+        return prev;
+      });
+      setClaims((prev) => {
+        if (!prev[key]) return prev;
+        // Drop the claim only when the cart line is gone. Claimed lines are
+        // qty=1 by construction, so any non-positive delta empties them.
+        if ((cart[key] || 0) + delta > 0) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }
   };
 
-  // New add-to-cart entry point used by the variant modal and the no-variant
-  // card tap. Builds the composite key and bumps quantity by `qty`.
-  const addToCart = (itemId: string, variantIndex: number | null, qty: number) => {
+  // Add a regular (no claim) or claimed (senior/PWD) line. Claimed lines
+  // always force qty=1 — one ID covers one unit per RA 9994 — and live on
+  // their own cart key so they never merge with anonymous adds.
+  const addToCart = (
+    itemId: string,
+    variantIndex: number | null,
+    qty: number,
+    claim?: Claimant,
+  ) => {
     if (qty <= 0) return;
+    if (claim) {
+      const claimId = makeClaimId();
+      const key = makeClaimCartKey(itemId, variantIndex, claimId);
+      setCart((prev) => ({ ...prev, [key]: 1 }));
+      setClaims((prev) => ({ ...prev, [key]: claim }));
+      return;
+    }
     const key = makeCartKey(itemId, variantIndex);
     setCart((prev) => ({ ...prev, [key]: (prev[key] || 0) + qty }));
   };
@@ -350,12 +434,12 @@ export function MenuPage({
       })
       .filter(Boolean) as ReceiptLine[];
 
-    // Snapshot the per-claimant discount picks at the time of order so the
-    // receipt matches what the guest just authorized — even if they later
-    // re-open the menu in this session.
+    // Snapshot the per-line discount attribution at order time so the
+    // receipt matches what the guest just authorized — each discounted
+    // unit reads its own Claimant from the cart-key → claim map.
     const discountLines: ReceiptDiscountLine[] = discountSummary.discountedUnits.map(
       (du) => {
-        const c = claimants[du.claimantIndex];
+        const c = claims[du.unit.cartKey];
         return {
           itemName: du.unit.displayName,
           claimantKind: c?.kind ?? "senior",
@@ -387,7 +471,7 @@ export function MenuPage({
       paymentReference: args.paymentReference ?? null,
     });
     setCart({});
-    setClaimants([]);
+    setClaims({});
     setView("receipt");
     // Reset for the next booking — receipt view drives the user back to
     // step 1 if they tap "Place another order".
@@ -421,10 +505,12 @@ export function MenuPage({
             categories={categories}
             items={items}
             cart={cart}
+            claims={claims}
             updateQty={updateQty}
             addToCart={addToCart}
             total={total}
             cartCount={cartCount}
+            discountSummary={discountSummary}
             onCheckout={() => setView("wizard")}
           />
         )}
@@ -436,8 +522,6 @@ export function MenuPage({
               items={items}
               gross={gross}
               cartUnitCount={cartUnits.length}
-              claimants={claimants}
-              setClaimants={setClaimants}
               discountSummary={discountSummary}
               step={wizardStep}
               setStep={setWizardStep}
@@ -446,10 +530,12 @@ export function MenuPage({
                   categories={categories}
                   items={items}
                   cart={cart}
+                  claims={claims}
                   updateQty={updateQty}
                   addToCart={addToCart}
                   total={total}
                   cartCount={cartCount}
+                  discountSummary={discountSummary}
                   onCheckout={() => setWizardStep(3)}
                 />
               )}
@@ -463,8 +549,6 @@ export function MenuPage({
               items={items}
               gross={gross}
               cartUnitCount={cartUnits.length}
-              claimants={claimants}
-              setClaimants={setClaimants}
               discountSummary={discountSummary}
               step={wizardStep}
               setStep={setWizardStep}
@@ -473,10 +557,12 @@ export function MenuPage({
                   categories={categories}
                   items={items}
                   cart={cart}
+                  claims={claims}
                   updateQty={updateQty}
                   addToCart={addToCart}
                   total={total}
                   cartCount={cartCount}
+                  discountSummary={discountSummary}
                   onCheckout={() => setWizardStep(3)}
                 />
               )}
@@ -498,19 +584,32 @@ function MenuView({
   categories,
   items,
   cart,
+  claims,
   updateQty,
   addToCart,
   total,
   cartCount,
+  discountSummary,
   onCheckout,
 }: {
   categories: Category[];
   items: MenuItem[];
   cart: Cart;
+  // cartKey → Claimant for senior/PWD-claimed lines. Drives the discount
+  // badges and the discounted unit/line totals in the cart panels.
+  claims: ClaimsByCartKey;
   updateQty: (key: string, delta: number) => void;
-  addToCart: (itemId: string, variantIndex: number | null, qty: number) => void;
+  addToCart: (
+    itemId: string,
+    variantIndex: number | null,
+    qty: number,
+    claim?: Claimant,
+  ) => void;
   total: number;
   cartCount: number;
+  // Net total after RA 9994 discounts. Drives the "Total" line in the
+  // cart footer; falls back to gross when no lines are claimed.
+  discountSummary: DiscountSummary;
   onCheckout: () => void;
 }) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -574,15 +673,19 @@ function MenuView({
   // In set-menu (quick-add) mode: invoked by the in-modal "Add to cart" CTA;
   // modal stays open and the global toast is suppressed — the modal renders
   // its own in-place "Added!" indicator instead.
+  // Senior/PWD claimed adds are always one-shot — they don't honor keepOpen,
+  // and they always force the toast + close, since each claim is its own
+  // ID-upload commitment.
   const handleVariantAdd = useCallback(
     (
       item: MenuItem,
       variantIndex: number | null,
       qty: number,
       keepOpen: boolean,
+      claim?: Claimant,
     ) => {
-      addToCart(item.id, variantIndex, qty);
-      if (!keepOpen) {
+      addToCart(item.id, variantIndex, qty, claim);
+      if (claim || !keepOpen) {
         setLastAdded({ item, variantIndex, nonce: Date.now() });
         setVariantTarget(null);
       }
@@ -780,9 +883,12 @@ function MenuView({
           parked in the empty space right of the centered max-w-3xl column. */}
       <CartSidePanel
         cart={cart}
+        claims={claims}
         items={items}
         updateQty={updateQty}
         total={total}
+        net={discountSummary.net}
+        discount={discountSummary.discount}
         cartCount={cartCount}
         onCheckout={onCheckout}
       />
@@ -793,7 +899,7 @@ function MenuView({
       {cartCount > 0 && (
         <PreviewCartPill
           cartCount={cartCount}
-          total={total}
+          total={discountSummary.net}
           onOpen={() => setSheetOpen(true)}
         />
       )}
@@ -808,9 +914,12 @@ function MenuView({
         open={sheetOpen}
         onClose={() => setSheetOpen(false)}
         cart={cart}
+        claims={claims}
         items={items}
         updateQty={handleUpdateQty}
-        total={total}
+        total={discountSummary.net}
+        discount={discountSummary.discount}
+        gross={total}
         onCheckout={() => {
           setSheetOpen(false);
           onCheckout();
@@ -961,6 +1070,7 @@ function VariantSelectModal({
     variantIndex: number | null,
     qty: number,
     keepOpen: boolean,
+    claim?: Claimant,
   ) => void;
 }) {
   // Keep mounted for one render after close so the fade-out animates.
@@ -982,6 +1092,19 @@ function VariantSelectModal({
   // the flat radio list and ignore this entirely).
   const [openGroup, setOpenGroup] = useState<string | null>(null);
 
+  // Senior/PWD claim attached to this add. `regular` = no discount.
+  // `senior` / `pwd` open the ID-upload form below and lock qty to 1 (one
+  // ID covers one unit per RA 9994). Each Add commits one claim.
+  const [claimKind, setClaimKind] = useState<"regular" | "senior" | "pwd">(
+    "regular",
+  );
+  const [claim, setClaim] = useState<Claimant>(() => makeBlankClaimant("senior"));
+  const [claimAutoFill, setClaimAutoFill] = useState<AutoFillStatus>({
+    state: "idle",
+  });
+  const claimExtractAbort = useRef<AbortController | null>(null);
+  const isClaimed = claimKind !== "regular";
+
   useEffect(() => {
     if (item) {
       setDisplayed(item);
@@ -989,6 +1112,13 @@ function VariantSelectModal({
       setSelectedIndices(new Set());
       setQty(1);
       setShowAdded(false);
+      // Fresh modal session — reset the claim form so a stale ID from a
+      // prior item doesn't bleed across opens.
+      setClaimKind("regular");
+      setClaim(makeBlankClaimant("senior"));
+      setClaimAutoFill({ state: "idle" });
+      claimExtractAbort.current?.abort();
+      claimExtractAbort.current = null;
       return;
     }
     const t = window.setTimeout(() => {
@@ -997,6 +1127,96 @@ function VariantSelectModal({
     }, 200);
     return () => window.clearTimeout(t);
   }, [item]);
+
+  // Reset photo state when the customer flips between Regular / Senior / PWD.
+  // Switching to Regular drops the in-progress claim entirely; switching
+  // between Senior and PWD only re-flags the kind on the in-progress claim
+  // (so they don't lose a half-filled form by tapping the wrong pill).
+  useEffect(() => {
+    if (claimKind === "regular") {
+      claimExtractAbort.current?.abort();
+      claimExtractAbort.current = null;
+      setClaim((prev) => {
+        if (prev.idPhotoUrl) URL.revokeObjectURL(prev.idPhotoUrl);
+        return makeBlankClaimant("senior");
+      });
+      setClaimAutoFill({ state: "idle" });
+      setQty(1);
+    } else {
+      setClaim((prev) => ({ ...prev, kind: claimKind }));
+      setQty(1);
+    }
+  }, [claimKind]);
+
+  // Revoke any held object URL when the modal fully unmounts.
+  useEffect(() => () => {
+    if (claim.idPhotoUrl) URL.revokeObjectURL(claim.idPhotoUrl);
+    claimExtractAbort.current?.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onClaimPhotoChange = (file: File | null) => {
+    setClaim((prev) => {
+      if (prev.idPhotoUrl) URL.revokeObjectURL(prev.idPhotoUrl);
+      return {
+        ...prev,
+        idPhotoFile: file,
+        idPhotoUrl: file ? URL.createObjectURL(file) : null,
+      };
+    });
+    claimExtractAbort.current?.abort();
+    if (!file) {
+      setClaimAutoFill({ state: "idle" });
+      return;
+    }
+    const ac = new AbortController();
+    claimExtractAbort.current = ac;
+    setClaimAutoFill({ state: "loading" });
+    (async () => {
+      let result: ExtractIdResult;
+      try {
+        result = await extractIdFromPhoto(file, ac.signal);
+      } catch (e) {
+        if ((e as DOMException)?.name === "AbortError") return;
+        setClaimAutoFill({ state: "failed" });
+        return;
+      }
+      if (ac.signal.aborted) return;
+      if (!result.available) {
+        setClaimAutoFill({ state: "off" });
+        return;
+      }
+      // Mirror the wizard's OCR autofill: only fill empty fields so we
+      // don't stomp anything the customer already typed.
+      setClaim((prev) => ({
+        ...prev,
+        kind:
+          result.kind === "senior" || result.kind === "pwd"
+            ? result.kind
+            : prev.kind,
+        fullName: prev.fullName.trim() ? prev.fullName : result.full_name,
+        idNumber: prev.idNumber.trim() ? prev.idNumber : result.id_number,
+        address: prev.address.trim() ? prev.address : result.address,
+        dateOfBirth: prev.dateOfBirth.trim() ? prev.dateOfBirth : result.date_of_birth,
+        age: prev.age.trim() ? prev.age : result.age,
+        sex: prev.sex.trim() ? prev.sex : result.sex,
+        dateOfIssue: prev.dateOfIssue.trim() ? prev.dateOfIssue : result.date_of_issue,
+      }));
+      // Echo the recognized kind onto the radio so the customer sees the
+      // pill state agree with what the OCR found.
+      if (result.kind === "senior" || result.kind === "pwd") {
+        setClaimKind(result.kind);
+      }
+      setClaimAutoFill({ state: "filled", confidence: result.confidence });
+    })();
+  };
+
+  const claimFieldsValid =
+    claim.fullName.trim().length >= 2 &&
+    claim.age.trim().length >= 1 &&
+    claim.dateOfBirth.trim().length >= 4 &&
+    claim.dateOfIssue.trim().length >= 4 &&
+    !!claim.idPhotoFile;
 
   // Auto-hide the in-modal "Added!" pill ~2s after each add.
   useEffect(() => {
@@ -1019,8 +1239,14 @@ function VariantSelectModal({
   // group containing the just-toggled variant so the user can see what they
   // just picked. Inline (not in an effect) so manual accordion header taps
   // are NEVER fought by selection state.
+  // Claimed adds are single-unit, so selecting a variant replaces the
+  // current pick instead of multi-adding.
   const toggleSelection = (idx: number) => {
     setSelectedIndices((prev) => {
+      if (isClaimed) {
+        if (prev.has(idx) && prev.size === 1) return new Set();
+        return new Set([idx]);
+      }
       const next = new Set(prev);
       if (next.has(idx)) next.delete(idx);
       else next.add(idx);
@@ -1046,11 +1272,26 @@ function VariantSelectModal({
   const useAccordion = groups.length >= 2;
   // When the item has no variants, no selection is required — Add is always
   // armed (subject to qty). When variants exist, at least one must be ticked.
+  // Claimed adds layer on an extra gate: the ID + fields must validate and
+  // (for variant items) exactly one variant must be picked since a claim
+  // is one-shot.
   const canAdd =
-    qty > 0 && (!hasVariants || selectedIndices.size > 0);
+    qty > 0 &&
+    (!hasVariants || selectedIndices.size > 0) &&
+    (!isClaimed || claimFieldsValid) &&
+    (!isClaimed || !hasVariants || selectedIndices.size === 1);
 
   const handleAddClick = () => {
     if (!canAdd) return;
+    // Claimed adds are always single-unit, single-line. Pass the claim
+    // through to addToCart so MenuPage allocates a fresh claim cart key.
+    if (isClaimed) {
+      const variantIndex = hasVariants
+        ? Array.from(selectedIndices)[0]
+        : null;
+      onAdd(displayed, variantIndex ?? null, 1, false, { ...claim });
+      return;
+    }
     if (!hasVariants) {
       onAdd(displayed, null, qty, quickAdd);
     } else {
@@ -1144,6 +1385,61 @@ function VariantSelectModal({
               </p>
             )}
           </div>
+
+          {/* For whom? — Regular / Senior / PWD. Picking a non-regular
+              option locks qty to 1 (one ID = one unit per RA 9994) and
+              expands the ID form below. */}
+          <div className="px-5 pt-3 pb-2">
+            <div className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
+              For whom?
+            </div>
+            <div className="inline-flex rounded-full bg-muted/50 p-0.5 w-full">
+              {(
+                [
+                  { value: "regular", label: "Regular" },
+                  { value: "senior", label: "Senior" },
+                  { value: "pwd", label: "PWD" },
+                ] as const
+              ).map((opt) => {
+                const active = claimKind === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setClaimKind(opt.value)}
+                    aria-pressed={active}
+                    className={`flex-1 px-3 py-1.5 rounded-full text-xs font-semibold transition ${
+                      active
+                        ? "bg-foreground text-background shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            {isClaimed && (
+              <p className="mt-2 text-[11px] text-muted-foreground leading-snug">
+                Upload one valid ID per discounted unit. 20% off applies to
+                this line only — to discount another unit, add it again
+                with a separate ID.
+              </p>
+            )}
+          </div>
+
+          {isClaimed && (
+            <div className="px-5 pt-1 pb-2">
+              <ClaimantCard
+                index={0}
+                claimant={claim}
+                autoFill={claimAutoFill}
+                onChange={(patch) => setClaim((prev) => ({ ...prev, ...patch }))}
+                onPhotoChange={onClaimPhotoChange}
+                onRemove={() => setClaimKind("regular")}
+              />
+            </div>
+          )}
 
           {/* Variant list — only rendered when variants exist.
               Items whose variant names share a "X with Y" prefix get
@@ -1333,7 +1629,7 @@ function VariantSelectModal({
                 type="button"
                 onClick={() => setQty((q) => Math.max(1, q - 1))}
                 aria-label="Decrease quantity"
-                disabled={qty <= 1}
+                disabled={qty <= 1 || isClaimed}
                 className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition"
               >
                 <Minus className="h-4 w-4" />
@@ -1345,7 +1641,8 @@ function VariantSelectModal({
                 type="button"
                 onClick={() => setQty((q) => q + 1)}
                 aria-label="Increase quantity"
-                className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground transition"
+                disabled={isClaimed}
+                className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition"
               >
                 <Plus className="h-4 w-4" />
               </button>
@@ -1371,17 +1668,27 @@ function CartPreviewSheet({
   open,
   onClose,
   cart,
+  claims,
   items,
   updateQty,
   total,
+  gross,
+  discount,
   onCheckout,
 }: {
   open: boolean;
   onClose: () => void;
   cart: Cart;
+  claims: ClaimsByCartKey;
   items: MenuItem[];
   updateQty: (key: string, delta: number) => void;
+  // Net (after discount). Headline number shown on the sheet header.
   total: number;
+  // Sum of sticker prices. Drives the strikethrough comparison when any
+  // line is claimed; equal to `total` when the cart has no claims.
+  gross: number;
+  // Total peso amount discounted across all claimed lines.
+  discount: number;
   onCheckout: () => void;
 }) {
   // Keep the sheet mounted for one render after close so the slide-down animates.
@@ -1402,12 +1709,18 @@ function CartPreviewSheet({
           const { itemId, variantIndex } = parseCartKey(key);
           const it = items.find((x) => x.id === itemId);
           if (!it) return null;
+          const claim = claims[key] ?? null;
+          const unitPrice = getLinePrice(it, variantIndex);
           return {
             key,
             qty,
             name: it.name,
             variantName: getVariantName(it, variantIndex),
-            price: getLinePrice(it, variantIndex),
+            price: unitPrice,
+            discountedPrice: claim
+              ? unitPrice * (1 - SENIOR_PWD_DISCOUNT_RATE)
+              : unitPrice,
+            claim,
             image_url: it.image_url,
           };
         })
@@ -1417,9 +1730,11 @@ function CartPreviewSheet({
         name: string;
         variantName: string | null;
         price: number;
+        discountedPrice: number;
+        claim: Claimant | null;
         image_url: string | null;
       }[],
-    [cart, items],
+    [cart, items, claims],
   );
 
   if (!mounted) return null;
@@ -1508,8 +1823,33 @@ function CartPreviewSheet({
                         {li.variantName}
                       </div>
                     )}
+                    {li.claim && (
+                      <span
+                        className={`inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${
+                          li.claim.kind === "pwd"
+                            ? "bg-sky-100 text-sky-800"
+                            : "bg-mustard/40 text-charcoal"
+                        }`}
+                      >
+                        {li.claim.kind === "pwd" ? "PWD" : "Senior"}
+                        {li.claim.fullName.trim() && (
+                          <span className="font-normal opacity-70">
+                            · {li.claim.fullName.trim().split(/\s+/)[0]}
+                          </span>
+                        )}
+                      </span>
+                    )}
                     <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
-                      ₱{li.price.toFixed(0)}
+                      {li.claim ? (
+                        <>
+                          <span className="line-through">₱{li.price.toFixed(0)}</span>{" "}
+                          <span className="text-foreground font-semibold">
+                            ₱{li.discountedPrice.toFixed(0)}
+                          </span>
+                        </>
+                      ) : (
+                        <>₱{li.price.toFixed(0)}</>
+                      )}
                     </div>
                   </div>
 
@@ -1529,7 +1869,9 @@ function CartPreviewSheet({
                       type="button"
                       onClick={() => updateQty(li.key, 1)}
                       aria-label={`Increase ${li.name}`}
-                      className="h-8 w-8 flex items-center justify-center text-muted-foreground hover:text-foreground transition"
+                      disabled={!!li.claim}
+                      title={li.claim ? "Re-add this item with another ID to discount more" : undefined}
+                      className="h-8 w-8 flex items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition"
                     >
                       <Plus className="h-3.5 w-3.5" />
                     </button>
@@ -1556,6 +1898,18 @@ function CartPreviewSheet({
 
         {/* Footer */}
         <div className="px-5 pt-4 pb-5 border-t border-border/60 shrink-0 bg-card">
+          {discount > 0 && (
+            <div className="mb-3 flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Subtotal</span>
+              <span className="tabular-nums">₱{gross.toFixed(0)}</span>
+            </div>
+          )}
+          {discount > 0 && (
+            <div className="mb-3 flex items-center justify-between text-xs text-primary">
+              <span>RA 9994 / RA 10754 discount</span>
+              <span className="tabular-nums">−₱{discount.toFixed(0)}</span>
+            </div>
+          )}
           <button
             type="button"
             onClick={onCheckout}
@@ -1574,16 +1928,26 @@ function CartPreviewSheet({
 /* ============ Cart Side Panel ============ */
 function CartSidePanel({
   cart,
+  claims,
   items,
   updateQty,
   total,
+  net,
+  discount,
   cartCount,
   onCheckout,
 }: {
   cart: Cart;
+  claims: ClaimsByCartKey;
   items: MenuItem[];
   updateQty: (key: string, delta: number) => void;
+  // Gross (sticker price) total. Used for the strikethrough comparison
+  // when any line is claimed; equal to `net` when there are no claims.
   total: number;
+  // Net (after discount). Headline number shown in the footer.
+  net: number;
+  // Total peso amount discounted across all claimed lines.
+  discount: number;
   cartCount: number;
   onCheckout: () => void;
 }) {
@@ -1594,12 +1958,18 @@ function CartSidePanel({
           const { itemId, variantIndex } = parseCartKey(key);
           const it = items.find((x) => x.id === itemId);
           if (!it) return null;
+          const claim = claims[key] ?? null;
+          const unitPrice = getLinePrice(it, variantIndex);
           return {
             key,
             qty,
             name: it.name,
             variantName: getVariantName(it, variantIndex),
-            price: getLinePrice(it, variantIndex),
+            price: unitPrice,
+            discountedPrice: claim
+              ? unitPrice * (1 - SENIOR_PWD_DISCOUNT_RATE)
+              : unitPrice,
+            claim,
           };
         })
         .filter(Boolean) as {
@@ -1608,8 +1978,10 @@ function CartSidePanel({
         name: string;
         variantName: string | null;
         price: number;
+        discountedPrice: number;
+        claim: Claimant | null;
       }[],
-    [cart, items],
+    [cart, claims, items],
   );
 
   const isEmpty = cartCount === 0;
@@ -1674,19 +2046,44 @@ function CartSidePanel({
                         {li.variantName}
                       </div>
                     )}
+                    {li.claim && (
+                      <span
+                        className={`inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-semibold ${
+                          li.claim.kind === "pwd"
+                            ? "bg-sky-100 text-sky-800"
+                            : "bg-mustard/40 text-charcoal"
+                        }`}
+                      >
+                        {li.claim.kind === "pwd" ? "PWD" : "Senior"}
+                        {li.claim.fullName.trim() && (
+                          <span className="font-normal opacity-70">
+                            · {li.claim.fullName.trim().split(/\s+/)[0]}
+                          </span>
+                        )}
+                      </span>
+                    )}
                     <div className="text-[11px] text-muted-foreground mt-0.5">
-                      ₱{li.price.toFixed(0)}
+                      {li.claim ? (
+                        <>
+                          <span className="line-through">₱{li.price.toFixed(0)}</span>{" "}
+                          <span className="text-foreground font-semibold">
+                            ₱{li.discountedPrice.toFixed(0)}
+                          </span>
+                        </>
+                      ) : (
+                        <>₱{li.price.toFixed(0)}</>
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1.5 shrink-0">
                     <div className="text-sm font-semibold text-foreground tabular-nums">
-                      ₱{(li.price * li.qty).toFixed(0)}
+                      ₱{(li.discountedPrice * li.qty).toFixed(0)}
                     </div>
                     {/* Stepper first, trash on the right — matches the
                         mobile cart sheet so the gesture is the same on
-                        either breakpoint. One-tap remove pulls qty
-                        straight to 0; the existing updateQty drops the
-                        key when q <= 0. */}
+                        either breakpoint. The `+` button is disabled on
+                        claimed lines (qty locked at 1; re-add to discount
+                        another unit). */}
                     <div className="inline-flex items-center gap-1.5">
                       <div className="inline-flex items-center rounded-full border border-border bg-background">
                         <button
@@ -1704,7 +2101,9 @@ function CartSidePanel({
                           type="button"
                           onClick={() => updateQty(li.key, 1)}
                           aria-label={`Increase ${li.name}`}
-                          className="h-6 w-6 flex items-center justify-center text-muted-foreground hover:text-foreground transition"
+                          disabled={!!li.claim}
+                          title={li.claim ? "Re-add this item with another ID to discount more" : undefined}
+                          className="h-6 w-6 flex items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition"
                         >
                           <Plus className="h-3 w-3" />
                         </button>
@@ -1728,12 +2127,24 @@ function CartSidePanel({
 
         {/* Footer */}
         <div className="px-5 pt-4 pb-5 border-t border-border/60 shrink-0 bg-card">
+          {discount > 0 && (
+            <div className="flex items-center justify-between mb-1.5 text-[11px]">
+              <span className="text-muted-foreground">Subtotal</span>
+              <span className="tabular-nums">₱{total.toFixed(0)}</span>
+            </div>
+          )}
+          {discount > 0 && (
+            <div className="flex items-center justify-between mb-2 text-[11px] text-primary">
+              <span>SC/PWD discount</span>
+              <span className="tabular-nums">−₱{discount.toFixed(0)}</span>
+            </div>
+          )}
           <div className="flex items-baseline justify-between mb-4">
             <span className="text-xs uppercase tracking-wider text-muted-foreground">
-              Total
+              {discount > 0 ? "Amount due" : "Total"}
             </span>
             <span className="font-display text-2xl font-semibold tabular-nums">
-              ₱{total.toFixed(0)}
+              ₱{net.toFixed(0)}
             </span>
           </div>
           <button
@@ -1875,8 +2286,6 @@ function DineInReservationView({
   items,
   gross,
   cartUnitCount,
-  claimants,
-  setClaimants,
   discountSummary,
   step,
   setStep,
@@ -1889,8 +2298,6 @@ function DineInReservationView({
   items: MenuItem[];
   gross: number;
   cartUnitCount: number;
-  claimants: Claimant[];
-  setClaimants: React.Dispatch<React.SetStateAction<Claimant[]>>;
   discountSummary: DiscountSummary;
   // Step state is lifted to MenuPage so the page layout can switch to the
   // fixed-height menu layout when the guest is on step 2. Dine-in only uses
@@ -1907,8 +2314,11 @@ function DineInReservationView({
   onBack: () => void;
   onConfirm: (args: ConfirmArgs) => void;
 }) {
-  const claimFormOpen = claimants.length > 0;
+  // Senior/PWD claims now happen at item-add time inside the variant modal
+  // (per-line attribution). No claim form lives on this payment step —
+  // the discount breakdown below still reads from `discountSummary`.
   const payable = discountSummary.net;
+  const hasDiscount = discountSummary.discount > 0;
 
   // Slot picker state.
   const [slots, setSlots] = useState<AvailableSlot[]>([]);
@@ -2032,41 +2442,27 @@ function DineInReservationView({
   //   5. ID photo (admin verification)
   // ID number and address are still collected (and shown on the receipt
   // when present) but don't block submit — many LGU SC IDs have a short
-  // ID number or no street address that would fail strict validation.
-  const allClaimsValid = useMemo(
-    () =>
-      claimants.every(
-        (c) =>
-          c.fullName.trim().length >= 2 &&
-          c.age.trim().length >= 1 &&
-          c.dateOfBirth.trim().length >= 4 &&
-          c.dateOfIssue.trim().length >= 4 &&
-          !!c.idPhotoFile,
-      ),
-    [claimants],
-  );
-
   // Per-step validity gates. Continue is enabled only when the current
   // step's required fields are all valid. Final submit gate (`canSubmit`)
   // re-checks everything as a defense in depth.
   //   1 — Slot picked + capacity ok + valid group size
   //   2 — Cart has at least one item
   //   3a — Customer details valid
-  //   3b — Senior/PWD claim rows valid (or none open)
+  //   3b — Always valid here. Senior/PWD claims now live on the cart line
+  //         (collected in the variant modal at item-add time), so there is
+  //         no per-step gate left to evaluate.
   const step1Valid =
     !!selectedSlot && slotCapacityOk && groupSizeValid;
   const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
   const step2Valid = cartCount > 0;
   const step3aValid = nameValid && emailValid && phoneValid;
-  const step3bValid = !claimFormOpen || allClaimsValid;
 
   const canSubmit =
     !submitting &&
     cartUnitCount > 0 &&
     step1Valid &&
     step2Valid &&
-    step3aValid &&
-    step3bValid;
+    step3aValid;
 
   // Step transitions scroll the next panel into view so the user lands at
   // the top of the new step instead of mid-page. Dine-in only ever passes
@@ -2076,122 +2472,6 @@ function DineInReservationView({
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
-  };
-
-  // Trim claimants to cart size as before.
-  useEffect(() => {
-    if (claimants.length > cartUnitCount) {
-      setClaimants((prev) => prev.slice(0, Math.max(cartUnitCount, 0)));
-    }
-  }, [cartUnitCount, claimants.length, setClaimants]);
-
-  // Per-claimant ID autofill state. `idle`/`off`/`failed` render nothing
-  // disruptive; `loading` shows a spinner; `filled` shows a "please verify"
-  // hint with the model's confidence. The abort map cancels stale OCR
-  // requests when the same row's photo is replaced quickly.
-  const [autoFillByIdx, setAutoFillByIdx] = useState<Record<number, AutoFillStatus>>(
-    {},
-  );
-  const extractAbortByIdx = useRef<Record<number, AbortController>>({});
-
-  const toggleClaim = () => {
-    setClaimants((prev) => (prev.length > 0 ? [] : [makeBlankClaimant("senior")]));
-  };
-
-  const addClaimant = () => {
-    if (claimants.length >= cartUnitCount) return;
-    setClaimants((prev) => [...prev, makeBlankClaimant("senior")]);
-  };
-
-  const removeClaimant = (idx: number) => {
-    setClaimants((prev) => {
-      // Revoke any preview URLs we created so we don't leak.
-      const removed = prev[idx];
-      if (removed?.idPhotoUrl) URL.revokeObjectURL(removed.idPhotoUrl);
-      const next = prev.filter((_, i) => i !== idx);
-      // Always keep at least one row open while the toggle is on. If the
-      // last row was removed, close the form by emptying the array (the
-      // toggle reads claimants.length > 0).
-      return next;
-    });
-  };
-
-  const updateClaimant = (idx: number, patch: Partial<Claimant>) => {
-    setClaimants((prev) =>
-      prev.map((c, i) => (i === idx ? { ...c, ...patch } : c)),
-    );
-  };
-
-  const onPhotoChange = (idx: number, file: File | null) => {
-    setClaimants((prev) => {
-      const next = [...prev];
-      const cur = next[idx];
-      if (cur?.idPhotoUrl) URL.revokeObjectURL(cur.idPhotoUrl);
-      next[idx] = {
-        ...cur,
-        idPhotoFile: file,
-        idPhotoUrl: file ? URL.createObjectURL(file) : null,
-      };
-      return next;
-    });
-
-    // Abort any in-flight extraction for this slot — the photo just
-    // changed, so the previous result is stale.
-    extractAbortByIdx.current[idx]?.abort();
-    if (!file) {
-      setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "idle" } }));
-      return;
-    }
-
-    const ac = new AbortController();
-    extractAbortByIdx.current[idx] = ac;
-    setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "loading" } }));
-
-    (async () => {
-      let result: ExtractIdResult;
-      try {
-        result = await extractIdFromPhoto(file, ac.signal);
-      } catch (e) {
-        if ((e as DOMException)?.name === "AbortError") return;
-        setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "failed" } }));
-        return;
-      }
-      if (ac.signal.aborted) return;
-
-      if (!result.available) {
-        // Key not set yet, or function unreachable — fall back silently to
-        // manual entry. Use "off" so we don't flash an error.
-        setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "off" } }));
-        return;
-      }
-
-      // Autofill — but only fill empty fields, so we don't stomp anything
-      // the user already typed before the OCR returned. The 'kind' field
-      // gets adjusted if the model is highly confident.
-      setClaimants((prev) =>
-        prev.map((c, i) => {
-          if (i !== idx) return c;
-          return {
-            ...c,
-            kind:
-              result.kind === "senior" || result.kind === "pwd"
-                ? result.kind
-                : c.kind,
-            fullName: c.fullName.trim() ? c.fullName : result.full_name,
-            idNumber: c.idNumber.trim() ? c.idNumber : result.id_number,
-            address: c.address.trim() ? c.address : result.address,
-            dateOfBirth: c.dateOfBirth.trim() ? c.dateOfBirth : result.date_of_birth,
-            age: c.age.trim() ? c.age : result.age,
-            sex: c.sex.trim() ? c.sex : result.sex,
-            dateOfIssue: c.dateOfIssue.trim() ? c.dateOfIssue : result.date_of_issue,
-          };
-        }),
-      );
-      setAutoFillByIdx((m) => ({
-        ...m,
-        [idx]: { state: "filled", confidence: result.confidence },
-      }));
-    })();
   };
 
   // ---- Submit: call create_booking RPC --------------------------------
@@ -2411,115 +2691,57 @@ function DineInReservationView({
         </ol>
       </div>
 
-      {/* ============ STEP 3b — Senior/PWD discount (rendered with payment) ============
-          Renders the toggle by default; when on,
-          expands into N claim rows (one per cardholder). Each row collects
-          the fields RA 9994 requires for the OR: full name, ID number,
-          address, ID photo. The number of rows is capped at the number of
-          cart units so we can't promise more discount than there's items. */}
+      {/* ============ STEP 3b — Order summary (rendered with payment) ============
+          Discount attribution moved to item-add time, so this card is now
+          a quiet recap: subtotal, any RA 9994 / RA 10754 discounts applied
+          per claimed line, and the amount due. If nothing was claimed, a
+          single Total line stands in for the breakdown. */}
       {step === 3 && paymentSubStep === "pay" && (
       <div className="bg-card border border-border rounded-2xl p-5 mb-8 shadow-sm">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-primary shrink-0" />
-              <h3 className="font-display text-lg font-semibold">
-                Senior / PWD discount
-              </h3>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-              Per RA 9994 / RA 10754 — {Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% off
-              and VAT-exempt on one qualifying bundle per ID. Upload one ID per claimant.
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={claimFormOpen}
-            onClick={toggleClaim}
-            className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors ${
-              claimFormOpen ? "bg-foreground" : "bg-muted"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-background shadow transition-transform ${
-                claimFormOpen ? "translate-x-5" : "translate-x-0"
-              }`}
-            />
-          </button>
+        <div className="flex items-center gap-2 mb-3">
+          <Sparkles className="h-4 w-4 text-primary shrink-0" />
+          <h3 className="font-display text-lg font-semibold">Order summary</h3>
         </div>
-
-        {claimFormOpen && (
-          <div className="mt-5 space-y-4">
-            {cartUnitCount === 0 && (
-              <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-3">
-                Add at least one item to the cart before claiming a discount.
-              </div>
-            )}
-
-            <div className="text-[11px] text-muted-foreground bg-muted/40 border border-border rounded-lg p-3 leading-relaxed">
-              Uploaded ID photos are sent to our verification provider to read
-              the name, ID number, and address — to save you typing. Fields
-              remain editable. By proceeding you consent to this processing
-              under the Data Privacy Act of 2012.
-            </div>
-
-            {claimants.map((c, idx) => (
-              <ClaimantCard
-                key={idx}
-                index={idx}
-                claimant={c}
-                autoFill={autoFillByIdx[idx] ?? { state: "idle" }}
-                onChange={(patch) => updateClaimant(idx, patch)}
-                onPhotoChange={(file) => onPhotoChange(idx, file)}
-                onRemove={() => removeClaimant(idx)}
-              />
-            ))}
-
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <button
-                type="button"
-                onClick={addClaimant}
-                disabled={claimants.length >= cartUnitCount}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground bg-muted hover:bg-muted/70 rounded-full px-3 py-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Add another ID
-              </button>
-              <div className="text-[11px] text-muted-foreground">
-                {claimants.length} of max {cartUnitCount} qualifying bundles
-              </div>
-            </div>
-
-            {/* Live total breakdown */}
-            <div className="border-t border-border/60 pt-4 mt-2 space-y-1.5 text-sm">
+        <div className="space-y-1.5 text-sm">
+          {hasDiscount ? (
+            <>
               <div className="flex justify-between text-muted-foreground">
                 <span>Subtotal</span>
                 <span className="tabular-nums">₱{gross.toFixed(0)}</span>
               </div>
-              {discountSummary.discount > 0 && (
-                <div className="flex justify-between text-primary">
-                  <span>
-                    Discount ({Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% × {discountSummary.effectiveClaimants})
-                  </span>
-                  <span className="tabular-nums">
-                    −₱{discountSummary.discount.toFixed(0)}
-                  </span>
-                </div>
-              )}
+              <div className="flex justify-between text-primary">
+                <span>
+                  Senior / PWD discount ({Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% × {discountSummary.effectiveClaimants})
+                </span>
+                <span className="tabular-nums">
+                  −₱{discountSummary.discount.toFixed(0)}
+                </span>
+              </div>
               <div className="flex justify-between font-semibold text-foreground pt-1">
                 <span>Amount due</span>
                 <span className="tabular-nums">₱{payable.toFixed(0)}</span>
               </div>
-            </div>
-
-            {!allClaimsValid && (
-              <p className="text-xs text-muted-foreground italic">
-                Fill name, age, date of birth, date of issue, and upload an ID photo for every claimant to proceed.
+              <p className="text-[11px] text-muted-foreground pt-2 leading-relaxed">
+                Discount applied to each qualifying line at the cart. To
+                claim another ID, go back and add the item again under
+                Senior / PWD.
               </p>
-            )}
-          </div>
-        )}
+            </>
+          ) : (
+            <>
+              <div className="flex justify-between font-semibold text-foreground">
+                <span>Total</span>
+                <span className="tabular-nums">₱{payable.toFixed(0)}</span>
+              </div>
+              <p className="text-[11px] text-muted-foreground pt-2 leading-relaxed">
+                Eligible for a Senior / PWD discount? Go back to the menu
+                and tap your item — pick Senior or PWD before adding to
+                receive {Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% off
+                that line.
+              </p>
+            </>
+          )}
+        </div>
       </div>
       )}
 
@@ -2861,8 +3083,8 @@ function DineInReservationView({
       <p className="text-sm text-muted-foreground leading-relaxed mb-4">
         Please settle your payment to confirm your reservation with our team
         — this step locks in your slot.
-        {claimFormOpen &&
-          " Your uploaded ID(s) go to our admin for verification — if a photo can't be verified, we'll ask for a re-upload within 24 hours."}
+        {hasDiscount &&
+          " Please bring the uploaded ID(s) with you on your visit — if they aren't presented, the discount will be voided."}
       </p>
 
       <div className="flex items-center gap-3">
@@ -2917,8 +3139,6 @@ function PickupReservationView({
   items,
   gross,
   cartUnitCount,
-  claimants,
-  setClaimants,
   discountSummary,
   step,
   setStep,
@@ -2931,8 +3151,6 @@ function PickupReservationView({
   items: MenuItem[];
   gross: number;
   cartUnitCount: number;
-  claimants: Claimant[];
-  setClaimants: React.Dispatch<React.SetStateAction<Claimant[]>>;
   discountSummary: DiscountSummary;
   // Lifted to MenuPage so the page layout can swap on step 2 (menu).
   step: WizardStep;
@@ -2945,8 +3163,11 @@ function PickupReservationView({
   onBack: () => void;
   onConfirm: (args: ConfirmArgs) => void;
 }) {
-  const claimFormOpen = claimants.length > 0;
+  // Senior/PWD claims happen at item-add time inside the variant modal;
+  // no claim form lives on this payment step. The breakdown below reads
+  // from discountSummary the same way dine-in does.
   const payable = discountSummary.net;
+  const hasDiscount = discountSummary.discount > 0;
 
   // Slot picker state.
   const [slots, setSlots] = useState<AvailableSlot[]>([]);
@@ -3061,19 +3282,6 @@ function PickupReservationView({
     !selectedSlot ||
     selectedSlot.seats_taken + numberOfMeals <= selectedSlot.capacity;
 
-  const allClaimsValid = useMemo(
-    () =>
-      claimants.every(
-        (c) =>
-          c.fullName.trim().length >= 2 &&
-          c.age.trim().length >= 1 &&
-          c.dateOfBirth.trim().length >= 4 &&
-          c.dateOfIssue.trim().length >= 4 &&
-          !!c.idPhotoFile,
-      ),
-    [claimants],
-  );
-
   // Per-step validity gates. Continue is enabled only when the current
   // step's required fields are all valid. Final submit gate (`canSubmit`)
   // re-checks everything as a defense in depth. Five visible steps:
@@ -3081,120 +3289,20 @@ function PickupReservationView({
   //       built on step 2; capacity tightens once the cart fills).
   //   2 — Cart has at least one item.
   //   3 — Customer details valid.
-  //   4 — Senior/PWD claim rows valid (or none open).
+  //   4 — Senior/PWD claims live on the cart line now; this step has no
+  //        extra gate (the discount summary is informational).
   //   5 — Receipt (rendered outside the wizard).
   const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
   const step1Valid = !!selectedSlot && slotCapacityOk;
   const step2Valid = cartCount > 0 && mealsValid;
   const step3Valid = nameValid && emailValid && phoneValid;
-  const step4Valid = !claimFormOpen || allClaimsValid;
 
   const canSubmit =
     !submitting &&
     cartUnitCount > 0 &&
     step1Valid &&
     step2Valid &&
-    step3Valid &&
-    step4Valid;
-
-  // Trim claimants to cart size (same guard as dine-in).
-  useEffect(() => {
-    if (claimants.length > cartUnitCount) {
-      setClaimants((prev) => prev.slice(0, Math.max(cartUnitCount, 0)));
-    }
-  }, [cartUnitCount, claimants.length, setClaimants]);
-
-  // Per-claimant ID autofill state (mirrors dine-in).
-  const [autoFillByIdx, setAutoFillByIdx] = useState<Record<number, AutoFillStatus>>(
-    {},
-  );
-  const extractAbortByIdx = useRef<Record<number, AbortController>>({});
-
-  // Claim-section helpers (mirror dine-in body).
-  const toggleClaim = () => {
-    setClaimants((prev) =>
-      prev.length > 0 ? [] : [makeBlankClaimant("senior")],
-    );
-  };
-  const addClaimant = () => {
-    if (claimants.length >= cartUnitCount) return;
-    setClaimants((prev) => [...prev, makeBlankClaimant("senior")]);
-  };
-  const removeClaimant = (idx: number) => {
-    setClaimants((prev) => {
-      const removed = prev[idx];
-      if (removed?.idPhotoUrl) URL.revokeObjectURL(removed.idPhotoUrl);
-      return prev.filter((_, i) => i !== idx);
-    });
-  };
-  const updateClaimant = (idx: number, patch: Partial<Claimant>) => {
-    setClaimants((prev) =>
-      prev.map((c, i) => (i === idx ? { ...c, ...patch } : c)),
-    );
-  };
-  const onClaimPhotoChange = (idx: number, file: File | null) => {
-    setClaimants((prev) => {
-      const next = [...prev];
-      const cur = next[idx];
-      if (cur?.idPhotoUrl) URL.revokeObjectURL(cur.idPhotoUrl);
-      next[idx] = {
-        ...cur,
-        idPhotoFile: file,
-        idPhotoUrl: file ? URL.createObjectURL(file) : null,
-      };
-      return next;
-    });
-    extractAbortByIdx.current[idx]?.abort();
-    if (!file) {
-      setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "idle" } }));
-      return;
-    }
-    const ac = new AbortController();
-    extractAbortByIdx.current[idx] = ac;
-    setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "loading" } }));
-    (async () => {
-      let result: ExtractIdResult;
-      try {
-        result = await extractIdFromPhoto(file, ac.signal);
-      } catch (e) {
-        if ((e as DOMException)?.name === "AbortError") return;
-        setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "failed" } }));
-        return;
-      }
-      if (ac.signal.aborted) return;
-      if (!result.available) {
-        setAutoFillByIdx((m) => ({ ...m, [idx]: { state: "off" } }));
-        return;
-      }
-      setClaimants((prev) =>
-        prev.map((c, i) => {
-          if (i !== idx) return c;
-          return {
-            ...c,
-            kind:
-              result.kind === "senior" || result.kind === "pwd"
-                ? result.kind
-                : c.kind,
-            fullName: c.fullName.trim() ? c.fullName : result.full_name,
-            idNumber: c.idNumber.trim() ? c.idNumber : result.id_number,
-            address: c.address.trim() ? c.address : result.address,
-            dateOfBirth: c.dateOfBirth.trim()
-              ? c.dateOfBirth
-              : result.date_of_birth,
-            age: c.age.trim() ? c.age : result.age,
-            sex: c.sex.trim() ? c.sex : result.sex,
-            dateOfIssue: c.dateOfIssue.trim()
-              ? c.dateOfIssue
-              : result.date_of_issue,
-          };
-        }),
-      );
-      setAutoFillByIdx((m) => ({
-        ...m,
-        [idx]: { state: "filled", confidence: result.confidence },
-      }));
-    })();
-  };
+    step3Valid;
 
   // Submit -------------------------------------------------------------
   const handleSubmit = async () => {
@@ -3610,106 +3718,54 @@ function PickupReservationView({
       {/* ============ STEP 4 — Discount + Payment + Confirm ============ */}
       {step === 4 && (
         <>
-          {/* Senior / PWD discount section. */}
+          {/* Order summary — discount attribution now lives on the cart
+              lines (variant modal at item-add time), so this card is a
+              quiet recap. */}
           <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-primary shrink-0" />
-                  <h3 className="font-display text-lg font-semibold">
-                    Senior / PWD discount
-                  </h3>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                  Per RA 9994 / RA 10754 —{" "}
-                  {Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% off and VAT-exempt
-                  on one qualifying bundle per ID.
-                </p>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={claimFormOpen}
-                onClick={toggleClaim}
-                className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors ${
-                  claimFormOpen ? "bg-foreground" : "bg-muted"
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-background shadow transition-transform ${
-                    claimFormOpen ? "translate-x-5" : "translate-x-0"
-                  }`}
-                />
-              </button>
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles className="h-4 w-4 text-primary shrink-0" />
+              <h3 className="font-display text-lg font-semibold">Order summary</h3>
             </div>
-
-            {claimFormOpen && (
-              <div className="mt-5 space-y-4">
-                {cartUnitCount === 0 && (
-                  <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-3">
-                    Add at least one item to the cart before claiming a discount.
-                  </div>
-                )}
-                <div className="text-[11px] text-muted-foreground bg-muted/40 border border-border rounded-lg p-3 leading-relaxed">
-                  Uploaded ID photos are sent to our verification provider to
-                  read the name, ID number, and address. Fields stay editable.
-                  By proceeding you consent to this processing under the Data
-                  Privacy Act of 2012.
-                </div>
-                {claimants.map((c, idx) => (
-                  <ClaimantCard
-                    key={idx}
-                    index={idx}
-                    claimant={c}
-                    autoFill={autoFillByIdx[idx] ?? { state: "idle" }}
-                    onChange={(patch) => updateClaimant(idx, patch)}
-                    onPhotoChange={(file) => onClaimPhotoChange(idx, file)}
-                    onRemove={() => removeClaimant(idx)}
-                  />
-                ))}
-                <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                  <button
-                    type="button"
-                    onClick={addClaimant}
-                    disabled={claimants.length >= cartUnitCount}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground bg-muted hover:bg-muted/70 rounded-full px-3 py-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    Add another ID
-                  </button>
-                  <div className="text-[11px] text-muted-foreground">
-                    {claimants.length} of max {cartUnitCount} qualifying bundles
-                  </div>
-                </div>
-                <div className="border-t border-border/60 pt-4 mt-2 space-y-1.5 text-sm">
+            <div className="space-y-1.5 text-sm">
+              {hasDiscount ? (
+                <>
                   <div className="flex justify-between text-muted-foreground">
                     <span>Subtotal</span>
                     <span className="tabular-nums">₱{gross.toFixed(0)}</span>
                   </div>
-                  {discountSummary.discount > 0 && (
-                    <div className="flex justify-between text-primary">
-                      <span>
-                        Discount ({Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% ×{" "}
-                        {discountSummary.effectiveClaimants})
-                      </span>
-                      <span className="tabular-nums">
-                        −₱{discountSummary.discount.toFixed(0)}
-                      </span>
-                    </div>
-                  )}
+                  <div className="flex justify-between text-primary">
+                    <span>
+                      Senior / PWD discount ({Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}% × {discountSummary.effectiveClaimants})
+                    </span>
+                    <span className="tabular-nums">
+                      −₱{discountSummary.discount.toFixed(0)}
+                    </span>
+                  </div>
                   <div className="flex justify-between font-semibold text-foreground pt-1">
                     <span>Amount due</span>
                     <span className="tabular-nums">₱{payable.toFixed(0)}</span>
                   </div>
-                </div>
-                {!allClaimsValid && (
-                  <p className="text-xs text-muted-foreground italic">
-                    Fill name, age, date of birth, date of issue, and upload an
-                    ID photo for every claimant to proceed.
+                  <p className="text-[11px] text-muted-foreground pt-2 leading-relaxed">
+                    Discount applied to each qualifying line at the cart.
+                    To claim another ID, go back and add the item again
+                    under Senior / PWD.
                   </p>
-                )}
-              </div>
-            )}
+                </>
+              ) : (
+                <>
+                  <div className="flex justify-between font-semibold text-foreground">
+                    <span>Total</span>
+                    <span className="tabular-nums">₱{payable.toFixed(0)}</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground pt-2 leading-relaxed">
+                    Eligible for a Senior / PWD discount? Go back to the
+                    menu, tap your item, and pick Senior or PWD before
+                    adding to receive {Math.round(SENIOR_PWD_DISCOUNT_RATE * 100)}%
+                    off that line.
+                  </p>
+                </>
+              )}
+            </div>
           </div>
 
           {/* Maya QR block */}
@@ -3766,8 +3822,8 @@ function PickupReservationView({
           <p className="text-sm text-muted-foreground leading-relaxed mb-4">
             After you confirm, our team verifies your payment in the Orders
             dashboard. Once verified, your pickup is locked in.
-            {claimFormOpen &&
-              " Uploaded ID(s) go to our admin for verification — if a photo can't be verified, we'll ask for a re-upload within 24 hours."}
+            {hasDiscount &&
+              " Please bring the uploaded ID(s) with you on pickup — if they aren't presented, the discount will be voided."}
           </p>
 
           <div className="flex items-center gap-3">
@@ -4241,7 +4297,7 @@ function ReceiptView({
         {hasDiscount && (
           <div className="border-t border-border pt-4 mb-4 space-y-2">
             <div className="text-xs uppercase tracking-wider text-muted-foreground">
-              Senior / PWD discount
+              Itemized senior / PWD discounts
             </div>
             {receipt.discountLines.map((d, i) => {
               // Compact "DOB · Age · Sex · Issued" line — only rendered if

@@ -48,7 +48,7 @@ function PickupIntro({ onStart }: { onStart: () => void }) {
             onClick={onStart}
             className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm md:text-base font-semibold hover:opacity-90 transition"
           >
-            View menu & order <ChevronRight className="h-4 w-4" />
+            Start your order <ChevronRight className="h-4 w-4" />
           </button>
         </div>
       </main>

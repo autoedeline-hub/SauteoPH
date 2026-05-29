@@ -1,12 +1,17 @@
 // Senior / PWD discount math.
 //
-// TEMPORARY implementation per owner: a flat 12% discount that doubles as
-// the "VAT-exempt" label on the receipt. RA 9994 actually mandates 20% +
-// VAT-exempt; we'll revisit once pricing-model (VAT-inclusive vs net) is
-// confirmed and split out the SC vs PWD bundles. For now, both claim types
-// route through this same rate.
+// Per RA 9994 (Senior Citizens Act) and RA 10754 (PWD Act): 20% discount
+// and VAT exemption on the senior's / PWD's own consumed portion. We treat
+// "VAT exempt" as already baked into menu prices today, so the on-screen
+// discount is the full 20% off; the receipt still surfaces the "VAT-exempt"
+// label as required by BIR.
+//
+// Attribution model (new in 2026-05): each cart line is either anonymous
+// (full price) or carries an attached `Claimant` keyed by its cart key.
+// One ID = one unit (strict). A senior who wants 2 burgers discounted has
+// to upload 2 IDs, which produces 2 distinct claimed cart lines.
 
-export const SENIOR_PWD_DISCOUNT_RATE = 0.12;
+export const SENIOR_PWD_DISCOUNT_RATE = 0.2;
 
 export type ClaimantKind = "senior" | "pwd";
 
@@ -48,12 +53,12 @@ export function makeBlankClaimant(kind: ClaimantKind = "senior"): Claimant {
 }
 
 // A "unit" is one qty of one cart line. A line with qty=3 expands to three
-// units. The N highest-priced units across the cart are the ones that get
-// the discount applied (one unit per claimant). Same item can occupy more
-// than one slot.
+// units. With per-line claim attribution, claimed lines are always qty=1
+// (one ID = one unit), so each claimed cart key contributes exactly one
+// claimed unit.
 export type CartUnit = {
   key: string;            // unique per-unit id ("<cartKey>#<n>")
-  cartKey: string;        // the original cart key (id or id::variantIndex)
+  cartKey: string;        // the original cart key (id or id::variantIndex or …::claim:<id>)
   itemId: string;
   variantIndex: number | null;
   displayName: string;    // e.g. "Burger Set" or "Burger Set — Coke Zero"
@@ -62,7 +67,7 @@ export type CartUnit = {
 
 export type DiscountedUnit = {
   unit: CartUnit;
-  claimantIndex: number;  // 0-based pointer back into the claimants array
+  claimantIndex: number;  // position in iteration order — only used for receipt labelling
   discountAmount: number; // peso amount off this single unit
   discountedPrice: number;
 };
@@ -72,37 +77,28 @@ export type DiscountSummary = {
   discount: number;       // total peso amount discounted
   net: number;            // gross - discount
   discountedUnits: DiscountedUnit[];
-  // The cap: you cannot discount more units than the cart contains, even
-  // if more claimants are uploaded. This number is min(units, claimants).
+  // Count of units actually discounted — equal to the number of claim
+  // entries with a matching cart line. Kept for receipt copy ("Discount × N").
   effectiveClaimants: number;
 };
 
-// Picks one unit per claimant, biased toward the highest-priced unit so the
-// guest sees the biggest legal saving. We sort by unitPrice desc, then take
-// the first `claimants` entries.
-export function pickDiscountedUnits(
-  units: CartUnit[],
-  claimants: number,
-): CartUnit[] {
-  if (claimants <= 0 || units.length === 0) return [];
-  const sorted = [...units].sort((a, b) => b.unitPrice - a.unitPrice);
-  return sorted.slice(0, claimants);
-}
+// cartKey → Claimant. Keyed by the *full* cart key (including the
+// `::claim:<shortId>` suffix that distinguishes claimed lines from anonymous
+// ones), so a lookup is O(1) per unit.
+export type ClaimsByCartKey = Record<string, Claimant>;
 
 export function summarizeDiscount(
   units: CartUnit[],
-  claimants: number,
+  claimsByCartKey: ClaimsByCartKey,
   rate: number = SENIOR_PWD_DISCOUNT_RATE,
 ): DiscountSummary {
   const gross = units.reduce((s, u) => s + u.unitPrice, 0);
-  const picked = pickDiscountedUnits(units, claimants);
-  const pickedKeys = new Set(picked.map((u) => u.key));
 
   let discount = 0;
-  const discountedUnits: DiscountedUnit[] = [];
   let claimantIndex = 0;
+  const discountedUnits: DiscountedUnit[] = [];
   for (const u of units) {
-    if (!pickedKeys.has(u.key)) continue;
+    if (!claimsByCartKey[u.cartKey]) continue;
     const d = u.unitPrice * rate;
     discount += d;
     discountedUnits.push({
@@ -112,7 +108,6 @@ export function summarizeDiscount(
       discountedPrice: u.unitPrice - d,
     });
     claimantIndex += 1;
-    if (claimantIndex >= claimants) break;
   }
 
   return {
