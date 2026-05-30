@@ -90,28 +90,32 @@ const REFUND_LABEL: Record<string, string> = {
 
 type TabKey = "overview" | "pipeline" | "bookings" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge";
 
+// Nav order is the *user-facing journey*, top → bottom: situational
+// awareness (Overview) → core catalog (Menu) → in-flight customer flow
+// (Pipelines / Orders / Invites / Waitlist) → calendar (Time Slot) →
+// reactive support (Escalation) → admin-only knowledge (FAQs).
 const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "overview", label: "Overview", icon: LayoutDashboard },
-  { key: "pipeline", label: "Pipeline", icon: TrendingUp },
+  { key: "menu", label: "Menu", icon: UtensilsCrossed },
+  { key: "pipeline", label: "Pipelines", icon: TrendingUp },
   { key: "bookings", label: "Orders", icon: ShoppingBag },
   { key: "invites", label: "Invites", icon: Mail },
   { key: "contacts", label: "Waitlist", icon: Clock },
-  { key: "escalations", label: "Escalations", icon: AlertCircle },
-  { key: "menu", label: "Menu", icon: UtensilsCrossed },
-  { key: "slots", label: "Slots", icon: CalendarClock },
-  { key: "knowledge", label: "Knowledge", icon: BookOpen },
+  { key: "slots", label: "Time Slot", icon: CalendarClock },
+  { key: "escalations", label: "Escalation", icon: AlertCircle },
+  { key: "knowledge", label: "FAQs", icon: BookOpen },
 ];
 
 const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   overview: { title: "Overview", subtitle: "A calm summary of what's happening at Sautéo today." },
-  pipeline: { title: "Pipeline", subtitle: "Track every customer from request to seated — pickup and dine-in side by side." },
+  menu: { title: "Menu", subtitle: "Curate the dishes available to guests." },
+  pipeline: { title: "Pipelines", subtitle: "Track every customer from request to seated — pickup and dine-in side by side." },
   bookings: { title: "Orders", subtitle: "Verify payments and manage incoming reservations." },
   invites: { title: "Invites", subtitle: "Generate one-time booking links for waitlisted customers." },
   contacts: { title: "Waitlist", subtitle: "Guests waiting for a table, grouped by the date and time they want to book." },
-  escalations: { title: "Escalations", subtitle: "Messenger questions the chatbot couldn't answer — review and resolve here." },
-  menu: { title: "Menu", subtitle: "Curate the dishes available to guests." },
-  slots: { title: "Time Slots", subtitle: "Open, close, and adjust capacity for each service." },
-  knowledge: { title: "Knowledge", subtitle: "FAQ answers the chatbot uses when guests message Sautéo." },
+  slots: { title: "Time Slot", subtitle: "Open, close, and adjust capacity for each service." },
+  escalations: { title: "Escalation", subtitle: "Messenger questions the chatbot couldn't answer — review and resolve here." },
+  knowledge: { title: "FAQs", subtitle: "Answers the chatbot uses when guests message Sautéo." },
 };
 
 const FAQ_TOPICS = [
@@ -125,6 +129,26 @@ function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>("overview");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // Count of unresolved escalations — drives the red sidebar badge so
+  // staff sees "X needs attention" without opening the tab.
+  const [unresolvedEscalations, setUnresolvedEscalations] = useState(0);
+
+  // Lightweight count query (head:true → no rows returned, just `count`).
+  // Re-fires whenever the active tab changes, so resolving items in the
+  // Escalations tab and switching away drops the badge to its new value
+  // when the staff comes back.
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    (async () => {
+      const { count } = await supabase
+        .from("escalations")
+        .select("*", { count: "exact", head: true })
+        .eq("resolved", false);
+      if (!cancelled) setUnresolvedEscalations(count ?? 0);
+    })();
+    return () => { cancelled = true; };
+  }, [tab, isAdmin]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -156,6 +180,7 @@ function AdminPage() {
           tab={tab}
           onTab={(t) => { setTab(t); setMobileNavOpen(false); }}
           email={session.user.email}
+          badges={{ escalations: unresolvedEscalations }}
         />
       </aside>
 
@@ -199,6 +224,7 @@ function AdminPage() {
               onTab={(t) => { setTab(t); setMobileNavOpen(false); }}
               email={session.user.email}
               compact
+              badges={{ escalations: unresolvedEscalations }}
             />
           </aside>
         </div>
@@ -229,8 +255,17 @@ function AdminPage() {
 
 /* ============ Sidebar ============ */
 function SidebarContent({
-  tab, onTab, email, compact,
-}: { tab: TabKey; onTab: (t: TabKey) => void; email?: string; compact?: boolean }) {
+  tab, onTab, email, compact, badges,
+}: {
+  tab: TabKey;
+  onTab: (t: TabKey) => void;
+  email?: string;
+  compact?: boolean;
+  // Optional unread-style counters keyed by TabKey. Currently only used by
+  // the Escalations tab; left generic so future tabs can opt in without
+  // another signature change.
+  badges?: Partial<Record<TabKey, number>>;
+}) {
   return (
     <>
       {!compact && (
@@ -247,6 +282,7 @@ function SidebarContent({
       <nav className="flex-1 px-3 py-5 space-y-1">
         {NAV.map(({ key, label, icon: Icon }) => {
           const active = tab === key;
+          const badge = badges?.[key] ?? 0;
           return (
             <button
               key={key}
@@ -259,6 +295,14 @@ function SidebarContent({
             >
               <Icon className="h-4 w-4 shrink-0" />
               <span>{label}</span>
+              {badge > 0 && (
+                <span
+                  aria-label={`${badge} needs attention`}
+                  className="ml-auto inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-destructive text-destructive-foreground text-[10px] font-semibold leading-none tabular-nums shrink-0"
+                >
+                  {badge > 99 ? "99+" : badge}
+                </span>
+              )}
             </button>
           );
         })}
