@@ -139,6 +139,48 @@ export type Database = {
           },
         ]
       }
+      escalations: {
+        // Bot-created (n8n / Messenger) escalations the chatbot couldn't
+        // resolve. Admin reads them in the Escalations tab, drops an
+        // optional internal note, and either replies via Messenger or
+        // marks resolved. `state` is an ad-hoc category tag ("general",
+        // "booking_confirmed", etc.). `notes` is admin-only context that
+        // never goes back to the customer.
+        Row: {
+          id: string
+          platform_id: string
+          full_name: string | null
+          guest_message: string
+          state: string | null
+          resolved: boolean
+          resolved_at: string | null
+          notes: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          platform_id: string
+          full_name?: string | null
+          guest_message: string
+          state?: string | null
+          resolved?: boolean
+          resolved_at?: string | null
+          notes?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          platform_id?: string
+          full_name?: string | null
+          guest_message?: string
+          state?: string | null
+          resolved?: boolean
+          resolved_at?: string | null
+          notes?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
       menu_categories: {
         Row: {
           created_at: string

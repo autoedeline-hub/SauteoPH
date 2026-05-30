@@ -38,6 +38,7 @@ import {
   Tag,
   Pencil,
   Inbox,
+  MessageCircle,
   CalendarPlus,
   Mail,
   Phone,
@@ -87,7 +88,7 @@ const REFUND_LABEL: Record<string, string> = {
   forfeited: "Forfeited",
 };
 
-type TabKey = "overview" | "pipeline" | "bookings" | "invites" | "contacts" | "menu" | "slots" | "knowledge";
+type TabKey = "overview" | "pipeline" | "bookings" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge";
 
 const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "overview", label: "Overview", icon: LayoutDashboard },
@@ -95,6 +96,7 @@ const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?:
   { key: "bookings", label: "Orders", icon: ShoppingBag },
   { key: "invites", label: "Invites", icon: Mail },
   { key: "contacts", label: "Waitlist", icon: Clock },
+  { key: "escalations", label: "Escalations", icon: AlertCircle },
   { key: "menu", label: "Menu", icon: UtensilsCrossed },
   { key: "slots", label: "Slots", icon: CalendarClock },
   { key: "knowledge", label: "Knowledge", icon: BookOpen },
@@ -106,6 +108,7 @@ const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   bookings: { title: "Orders", subtitle: "Verify payments and manage incoming reservations." },
   invites: { title: "Invites", subtitle: "Generate one-time booking links for waitlisted customers." },
   contacts: { title: "Waitlist", subtitle: "Guests waiting for a table, grouped by the date and time they want to book." },
+  escalations: { title: "Escalations", subtitle: "Messenger questions the chatbot couldn't answer — review and resolve here." },
   menu: { title: "Menu", subtitle: "Curate the dishes available to guests." },
   slots: { title: "Time Slots", subtitle: "Open, close, and adjust capacity for each service." },
   knowledge: { title: "Knowledge", subtitle: "FAQ answers the chatbot uses when guests message Sautéo." },
@@ -214,6 +217,7 @@ function AdminPage() {
           {tab === "bookings" && <BookingsTab />}
           {tab === "invites" && <InvitesTab />}
           {tab === "contacts" && <WaitlistTab />}
+          {tab === "escalations" && <EscalationsTab />}
           {tab === "menu" && <MenuTab />}
           {tab === "slots" && <SlotsTab />}
           {tab === "knowledge" && <KnowledgeTab />}
@@ -3856,6 +3860,398 @@ function WaitlistTab() {
   );
 }
 
+/* ============ Escalations ============
+   Messenger questions the chatbot couldn't resolve. Rows are inserted by
+   the n8n / Messenger pipeline (we never write them here — the admin only
+   reads + flips `resolved`). Default view is "open, newest first" so staff
+   sees what needs attention without scrolling past resolved history. */
+
+type Escalation = {
+  id: string;
+  platform_id: string;
+  // The bot doesn't always have a name (e.g. a guest who never identified
+  // themselves in Messenger). Treat the name as optional and render a
+  // "Unknown guest" fallback.
+  full_name: string | null;
+  guest_message: string;
+  // Ad-hoc category tag set by the bot ("general", "booking_confirmed", …).
+  // Treated as free-form text so a new state can appear without a code
+  // change; the tag chip just renders whatever is there.
+  state: string | null;
+  resolved: boolean;
+  resolved_at: string | null;
+  // Admin-only internal note. Never sent back to the customer; lets staff
+  // leave context for themselves or teammates ("called back at 3pm",
+  // "waiting on kitchen confirmation", etc.).
+  notes: string | null;
+  created_at: string;
+};
+
+// Sautéo's public Messenger inbox. The customer's PSID alone isn't enough
+// to deep-link a conversation as the page admin, so we open the page's
+// Messenger inbox where staff can search for the customer by name.
+const ESCALATION_MESSENGER_URL =
+  "https://www.facebook.com/messages/t/1119234891273865";
+
+function EscalationsTab() {
+  const [escalations, setEscalations] = useState<Escalation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<"open" | "resolved" | "all">("open");
+  const [search, setSearch] = useState("");
+  // Per-row "in-flight" flag so two quick taps on the same row don't double-fire.
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  // When set, this row's notes are being edited inline. Keyed by escalation
+  // id → working draft; null means the textarea isn't open for that row.
+  const [editingNotesFor, setEditingNotesFor] = useState<string | null>(null);
+  const [notesDraft, setNotesDraft] = useState("");
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("escalations")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) {
+      console.warn("[escalations] load failed:", error);
+      setEscalations([]);
+    } else {
+      setEscalations((data ?? []) as Escalation[]);
+    }
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  // Auto-dismiss the inline result toast.
+  useEffect(() => {
+    if (!result) return;
+    const t = window.setTimeout(() => setResult(null), 5000);
+    return () => window.clearTimeout(t);
+  }, [result]);
+
+  // Optimistic toggle: flip the row locally, then write to Supabase. Revert
+  // on error so the UI doesn't lie about what's persisted.
+  const toggleResolved = async (e: Escalation) => {
+    if (updatingId) return;
+    setUpdatingId(e.id);
+    const wasResolved = e.resolved;
+    const patch: Pick<Escalation, "resolved" | "resolved_at"> = wasResolved
+      ? { resolved: false, resolved_at: null }
+      : { resolved: true, resolved_at: new Date().toISOString() };
+    setEscalations((prev) =>
+      prev.map((x) => (x.id === e.id ? { ...x, ...patch } : x)),
+    );
+    const { error } = await supabase
+      .from("escalations")
+      .update(patch)
+      .eq("id", e.id);
+    setUpdatingId(null);
+    if (error) {
+      setEscalations((prev) => prev.map((x) => (x.id === e.id ? e : x)));
+      setResult(`Could not update: ${error.message}`);
+    } else {
+      setResult(wasResolved ? "Reopened." : "Marked resolved.");
+    }
+  };
+
+  // Open the inline notes editor for a row, pre-loading the current value.
+  const startEditingNotes = (e: Escalation) => {
+    setEditingNotesFor(e.id);
+    setNotesDraft(e.notes ?? "");
+  };
+  const cancelEditingNotes = () => {
+    setEditingNotesFor(null);
+    setNotesDraft("");
+  };
+
+  // Persist the draft notes for a row, then close the editor. Empty / blank
+  // drafts are written as NULL so the UI doesn't render an empty bubble.
+  const saveNotes = async (e: Escalation) => {
+    if (savingNotes) return;
+    setSavingNotes(true);
+    const trimmed = notesDraft.trim();
+    const nextNotes = trimmed.length === 0 ? null : trimmed;
+    setEscalations((prev) =>
+      prev.map((x) => (x.id === e.id ? { ...x, notes: nextNotes } : x)),
+    );
+    const { error } = await supabase
+      .from("escalations")
+      .update({ notes: nextNotes })
+      .eq("id", e.id);
+    setSavingNotes(false);
+    if (error) {
+      // Revert on error so the displayed note reflects the persisted row.
+      setEscalations((prev) =>
+        prev.map((x) => (x.id === e.id ? { ...x, notes: e.notes } : x)),
+      );
+      setResult(`Could not save note: ${error.message}`);
+      return;
+    }
+    setEditingNotesFor(null);
+    setNotesDraft("");
+    setResult(trimmed ? "Note saved." : "Note cleared.");
+  };
+
+  const openCount = useMemo(
+    () => escalations.filter((r) => !r.resolved).length,
+    [escalations],
+  );
+  const resolvedCount = escalations.length - openCount;
+
+  const filtered = useMemo(() => {
+    let rows = escalations;
+    if (filter === "open") rows = rows.filter((r) => !r.resolved);
+    else if (filter === "resolved") rows = rows.filter((r) => r.resolved);
+    const q = search.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter(
+        (r) =>
+          (r.full_name ?? "").toLowerCase().includes(q) ||
+          r.guest_message.toLowerCase().includes(q) ||
+          (r.state ?? "").toLowerCase().includes(q) ||
+          (r.notes ?? "").toLowerCase().includes(q),
+      );
+    }
+    return rows;
+  }, [escalations, filter, search]);
+
+  return (
+    <div className="space-y-6">
+      {/* Summary strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <MiniStat label="Open" value={String(openCount)} icon={Inbox} loading={loading} />
+        <MiniStat label="Resolved" value={String(resolvedCount)} icon={CheckCircle2} loading={loading} />
+        <MiniStat label="Total" value={String(escalations.length)} icon={MessageCircle} loading={loading} />
+      </div>
+
+      {/* Filters */}
+      <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-3">
+        <div className="relative">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by name, message, or category…"
+            className="w-full bg-background border border-border rounded-lg pl-10 pr-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+          />
+        </div>
+        <div className="inline-flex rounded-full bg-muted p-0.5 text-xs">
+          {(["open", "resolved", "all"] as const).map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setFilter(f)}
+              className={`px-3 py-1.5 rounded-full transition ${
+                filter === f
+                  ? "bg-foreground text-background font-semibold"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {f === "open"
+                ? `Open (${openCount})`
+                : f === "resolved"
+                  ? `Resolved (${resolvedCount})`
+                  : "All"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Result toast */}
+      {result && (
+        <div className="bg-mustard/15 border border-mustard/40 text-charcoal rounded-2xl px-4 py-3 text-sm flex items-center gap-2 shadow-sm">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span>{result}</span>
+        </div>
+      )}
+
+      {/* List */}
+      {loading ? (
+        <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">
+          Loading escalations…
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="bg-card border border-border rounded-2xl shadow-sm">
+          <EmptyState
+            icon={Inbox}
+            title={
+              escalations.length === 0
+                ? "No escalations yet"
+                : filter === "open"
+                  ? "Nothing pending"
+                  : "No matches"
+            }
+            hint={
+              escalations.length === 0
+                ? "The chatbot will surface customer questions here when it can't answer them itself."
+                : filter === "open"
+                  ? "All caught up — switch to Resolved or All to see history."
+                  : "Try a different search or filter."
+            }
+          />
+        </div>
+      ) : (
+        <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+          <ul className="divide-y divide-border">
+            {filtered.map((e) => {
+              const displayName = e.full_name?.trim() || "Unknown guest";
+              const isEditingNotes = editingNotesFor === e.id;
+              return (
+                <li
+                  key={e.id}
+                  className={`px-5 py-4 transition ${e.resolved ? "opacity-70" : ""}`}
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium truncate">{displayName}</span>
+                        {e.state && (
+                          <span className="px-2 py-0.5 rounded-full bg-mustard/25 text-charcoal text-[10px] font-medium">
+                            {e.state}
+                          </span>
+                        )}
+                        {e.resolved && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium">
+                            <CheckCircle2 className="h-3 w-3" /> Resolved
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-foreground/90 mt-1.5 leading-relaxed">
+                        {e.guest_message}
+                      </p>
+                      <div className="text-[11px] text-muted-foreground mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <span>{format(new Date(e.created_at), "MMM d, h:mm a")}</span>
+                        {e.platform_id && (
+                          <span className="font-mono">
+                            PSID {e.platform_id.slice(0, 12)}…
+                          </span>
+                        )}
+                        {e.resolved && e.resolved_at && (
+                          <span>
+                            · Resolved {format(new Date(e.resolved_at), "MMM d, h:mm a")}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <a
+                        href={ESCALATION_MESSENGER_URL}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Open the Sautéo Messenger inbox to reply"
+                        className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-1.5 border border-border hover:bg-muted transition"
+                      >
+                        <MessageCircle className="h-3.5 w-3.5" /> Messenger
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => toggleResolved(e)}
+                        disabled={updatingId === e.id}
+                        title={
+                          e.resolved
+                            ? "Reopen this escalation"
+                            : "Mark as resolved (sets resolved_at to now)"
+                        }
+                        className={`inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-1.5 transition disabled:opacity-50 ${
+                          e.resolved
+                            ? "border border-border hover:bg-muted"
+                            : "bg-foreground text-background hover:opacity-90"
+                        }`}
+                      >
+                        {updatingId === e.id ? (
+                          "Saving…"
+                        ) : e.resolved ? (
+                          "Reopen"
+                        ) : (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5" /> Mark resolved
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Admin-only notes block. Shows the persisted note when
+                      present + an Edit affordance; flips into an inline
+                      textarea when editing. Customer never sees this. */}
+                  <div className="mt-3 pl-0 sm:pl-0">
+                    {isEditingNotes ? (
+                      <div className="bg-muted/30 border border-border rounded-xl p-3 space-y-2">
+                        <label className="block text-[10px] uppercase tracking-wider text-muted-foreground">
+                          Internal note (admin-only)
+                        </label>
+                        <textarea
+                          value={notesDraft}
+                          onChange={(ev) => setNotesDraft(ev.target.value.slice(0, 1000))}
+                          rows={2}
+                          autoFocus
+                          placeholder="e.g. called back at 3 PM — waiting on kitchen confirmation"
+                          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition resize-none"
+                        />
+                        <div className="flex items-center justify-end gap-2">
+                          <span className="text-[10px] text-muted-foreground tabular-nums mr-auto">
+                            {notesDraft.length} / 1000
+                          </span>
+                          <button
+                            type="button"
+                            onClick={cancelEditingNotes}
+                            disabled={savingNotes}
+                            className="text-xs px-3 py-1.5 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted/50 disabled:opacity-50"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => saveNotes(e)}
+                            disabled={savingNotes}
+                            className="text-xs font-semibold px-3 py-1.5 rounded-full bg-foreground text-background hover:opacity-90 disabled:opacity-50"
+                          >
+                            {savingNotes ? "Saving…" : "Save note"}
+                          </button>
+                        </div>
+                      </div>
+                    ) : e.notes ? (
+                      <div className="bg-mustard/10 border border-mustard/30 rounded-xl px-3 py-2 flex items-start gap-2">
+                        <Pencil className="h-3 w-3 text-muted-foreground mt-1 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">
+                            Internal note
+                          </div>
+                          <p className="text-xs text-foreground/90 whitespace-pre-wrap leading-relaxed">
+                            {e.notes}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => startEditingNotes(e)}
+                          className="text-[11px] font-semibold text-muted-foreground hover:text-foreground transition shrink-0"
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => startEditingNotes(e)}
+                        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition"
+                      >
+                        <Plus className="h-3 w-3" />
+                        Add internal note
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Tiny status pill rendered in the contacts table's "Invite status" column.
 // Mirrors the same vocabulary used in the Invites tab (active / used /
 // expired) so admins recognize it at a glance from either screen.
@@ -5210,10 +5606,11 @@ type InviteCreatorPrefill = {
   groupSize?: number;
 };
 
-// The Airtable waitlist + pickup importers stash party size into the
-// contact's free-text notes ("Party size on waitlist: 4" or
-// "Requested meals: 4"). Pull it back out so the InviteCreator can
-// pre-fill the group_size field instead of defaulting to 2.
+// The Messenger waitlist + pickup pipeline stashes party size into the
+// contact's free-text notes ("Party size on waitlist: 4" or "Requested
+// meals: 4") when the dedicated `last_party_size` column isn't set on a
+// legacy row. Pull it back out so the InviteCreator can pre-fill the
+// group_size field instead of defaulting to 2.
 function extractPartySize(notes: string | null | undefined): number | undefined {
   if (!notes) return undefined;
   const m = notes.match(/(?:Party size on waitlist|Requested meals)[^:]*:\s*(\d+)/i);
