@@ -985,18 +985,20 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 /* ============ Login / Not authorized ============ */
+// Sign-in only. Public signup was removed from this form — new admins are
+// invited from inside the console by an existing admin (see the "Admins"
+// section). The Supabase auth API still accepts password sign-ups in theory,
+// but the user_roles gate below denies access regardless, and the project's
+// auth dashboard should keep signups locked to "invite only" as well.
 function AdminLogin() {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
-  const [mode, setMode] = useState<"login"|"signup">("login");
   const [err, setErr] = useState<string|null>(null);
   const [busy, setBusy] = useState(false);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true); setErr(null);
-    const { error } = mode === "login"
-      ? await supabase.auth.signInWithPassword({ email, password: pw })
-      : await supabase.auth.signUp({ email, password: pw });
+    const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
     if (error) setErr(error.message);
     setBusy(false);
   };
@@ -1007,10 +1009,10 @@ function AdminLogin() {
           Sautéo<span className="text-primary">.</span>
         </div>
         <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mb-6">
-          Admin {mode === "login" ? "Sign in" : "Sign up"}
+          Admin sign in
         </div>
         <p className="text-sm text-muted-foreground mb-6">
-          {mode === "login" ? "Welcome back. Sign in to manage Sautéo." : "Create the first admin account."}
+          Welcome back. Sign in to manage Sautéo.
         </p>
         <div className="space-y-3">
           <input
@@ -1028,15 +1030,11 @@ function AdminLogin() {
             disabled={busy}
             className="w-full rounded-full bg-foreground text-background py-2.5 font-medium text-sm hover:opacity-90 disabled:opacity-50 transition"
           >
-            {busy ? "…" : mode === "login" ? "Sign in" : "Create account"}
+            {busy ? "…" : "Sign in"}
           </button>
-          <button
-            type="button"
-            onClick={() => setMode(m => m==="login"?"signup":"login")}
-            className="w-full text-xs text-muted-foreground hover:text-foreground"
-          >
-            {mode === "login" ? "First time? Create the admin account →" : "← Already have an account? Sign in"}
-          </button>
+          <p className="pt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
+            Admin access is invite-only. Ask an existing admin to add your account from inside the console.
+          </p>
         </div>
       </form>
     </div>
