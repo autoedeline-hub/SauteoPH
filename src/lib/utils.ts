@@ -1,10 +1,3 @@
-import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
-
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
-
 // "Today" in the restaurant's local timezone, as YYYY-MM-DD. Sautéo runs
 // in PH (UTC+8); `new Date().toISOString().slice(0, 10)` returns the UTC
 // date, which is 8 hours behind PH and silently surfaces yesterday's
