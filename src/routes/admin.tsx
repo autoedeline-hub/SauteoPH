@@ -37,12 +37,12 @@ import {
   ArrowRight,
   Tag,
   Pencil,
+  Facebook,
   Inbox,
-  MessageCircle,
+  MessageSquareWarning,
   CalendarPlus,
   Mail,
   Phone,
-  Facebook,
   Instagram,
   BookOpen,
   EyeOff,
@@ -3887,365 +3887,195 @@ type Escalation = {
   created_at: string;
 };
 
-// Sautéo's public Messenger inbox. The customer's PSID alone isn't enough
-// to deep-link a conversation as the page admin, so we open the page's
-// Messenger inbox where staff can search for the customer by name.
-const ESCALATION_MESSENGER_URL =
-  "https://www.facebook.com/messages/t/1119234891273865";
-
+// EscalationsTab — verbatim port from the canonical Sautéo admin console.
+// Reads/writes the public `escalations` table directly via the supabase
+// client; the n8n / Messenger pipeline inserts rows, and admin clears
+// them with optional notes + a Messenger deep-link by PSID.
 function EscalationsTab() {
-  const [escalations, setEscalations] = useState<Escalation[]>([]);
+  const [rows, setRows] = useState<Escalation[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<"open" | "resolved" | "all">("open");
-  const [search, setSearch] = useState("");
-  // Per-row "in-flight" flag so two quick taps on the same row don't double-fire.
-  const [updatingId, setUpdatingId] = useState<string | null>(null);
-  // When set, this row's notes are being edited inline. Keyed by escalation
-  // id → working draft; null means the textarea isn't open for that row.
-  const [editingNotesFor, setEditingNotesFor] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"unresolved" | "all">("unresolved");
+  const [editingNotes, setEditingNotes] = useState<string | null>(null);
   const [notesDraft, setNotesDraft] = useState("");
-  const [savingNotes, setSavingNotes] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => {
+  const fetchRows = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("escalations")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (error) {
-      console.warn("[escalations] load failed:", error);
-      setEscalations([]);
-    } else {
-      setEscalations((data ?? []) as Escalation[]);
-    }
+    let q = supabase.from("escalations").select("*").order("created_at", { ascending: false });
+    if (filter === "unresolved") q = q.eq("resolved", false);
+    const { data } = await q;
+    setRows((data ?? []) as Escalation[]);
     setLoading(false);
-  }, []);
-  useEffect(() => { load(); }, [load]);
+  }, [filter]);
 
-  // Auto-dismiss the inline result toast.
-  useEffect(() => {
-    if (!result) return;
-    const t = window.setTimeout(() => setResult(null), 5000);
-    return () => window.clearTimeout(t);
-  }, [result]);
+  useEffect(() => { fetchRows(); }, [fetchRows]);
 
-  // Optimistic toggle: flip the row locally, then write to Supabase. Revert
-  // on error so the UI doesn't lie about what's persisted.
-  const toggleResolved = async (e: Escalation) => {
-    if (updatingId) return;
-    setUpdatingId(e.id);
-    const wasResolved = e.resolved;
-    const patch: Pick<Escalation, "resolved" | "resolved_at"> = wasResolved
-      ? { resolved: false, resolved_at: null }
-      : { resolved: true, resolved_at: new Date().toISOString() };
-    setEscalations((prev) =>
-      prev.map((x) => (x.id === e.id ? { ...x, ...patch } : x)),
-    );
-    const { error } = await supabase
-      .from("escalations")
-      .update(patch)
-      .eq("id", e.id);
-    setUpdatingId(null);
-    if (error) {
-      setEscalations((prev) => prev.map((x) => (x.id === e.id ? e : x)));
-      setResult(`Could not update: ${error.message}`);
-    } else {
-      setResult(wasResolved ? "Reopened." : "Marked resolved.");
-    }
+  const markResolved = async (id: string, notes: string) => {
+    setSaving(true);
+    await supabase.from("escalations").update({
+      resolved: true,
+      resolved_at: new Date().toISOString(),
+      notes,
+    }).eq("id", id);
+    setSaving(false);
+    setEditingNotes(null);
+    fetchRows();
   };
 
-  // Open the inline notes editor for a row, pre-loading the current value.
-  const startEditingNotes = (e: Escalation) => {
-    setEditingNotesFor(e.id);
-    setNotesDraft(e.notes ?? "");
+  const saveNotesOnly = async (id: string) => {
+    setSaving(true);
+    await supabase.from("escalations").update({ notes: notesDraft }).eq("id", id);
+    setSaving(false);
+    setEditingNotes(null);
+    fetchRows();
   };
-  const cancelEditingNotes = () => {
-    setEditingNotesFor(null);
-    setNotesDraft("");
-  };
-
-  // Persist the draft notes for a row, then close the editor. Empty / blank
-  // drafts are written as NULL so the UI doesn't render an empty bubble.
-  const saveNotes = async (e: Escalation) => {
-    if (savingNotes) return;
-    setSavingNotes(true);
-    const trimmed = notesDraft.trim();
-    const nextNotes = trimmed.length === 0 ? null : trimmed;
-    setEscalations((prev) =>
-      prev.map((x) => (x.id === e.id ? { ...x, notes: nextNotes } : x)),
-    );
-    const { error } = await supabase
-      .from("escalations")
-      .update({ notes: nextNotes })
-      .eq("id", e.id);
-    setSavingNotes(false);
-    if (error) {
-      // Revert on error so the displayed note reflects the persisted row.
-      setEscalations((prev) =>
-        prev.map((x) => (x.id === e.id ? { ...x, notes: e.notes } : x)),
-      );
-      setResult(`Could not save note: ${error.message}`);
-      return;
-    }
-    setEditingNotesFor(null);
-    setNotesDraft("");
-    setResult(trimmed ? "Note saved." : "Note cleared.");
-  };
-
-  const openCount = useMemo(
-    () => escalations.filter((r) => !r.resolved).length,
-    [escalations],
-  );
-  const resolvedCount = escalations.length - openCount;
-
-  const filtered = useMemo(() => {
-    let rows = escalations;
-    if (filter === "open") rows = rows.filter((r) => !r.resolved);
-    else if (filter === "resolved") rows = rows.filter((r) => r.resolved);
-    const q = search.trim().toLowerCase();
-    if (q) {
-      rows = rows.filter(
-        (r) =>
-          (r.full_name ?? "").toLowerCase().includes(q) ||
-          r.guest_message.toLowerCase().includes(q) ||
-          (r.state ?? "").toLowerCase().includes(q) ||
-          (r.notes ?? "").toLowerCase().includes(q),
-      );
-    }
-    return rows;
-  }, [escalations, filter, search]);
 
   return (
     <div className="space-y-6">
-      {/* Summary strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        <MiniStat label="Open" value={String(openCount)} icon={Inbox} loading={loading} />
-        <MiniStat label="Resolved" value={String(resolvedCount)} icon={CheckCircle2} loading={loading} />
-        <MiniStat label="Total" value={String(escalations.length)} icon={MessageCircle} loading={loading} />
-      </div>
-
-      {/* Filters */}
-      <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-3">
-        <div className="relative">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name, message, or category…"
-            className="w-full bg-background border border-border rounded-lg pl-10 pr-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
-          />
-        </div>
-        <div className="inline-flex rounded-full bg-muted p-0.5 text-xs">
-          {(["open", "resolved", "all"] as const).map((f) => (
+      {/* Filter bar */}
+      <div className="flex items-center gap-3">
+        <div className="flex rounded-lg border border-border overflow-hidden text-sm">
+          {(["unresolved", "all"] as const).map((f) => (
             <button
               key={f}
-              type="button"
               onClick={() => setFilter(f)}
-              className={`px-3 py-1.5 rounded-full transition ${
-                filter === f
-                  ? "bg-foreground text-background font-semibold"
-                  : "text-muted-foreground hover:text-foreground"
+              className={`px-4 py-2 transition ${
+                filter === f ? "bg-foreground text-background font-medium" : "text-muted-foreground hover:bg-muted/50"
               }`}
             >
-              {f === "open"
-                ? `Open (${openCount})`
-                : f === "resolved"
-                  ? `Resolved (${resolvedCount})`
-                  : "All"}
+              {f === "unresolved" ? "Needs attention" : "All"}
             </button>
           ))}
         </div>
+        <span className="text-sm text-muted-foreground">{rows.length} record{rows.length !== 1 ? "s" : ""}</span>
+        <button onClick={fetchRows} className="ml-auto text-xs text-muted-foreground hover:text-foreground underline underline-offset-2">
+          Refresh
+        </button>
       </div>
 
-      {/* Result toast */}
-      {result && (
-        <div className="bg-mustard/15 border border-mustard/40 text-charcoal rounded-2xl px-4 py-3 text-sm flex items-center gap-2 shadow-sm">
-          <CheckCircle2 className="h-4 w-4 shrink-0" />
-          <span>{result}</span>
-        </div>
-      )}
-
-      {/* List */}
       {loading ? (
-        <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">
-          Loading escalations…
-        </div>
-      ) : filtered.length === 0 ? (
-        <div className="bg-card border border-border rounded-2xl shadow-sm">
-          <EmptyState
-            icon={Inbox}
-            title={
-              escalations.length === 0
-                ? "No escalations yet"
-                : filter === "open"
-                  ? "Nothing pending"
-                  : "No matches"
-            }
-            hint={
-              escalations.length === 0
-                ? "The chatbot will surface customer questions here when it can't answer them itself."
-                : filter === "open"
-                  ? "All caught up — switch to Resolved or All to see history."
-                  : "Try a different search or filter."
-            }
-          />
+        <div className="text-sm text-muted-foreground py-12 text-center">Loading…</div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-2xl border border-border bg-card p-12 text-center">
+          <MessageSquareWarning className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
+          <p className="text-sm text-muted-foreground">
+            {filter === "unresolved" ? "No open escalations — all caught up!" : "No escalations recorded yet."}
+          </p>
         </div>
       ) : (
-        <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-          <ul className="divide-y divide-border">
-            {filtered.map((e) => {
-              const displayName = e.full_name?.trim() || "Unknown guest";
-              const isEditingNotes = editingNotesFor === e.id;
-              return (
-                <li
-                  key={e.id}
-                  className={`px-5 py-4 transition ${e.resolved ? "opacity-70" : ""}`}
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-start gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium truncate">{displayName}</span>
-                        {e.state && (
-                          <span className="px-2 py-0.5 rounded-full bg-mustard/25 text-charcoal text-[10px] font-medium">
-                            {e.state}
-                          </span>
-                        )}
-                        {e.resolved && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium">
-                            <CheckCircle2 className="h-3 w-3" /> Resolved
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-sm text-foreground/90 mt-1.5 leading-relaxed">
-                        {e.guest_message}
-                      </p>
-                      <div className="text-[11px] text-muted-foreground mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-                        <span>{format(new Date(e.created_at), "MMM d, h:mm a")}</span>
-                        {e.platform_id && (
-                          <span className="font-mono">
-                            PSID {e.platform_id.slice(0, 12)}…
-                          </span>
-                        )}
-                        {e.resolved && e.resolved_at && (
-                          <span>
-                            · Resolved {format(new Date(e.resolved_at), "MMM d, h:mm a")}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <a
-                        href={ESCALATION_MESSENGER_URL}
-                        target="_blank"
-                        rel="noreferrer"
-                        title="Open the Sautéo Messenger inbox to reply"
-                        className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-1.5 border border-border hover:bg-muted transition"
-                      >
-                        <MessageCircle className="h-3.5 w-3.5" /> Messenger
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => toggleResolved(e)}
-                        disabled={updatingId === e.id}
-                        title={
-                          e.resolved
-                            ? "Reopen this escalation"
-                            : "Mark as resolved (sets resolved_at to now)"
-                        }
-                        className={`inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-1.5 transition disabled:opacity-50 ${
-                          e.resolved
-                            ? "border border-border hover:bg-muted"
-                            : "bg-foreground text-background hover:opacity-90"
-                        }`}
-                      >
-                        {updatingId === e.id ? (
-                          "Saving…"
-                        ) : e.resolved ? (
-                          "Reopen"
-                        ) : (
-                          <>
-                            <CheckCircle2 className="h-3.5 w-3.5" /> Mark resolved
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Admin-only notes block. Shows the persisted note when
-                      present + an Edit affordance; flips into an inline
-                      textarea when editing. Customer never sees this. */}
-                  <div className="mt-3 pl-0 sm:pl-0">
-                    {isEditingNotes ? (
-                      <div className="bg-muted/30 border border-border rounded-xl p-3 space-y-2">
-                        <label className="block text-[10px] uppercase tracking-wider text-muted-foreground">
-                          Internal note (admin-only)
-                        </label>
-                        <textarea
-                          value={notesDraft}
-                          onChange={(ev) => setNotesDraft(ev.target.value.slice(0, 1000))}
-                          rows={2}
-                          autoFocus
-                          placeholder="e.g. called back at 3 PM — waiting on kitchen confirmation"
-                          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition resize-none"
-                        />
-                        <div className="flex items-center justify-end gap-2">
-                          <span className="text-[10px] text-muted-foreground tabular-nums mr-auto">
-                            {notesDraft.length} / 1000
-                          </span>
-                          <button
-                            type="button"
-                            onClick={cancelEditingNotes}
-                            disabled={savingNotes}
-                            className="text-xs px-3 py-1.5 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted/50 disabled:opacity-50"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => saveNotes(e)}
-                            disabled={savingNotes}
-                            className="text-xs font-semibold px-3 py-1.5 rounded-full bg-foreground text-background hover:opacity-90 disabled:opacity-50"
-                          >
-                            {savingNotes ? "Saving…" : "Save note"}
-                          </button>
-                        </div>
-                      </div>
-                    ) : e.notes ? (
-                      <div className="bg-mustard/10 border border-mustard/30 rounded-xl px-3 py-2 flex items-start gap-2">
-                        <Pencil className="h-3 w-3 text-muted-foreground mt-1 shrink-0" />
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">
-                            Internal note
-                          </div>
-                          <p className="text-xs text-foreground/90 whitespace-pre-wrap leading-relaxed">
-                            {e.notes}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => startEditingNotes(e)}
-                          className="text-[11px] font-semibold text-muted-foreground hover:text-foreground transition shrink-0"
-                        >
-                          Edit
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => startEditingNotes(e)}
-                        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition"
-                      >
-                        <Plus className="h-3 w-3" />
-                        Add internal note
-                      </button>
+        <div className="space-y-3">
+          {rows.map((row) => (
+            <div
+              key={row.id}
+              className={`rounded-2xl border bg-card p-5 space-y-3 ${
+                row.resolved ? "border-border opacity-60" : "border-destructive/40"
+              }`}
+            >
+              {/* Header row */}
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium">{row.full_name || "Unknown guest"}</span>
+                    {row.state && (
+                      <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+                        {row.state}
+                      </span>
+                    )}
+                    {row.resolved && (
+                      <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-green-500/10 text-green-600 font-medium">
+                        Resolved
+                      </span>
                     )}
                   </div>
-                </li>
-              );
-            })}
-          </ul>
+                  <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+                    <span>PSID: {row.platform_id}</span>
+                    <span>·</span>
+                    <span>{new Date(row.created_at).toLocaleString()}</span>
+                    <span>·</span>
+                    <a
+                      href={`https://www.facebook.com/messages/t/${row.platform_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
+                    >
+                      <Facebook className="h-3 w-3" />
+                      Reply on Messenger
+                    </a>
+                  </div>
+                </div>
+                {!row.resolved && (
+                  <button
+                    onClick={() => {
+                      setEditingNotes(row.id);
+                      setNotesDraft(row.notes ?? "");
+                    }}
+                    className="shrink-0 text-xs px-3 py-1.5 rounded-lg border border-border hover:bg-muted/50 transition"
+                  >
+                    Mark resolved
+                  </button>
+                )}
+              </div>
+
+              {/* Guest message */}
+              <div className="rounded-xl bg-muted/50 px-4 py-3 text-sm text-foreground leading-relaxed">
+                {row.guest_message}
+              </div>
+
+              {/* Notes / resolve form */}
+              {editingNotes === row.id ? (
+                <div className="space-y-2">
+                  <textarea
+                    className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                    rows={3}
+                    placeholder="Add a note (optional) — e.g. replied via Messenger, added to FAQ…"
+                    value={notesDraft}
+                    onChange={(e) => setNotesDraft(e.target.value)}
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      disabled={saving}
+                      onClick={() => markResolved(row.id, notesDraft)}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-foreground text-background hover:opacity-90 transition disabled:opacity-50"
+                    >
+                      {saving ? "Saving…" : "Resolve"}
+                    </button>
+                    <button
+                      onClick={() => saveNotesOnly(row.id)}
+                      disabled={saving}
+                      className="text-xs px-3 py-1.5 rounded-lg border border-border hover:bg-muted/50 transition disabled:opacity-50"
+                    >
+                      Save note only
+                    </button>
+                    <button
+                      onClick={() => setEditingNotes(null)}
+                      className="text-xs px-3 py-1.5 text-muted-foreground hover:text-foreground transition"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : row.notes ? (
+                <div className="text-xs text-muted-foreground italic">
+                  Note: {row.notes}
+                  {!row.resolved && (
+                    <button
+                      onClick={() => { setEditingNotes(row.id); setNotesDraft(row.notes ?? ""); }}
+                      className="ml-2 underline underline-offset-2 not-italic"
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+              ) : !row.resolved ? (
+                <button
+                  onClick={() => { setEditingNotes(row.id); setNotesDraft(""); }}
+                  className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition"
+                >
+                  + Add note
+                </button>
+              ) : null}
+            </div>
+          ))}
         </div>
       )}
     </div>
