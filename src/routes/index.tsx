@@ -54,7 +54,7 @@ export const Route = createFileRoute("/")({
   },
 });
 
-type Category = { id: string; name: string; slug: string; sort_order: number };
+type Category = { id: string; name: string; slug: string; sort_order: number; available_pickup: boolean };
 type MenuItemVariant = { name: string; price: number };
 type MenuItem = {
   id: string;
@@ -508,8 +508,16 @@ export function MenuPage({
 
   useEffect(() => {
     (async () => {
+      // Pickup hides whole categories admins flagged as dine-in-only (e.g.
+      // "Group Sets"). Dine-in always shows every category — the dine-in
+      // availability rule is "always on" and lives at the item level too.
+      // PostgREST builder rule: filter (.eq) before transform (.order).
+      const catBase = supabase.from("menu_categories").select("*");
+      const catFiltered =
+        effectiveChannel === "pickup" ? catBase.eq("available_pickup", true) : catBase;
+
       const [{ data: c }, { data: i }] = await Promise.all([
-        supabase.from("menu_categories").select("*").order("sort_order"),
+        catFiltered.order("sort_order"),
         supabase
           .from("menu_items")
           .select("*")
@@ -522,17 +530,23 @@ export function MenuPage({
           )
           .order("sort_order"),
       ]);
-      setCategories((c ?? []) as Category[]);
+      const visibleCats = (c ?? []) as Category[];
+      setCategories(visibleCats);
+      // Drop items whose category got filtered out — otherwise they'd show
+      // up under an "Uncategorized" fallback or render with no chip header.
+      const visibleCatIds = new Set(visibleCats.map((cat) => cat.id));
       // Cast via unknown because the generated Supabase types don't yet
       // include the recently-added `variants` jsonb column. The runtime row
       // shape matches MenuItem.
       setItems(
-        ((i ?? []) as unknown as MenuItem[]).map((it) => ({
-          ...it,
-          price: Number(it.price),
-          available_dine_in: it.available_dine_in ?? true,
-          available_pickup: it.available_pickup ?? true,
-        })),
+        ((i ?? []) as unknown as MenuItem[])
+          .filter((it) => visibleCatIds.has(it.category_id))
+          .map((it) => ({
+            ...it,
+            price: Number(it.price),
+            available_dine_in: it.available_dine_in ?? true,
+            available_pickup: it.available_pickup ?? true,
+          })),
       );
     })();
   }, [effectiveChannel]);

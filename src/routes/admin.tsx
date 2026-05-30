@@ -1443,6 +1443,7 @@ type MenuCategory = {
   id: string;
   name: string;
   sort_order: number;
+  available_pickup: boolean;
 };
 
 type MenuItem = {
@@ -1849,6 +1850,22 @@ function CategoryManager({
     else onChanged();
   };
 
+  const togglePickup = async (cat: MenuCategory) => {
+    const next = !cat.available_pickup;
+    // Optimistic flip; rollback if Supabase rejects.
+    setWorking(prev => prev.map(c => (c.id === cat.id ? { ...c, available_pickup: next } : c)));
+    const { error } = await supabase
+      .from("menu_categories")
+      .update({ available_pickup: next })
+      .eq("id", cat.id);
+    if (error) {
+      setWorking(prev => prev.map(c => (c.id === cat.id ? { ...c, available_pickup: cat.available_pickup } : c)));
+      setErr(error.message);
+    } else {
+      onChanged();
+    }
+  };
+
   const moveCategory = async (id: string, dir: -1 | 1) => {
     const sorted = [...working].sort((a, b) => a.sort_order - b.sort_order);
     const idx = sorted.findIndex(c => c.id === id);
@@ -1918,6 +1935,10 @@ function CategoryManager({
           </div>
           {err && <div className="text-xs text-destructive">{err}</div>}
 
+          <p className="text-[11px] leading-relaxed text-muted-foreground pt-1">
+            Toggle the pill on the right to hide a category from the pickup menu. Dine-in always shows every category.
+          </p>
+
           {/* List */}
           {sortedWorking.length === 0 ? (
             <EmptyState icon={Tag} title="No categories" hint="Add your first category above." className="py-10" />
@@ -1934,6 +1955,7 @@ function CategoryManager({
                   onDelete={() => removeCategory(c)}
                   onUp={() => moveCategory(c.id, -1)}
                   onDown={() => moveCategory(c.id, 1)}
+                  onTogglePickup={() => togglePickup(c)}
                 />
               ))}
             </ul>
@@ -1956,7 +1978,7 @@ function CategoryManager({
 }
 
 function CategoryRow({
-  cat, count, canMoveUp, canMoveDown, onRename, onDelete, onUp, onDown,
+  cat, count, canMoveUp, canMoveDown, onRename, onDelete, onUp, onDown, onTogglePickup,
 }: {
   cat: MenuCategory;
   count: number;
@@ -1966,6 +1988,7 @@ function CategoryRow({
   onDelete: () => void;
   onUp: () => void;
   onDown: () => void;
+  onTogglePickup: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(cat.name);
@@ -2018,7 +2041,11 @@ function CategoryRow({
           <button
             type="button"
             onClick={() => setEditing(true)}
-            className="text-sm font-medium truncate hover:underline underline-offset-2"
+            // Long category names like "Set Menu (WITH POTATO FRESH FRIES and
+            // DRINKS) (NO SIDES)" used to get truncated mid-paren on one line.
+            // Allow up to two lines + break long tokens so the name stays
+            // readable without pushing the toggle / actions off-row.
+            className="block w-full text-left text-sm font-medium leading-tight line-clamp-2 break-words hover:underline underline-offset-2"
           >
             {cat.name}
           </button>
@@ -2027,11 +2054,30 @@ function CategoryRow({
           {count} item{count === 1 ? "" : "s"}
         </div>
       </div>
+      {/* Pickup visibility toggle — hides the whole category from the pickup
+          booking flow when off. Dine-in always shows every category. */}
+      <button
+        type="button"
+        role="switch"
+        aria-checked={cat.available_pickup}
+        aria-label={`Show in pickup menu (${cat.available_pickup ? "on" : "off"})`}
+        title={cat.available_pickup ? "Visible in pickup menu" : "Hidden from pickup menu"}
+        onClick={onTogglePickup}
+        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+          cat.available_pickup ? "bg-foreground" : "bg-muted-foreground/30"
+        }`}
+      >
+        <span
+          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-background shadow transition-transform ${
+            cat.available_pickup ? "translate-x-[18px]" : "translate-x-[2px]"
+          }`}
+        />
+      </button>
       <button
         type="button"
         onClick={() => setEditing(e => !e)}
         aria-label="Rename"
-        className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition"
+        className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition"
       >
         <Pencil className="h-3.5 w-3.5" />
       </button>
@@ -2041,7 +2087,7 @@ function CategoryRow({
         aria-label="Delete"
         disabled={count > 0}
         title={count > 0 ? "Move items out first" : "Delete category"}
-        className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+        className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
       >
         <Trash2 className="h-3.5 w-3.5" />
       </button>
@@ -2068,7 +2114,9 @@ function MenuItemEditor({
   const [description, setDescription] = useState(item?.description ?? "");
   const [price, setPrice] = useState<string>(item ? String(item.price) : "");
   const [active, setActive] = useState<boolean>(item?.active ?? true);
-  const [availableDineIn, setAvailableDineIn] = useState<boolean>(item?.available_dine_in ?? true);
+  // Dine-in availability is no longer admin-toggleable — every menu item
+  // appears on reservation menus by default. Only pickup visibility is
+  // controlled per-item via the toggle below.
   const [availablePickup, setAvailablePickup] = useState<boolean>(item?.available_pickup ?? true);
   const [sortOrder, setSortOrder] = useState<string>(item ? String(item.sort_order) : "");
   const [variants, setVariants] = useState<{ name: string; price: string }[]>(
@@ -2181,10 +2229,8 @@ function MenuItemEditor({
     if (!categoryId) { setSubmitError("Pick a category."); return; }
     const priceNum = Number(price);
     if (!Number.isFinite(priceNum) || priceNum < 0) { setSubmitError("Price must be a non-negative number."); return; }
-    if (!availableDineIn && !availablePickup) {
-      setSubmitError("Choose at least one availability channel.");
-      return;
-    }
+    // No availability gate — dine-in is always on now. Items can opt out
+    // of pickup only.
 
     // Clean variants: drop empty / non-positive rows.
     const cleanedVariants: MenuVariant[] = variants
@@ -2212,7 +2258,8 @@ function MenuItemEditor({
         image_url: nextImageUrl,
         category_id: categoryId,
         active,
-        available_dine_in: availableDineIn,
+        // Always true now — dine-in availability is no longer admin-toggleable.
+        available_dine_in: true,
         available_pickup: availablePickup,
         sort_order: sortOrder === "" ? 0 : Number(sortOrder),
         variants: cleanedVariants.length > 0 ? cleanedVariants : null,
@@ -2411,39 +2458,32 @@ function MenuItemEditor({
             </button>
           </div>
 
-          {/* Channel availability */}
-          <div className="bg-muted/30 border border-border rounded-xl px-4 py-3">
-            <div className="flex items-start justify-between gap-4 mb-3">
-              <div>
-                <div className="text-sm font-medium">Availability</div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  Choose where this item appears for customers.
-                </div>
+          {/* Pickup availability — sibling of the Active toggle above,
+              same shape so the two rows line up edge-to-edge. */}
+          <div className="flex items-center justify-between bg-muted/30 border border-border rounded-xl px-4 py-3">
+            <div>
+              <div className="text-sm font-medium">Available for Pickup</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Hidden items are not shown in the pickup menu.
               </div>
-              <span className="text-xs text-muted-foreground shrink-0">
-                {availableDineIn && availablePickup
-                  ? "Both"
-                  : availableDineIn
-                    ? "Dine-in"
-                    : availablePickup
-                      ? "Pick-up"
-                      : "None"}
-              </span>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <MenuChannelToggle
-                label="Dine-in"
-                description="Show on reservation menus."
-                checked={availableDineIn}
-                onChange={() => setAvailableDineIn((v) => !v)}
+            <button
+              type="button"
+              role="switch"
+              aria-checked={availablePickup}
+              aria-pressed={availablePickup}
+              aria-label="Toggle pickup availability"
+              onClick={() => setAvailablePickup((v) => !v)}
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-foreground/20 ${
+                availablePickup ? "bg-foreground" : "bg-muted"
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-background shadow transition ${
+                  availablePickup ? "translate-x-6" : "translate-x-1"
+                }`}
               />
-              <MenuChannelToggle
-                label="Pick-up"
-                description="Show on pickup order menus."
-                checked={availablePickup}
-                onChange={() => setAvailablePickup((v) => !v)}
-              />
-            </div>
+            </button>
           </div>
 
           {/* Variants */}
@@ -2582,50 +2622,6 @@ function ImageUploadField({
         <div className="mt-2 text-xs text-destructive">{error}</div>
       )}
     </div>
-  );
-}
-
-function MenuChannelToggle({
-  label,
-  description,
-  checked,
-  onChange,
-}: {
-  label: string;
-  description: string;
-  checked: boolean;
-  onChange: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={onChange}
-      className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition focus:outline-none focus:ring-2 focus:ring-foreground/20 ${
-        checked
-          ? "border-foreground/20 bg-background"
-          : "border-border bg-muted/30"
-      }`}
-    >
-      <span className="min-w-0">
-        <span className="block text-sm font-medium">{label}</span>
-        <span className="block text-xs text-muted-foreground mt-0.5">
-          {description}
-        </span>
-      </span>
-      <span
-        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
-          checked ? "bg-foreground" : "bg-muted"
-        }`}
-      >
-        <span
-          className={`inline-block h-4 w-4 transform rounded-full bg-background shadow transition ${
-            checked ? "translate-x-6" : "translate-x-1"
-          }`}
-        />
-      </span>
-    </button>
   );
 }
 
@@ -2996,7 +2992,7 @@ function SlotCard({
       >
         <XIcon className="h-3 w-3" />
       </button>
-      <div className={`font-display text-base leading-none ${slot.is_open ? "" : "text-muted-foreground"}`}>
+      <div className={`font-display text-xs leading-none ${slot.is_open ? "" : "text-muted-foreground"}`}>
         {formatSlotTime12h(slot.slot_time)}
       </div>
       <div className="text-[10px] text-muted-foreground mt-1">

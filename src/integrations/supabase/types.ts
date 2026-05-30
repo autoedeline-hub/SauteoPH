@@ -183,6 +183,7 @@ export type Database = {
       }
       menu_categories: {
         Row: {
+          available_pickup: boolean
           created_at: string
           id: string
           name: string
@@ -190,6 +191,7 @@ export type Database = {
           sort_order: number
         }
         Insert: {
+          available_pickup?: boolean
           created_at?: string
           id?: string
           name: string
@@ -197,6 +199,7 @@ export type Database = {
           sort_order?: number
         }
         Update: {
+          available_pickup?: boolean
           created_at?: string
           id?: string
           name?: string
