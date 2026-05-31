@@ -46,6 +46,9 @@ import {
   Instagram,
   BookOpen,
   EyeOff,
+  ShieldCheck,
+  ShieldAlert,
+  ExternalLink,
 } from "lucide-react";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
@@ -88,7 +91,7 @@ const REFUND_LABEL: Record<string, string> = {
   forfeited: "Forfeited",
 };
 
-type TabKey = "overview" | "pipeline" | "bookings" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge";
+type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge";
 
 // Nav order is the *user-facing journey*, top → bottom: situational
 // awareness (Overview) → core catalog (Menu) → in-flight customer flow
@@ -99,6 +102,7 @@ const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?:
   { key: "menu", label: "Menu", icon: UtensilsCrossed },
   { key: "pipeline", label: "Pipelines", icon: TrendingUp },
   { key: "bookings", label: "Orders", icon: ShoppingBag },
+  { key: "seniorids", label: "Senior IDs", icon: ShieldCheck },
   { key: "invites", label: "Invites", icon: Mail },
   { key: "contacts", label: "Waitlist", icon: Clock },
   { key: "slots", label: "Time Slot", icon: CalendarClock },
@@ -111,6 +115,7 @@ const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   menu: { title: "Menu", subtitle: "Curate the dishes available to guests." },
   pipeline: { title: "Pipelines", subtitle: "Track every customer from request to seated — pickup and dine-in side by side." },
   bookings: { title: "Orders", subtitle: "Verify payments and manage incoming reservations." },
+  seniorids: { title: "Senior IDs", subtitle: "Review and verify Senior Citizen and PWD ID photos submitted with discount claims." },
   invites: { title: "Invites", subtitle: "Generate one-time booking links for waitlisted customers." },
   contacts: { title: "Waitlist", subtitle: "Guests waiting for a table, grouped by the date and time they want to book." },
   slots: { title: "Time Slot", subtitle: "Open, close, and adjust capacity for each service." },
@@ -129,23 +134,23 @@ function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>("overview");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  // Count of unresolved escalations — drives the red sidebar badge so
-  // staff sees "X needs attention" without opening the tab.
+  // Sidebar badge counts — re-fire on tab change so resolving/verifying
+  // items in the respective tab reflects immediately when staff navigates away.
   const [unresolvedEscalations, setUnresolvedEscalations] = useState(0);
+  const [unverifiedClaims, setUnverifiedClaims] = useState(0);
 
-  // Lightweight count query (head:true → no rows returned, just `count`).
-  // Re-fires whenever the active tab changes, so resolving items in the
-  // Escalations tab and switching away drops the badge to its new value
-  // when the staff comes back.
   useEffect(() => {
     if (!isAdmin) return;
     let cancelled = false;
     (async () => {
-      const { count } = await supabase
-        .from("escalations")
-        .select("*", { count: "exact", head: true })
-        .eq("resolved", false);
-      if (!cancelled) setUnresolvedEscalations(count ?? 0);
+      const [{ count: esc }, { count: claims }] = await Promise.all([
+        supabase.from("escalations").select("*", { count: "exact", head: true }).eq("resolved", false),
+        supabase.from("senior_pwd_claims").select("*", { count: "exact", head: true }).eq("verified", false),
+      ]);
+      if (!cancelled) {
+        setUnresolvedEscalations(esc ?? 0);
+        setUnverifiedClaims(claims ?? 0);
+      }
     })();
     return () => { cancelled = true; };
   }, [tab, isAdmin]);
@@ -180,7 +185,7 @@ function AdminPage() {
           tab={tab}
           onTab={(t) => { setTab(t); setMobileNavOpen(false); }}
           email={session.user.email}
-          badges={{ escalations: unresolvedEscalations }}
+          badges={{ escalations: unresolvedEscalations, seniorids: unverifiedClaims }}
         />
       </aside>
 
@@ -224,7 +229,7 @@ function AdminPage() {
               onTab={(t) => { setTab(t); setMobileNavOpen(false); }}
               email={session.user.email}
               compact
-              badges={{ escalations: unresolvedEscalations }}
+              badges={{ escalations: unresolvedEscalations, seniorids: unverifiedClaims }}
             />
           </aside>
         </div>
@@ -241,6 +246,7 @@ function AdminPage() {
           {tab === "overview" && <OverviewTab onJumpToOrders={() => setTab("bookings")} />}
           {tab === "pipeline" && <PipelineTab onJumpToOrders={() => setTab("bookings")} />}
           {tab === "bookings" && <BookingsTab />}
+          {tab === "seniorids" && <SeniorIdsTab />}
           {tab === "invites" && <InvitesTab />}
           {tab === "contacts" && <WaitlistTab />}
           {tab === "escalations" && <EscalationsTab />}
@@ -1062,6 +1068,250 @@ function NotAuthorized({ email }: { email?: string }) {
           Sign out
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ============ Senior / PWD ID verification ============ */
+type SeniorClaim = {
+  id: string;
+  booking_id: string;
+  reference_code: string;
+  kind: string;
+  full_name: string;
+  id_number: string;
+  date_of_birth: string;
+  age: string;
+  sex: string;
+  date_of_issue: string;
+  address: string;
+  item_name: string;
+  discount_amount: number;
+  id_photo_path: string | null;
+  verified: boolean;
+  verified_at: string | null;
+  created_at: string;
+};
+
+function SeniorIdsTab() {
+  const [claims, setClaims] = useState<SeniorClaim[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<"all" | "pending" | "verified">("pending");
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  // Signed URL cache: claimId → { url, expiresAt }
+  const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
+  const [lightbox, setLightbox] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const q = supabase
+      .from("senior_pwd_claims")
+      .select("*")
+      .order("created_at", { ascending: false });
+    const { data } = await q;
+    setClaims((data ?? []) as SeniorClaim[]);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const visible = useMemo(() => {
+    if (filter === "pending") return claims.filter(c => !c.verified);
+    if (filter === "verified") return claims.filter(c => c.verified);
+    return claims;
+  }, [claims, filter]);
+
+  const pendingCount = useMemo(() => claims.filter(c => !c.verified).length, [claims]);
+
+  const toggleVerified = async (claim: SeniorClaim) => {
+    setVerifyingId(claim.id);
+    const next = !claim.verified;
+    setClaims(prev => prev.map(c => c.id === claim.id
+      ? { ...c, verified: next, verified_at: next ? new Date().toISOString() : null }
+      : c));
+    const { error } = await supabase
+      .from("senior_pwd_claims")
+      .update({ verified: next, verified_at: next ? new Date().toISOString() : null })
+      .eq("id", claim.id);
+    if (error) {
+      // Rollback optimistic update.
+      setClaims(prev => prev.map(c => c.id === claim.id ? claim : c));
+    }
+    setVerifyingId(null);
+  };
+
+  // Mint a signed URL for an ID photo. Cached for the session since each
+  // URL is valid for 1 hour and photos don't change after upload.
+  const getPhotoUrl = async (claim: SeniorClaim) => {
+    if (!claim.id_photo_path) return;
+    if (photoUrls[claim.id]) {
+      setLightbox(photoUrls[claim.id]);
+      return;
+    }
+    const { data } = await supabase.storage
+      .from("senior-pwd-ids")
+      .createSignedUrl(claim.id_photo_path, 3600);
+    if (data?.signedUrl) {
+      setPhotoUrls(prev => ({ ...prev, [claim.id]: data.signedUrl }));
+      setLightbox(data.signedUrl);
+    }
+  };
+
+  const kindLabel = (kind: string) =>
+    kind === "pwd" ? "PWD" : "Senior";
+
+  const kindStyle = (kind: string) =>
+    kind === "pwd"
+      ? "bg-sky-100 text-sky-700"
+      : "bg-amber-100 text-amber-700";
+
+  return (
+    <div className="space-y-6">
+      {/* Header row */}
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="font-display text-xl">Senior / PWD claims</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {loading ? "Loading…" : `${pendingCount} pending · ${claims.length} total`}
+          </p>
+        </div>
+        <button
+          onClick={load}
+          className="inline-flex items-center gap-1.5 bg-muted/60 hover:bg-muted rounded-full px-4 py-2 text-sm font-medium transition"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {/* Filter pills */}
+      <div className="flex items-center gap-2">
+        {(["pending", "all", "verified"] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-4 py-1.5 rounded-full text-sm font-medium transition ${
+              filter === f
+                ? "bg-foreground text-background"
+                : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
+            }`}
+          >
+            {f === "pending" ? `Pending${pendingCount > 0 ? ` (${pendingCount})` : ""}` : f === "verified" ? "Verified" : "All"}
+          </button>
+        ))}
+      </div>
+
+      {/* List */}
+      {loading ? (
+        <div className="text-sm text-muted-foreground py-12 text-center">Loading…</div>
+      ) : visible.length === 0 ? (
+        <EmptyState
+          icon={ShieldCheck}
+          title={filter === "pending" ? "No pending claims" : "No claims yet"}
+          hint={filter === "pending" ? "All submitted IDs have been verified." : "ID claims appear here when customers use Senior or PWD discounts."}
+          className="py-16"
+        />
+      ) : (
+        <div className="space-y-3">
+          {visible.map(claim => (
+            <div
+              key={claim.id}
+              className={`bg-card border rounded-2xl p-4 shadow-sm flex items-start gap-4 ${
+                claim.verified ? "border-border opacity-70" : "border-amber-200"
+              }`}
+            >
+              {/* Photo thumbnail */}
+              <div
+                className="shrink-0 w-16 h-20 rounded-lg bg-muted flex items-center justify-center cursor-pointer overflow-hidden border border-border hover:opacity-80 transition"
+                onClick={() => getPhotoUrl(claim)}
+                title="Click to view full-size ID"
+              >
+                {photoUrls[claim.id] ? (
+                  <img src={photoUrls[claim.id]} alt="ID" className="w-full h-full object-cover" />
+                ) : claim.id_photo_path ? (
+                  <div className="flex flex-col items-center gap-1 text-muted-foreground p-1">
+                    <ExternalLink className="h-5 w-5" />
+                    <span className="text-[10px] text-center leading-tight">View ID</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-1 text-muted-foreground/50 p-1">
+                    <ShieldAlert className="h-5 w-5" />
+                    <span className="text-[10px] text-center leading-tight">No photo</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Claim details */}
+              <div className="flex-1 min-w-0 space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${kindStyle(claim.kind)}`}>
+                    {kindLabel(claim.kind)}
+                  </span>
+                  <span className="text-sm font-medium truncate">{claim.full_name || "—"}</span>
+                  {claim.verified && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600 font-medium">
+                      <ShieldCheck className="h-3.5 w-3.5" /> Verified
+                    </span>
+                  )}
+                </div>
+                <div className="text-[11px] text-muted-foreground space-y-0.5">
+                  <div>Booking ref: <span className="font-medium text-foreground font-mono">{claim.reference_code}</span></div>
+                  <div>Item: {claim.item_name || "—"} · ₱{Number(claim.discount_amount).toFixed(0)} off</div>
+                  {claim.id_number && <div>ID #: {claim.id_number}</div>}
+                  {claim.date_of_birth && <div>DOB: {claim.date_of_birth}{claim.age ? ` · Age: ${claim.age}` : ""}</div>}
+                  {claim.date_of_issue && <div>Issued: {claim.date_of_issue}</div>}
+                  {claim.address && <div className="truncate">Address: {claim.address}</div>}
+                </div>
+                <div className="text-[10px] text-muted-foreground/60 pt-0.5">
+                  Submitted {format(new Date(claim.created_at), "MMM d, yyyy · h:mm a")}
+                </div>
+              </div>
+
+              {/* Verified toggle */}
+              <div className="shrink-0 flex flex-col items-center gap-1.5">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={claim.verified}
+                  disabled={verifyingId === claim.id}
+                  onClick={() => toggleVerified(claim)}
+                  title={claim.verified ? "Mark as unverified" : "Mark as verified"}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${
+                    claim.verified ? "bg-emerald-500" : "bg-muted-foreground/30"
+                  }`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-background shadow transition-transform ${
+                    claim.verified ? "translate-x-[22px]" : "translate-x-[3px]"
+                  }`} />
+                </button>
+                <span className="text-[10px] text-muted-foreground">
+                  {claim.verified ? "Verified" : "Pending"}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Lightbox — full-size ID photo */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setLightbox(null)}
+        >
+          <img
+            src={lightbox}
+            alt="ID full size"
+            className="max-w-full max-h-full rounded-xl shadow-2xl object-contain"
+            onClick={e => e.stopPropagation()}
+          />
+          <button
+            className="absolute top-4 right-4 text-white/80 hover:text-white text-2xl font-bold"
+            onClick={() => setLightbox(null)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }

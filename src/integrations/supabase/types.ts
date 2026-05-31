@@ -181,6 +181,58 @@ export type Database = {
         }
         Relationships: []
       }
+      senior_pwd_claims: {
+        Row: {
+          id: string
+          booking_id: string
+          reference_code: string
+          kind: string
+          full_name: string
+          id_number: string
+          date_of_birth: string
+          age: string
+          sex: string
+          date_of_issue: string
+          address: string
+          item_name: string
+          discount_amount: number
+          id_photo_path: string | null
+          verified: boolean
+          verified_at: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          booking_id: string
+          reference_code: string
+          kind: string
+          full_name?: string
+          id_number?: string
+          date_of_birth?: string
+          age?: string
+          sex?: string
+          date_of_issue?: string
+          address?: string
+          item_name?: string
+          discount_amount?: number
+          id_photo_path?: string | null
+          verified?: boolean
+          verified_at?: string | null
+          created_at?: string
+        }
+        Update: {
+          verified?: boolean
+          verified_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "senior_pwd_claims_booking_id_fkey"
+            columns: ["booking_id"]
+            referencedRelation: "bookings"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
       menu_categories: {
         Row: {
           available_pickup: boolean

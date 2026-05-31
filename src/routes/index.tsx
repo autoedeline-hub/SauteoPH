@@ -653,15 +653,7 @@ export function MenuPage({
   // placeOrder is the post-RPC step. ReservationView calls create_booking
   // and, on success, passes the returned reference_code and the chosen
   // slot back here so we can render the receipt with real data.
-  const placeOrder = (args: {
-    referenceCode: string;
-    slot: AvailableSlot;
-    customerName: string;
-    groupSize: number;
-    pickupMode?: "dine_in" | "personal_pickup" | "lalamove" | "grab";
-    courierAddress?: string | null;
-    paymentReference?: string | null;
-  }) => {
+  const placeOrder = (args: ConfirmArgs) => {
     const lineItems: ReceiptLine[] = Object.entries(cart)
       .map(([key, qty]) => {
         const { itemId, variantIndex } = parseCartKey(key);
@@ -709,6 +701,62 @@ export function MenuPage({
       courierAddress: args.courierAddress ?? null,
       paymentReference: args.paymentReference ?? null,
     });
+
+    // Upload ID photos + persist claim rows. Best-effort: failures are logged
+    // but never shown to the customer — the booking is already confirmed.
+    // We capture claims in a local snapshot before clearing state so the async
+    // closure still sees the data even after setClaims({}) below.
+    const claimsSnapshot = { ...claims };
+    (async () => {
+      await Promise.allSettled(
+        Object.entries(claimsSnapshot).map(async ([cartKey, claim]) => {
+          const du = discountSummary.discountedUnits.find(
+            (u) => u.unit.cartKey === cartKey,
+          );
+
+          // Upload the photo first so we can store its path on the claim row.
+          let photoPath: string | null = null;
+          if (claim.idPhotoFile) {
+            const ext = claim.idPhotoFile.type.includes("png")
+              ? "png"
+              : claim.idPhotoFile.type.includes("webp")
+              ? "webp"
+              : "jpg";
+            // Use a short hash of the cartKey to keep filenames URL-safe.
+            const safeName = cartKey.replace(/[^a-z0-9]/gi, "_").slice(0, 40);
+            const path = `bookings/${args.referenceCode}/${safeName}.${ext}`;
+            const { error: uploadErr } = await supabase.storage
+              .from("senior-pwd-ids")
+              .upload(path, claim.idPhotoFile, {
+                contentType: claim.idPhotoFile.type,
+                upsert: false,
+              });
+            if (!uploadErr) photoPath = path;
+            else console.warn("[senior-id] photo upload failed:", uploadErr.message);
+          }
+
+          const { error: insertErr } = await supabase
+            .from("senior_pwd_claims")
+            .insert({
+              booking_id: args.bookingId,
+              reference_code: args.referenceCode,
+              kind: claim.kind,
+              full_name: claim.fullName,
+              id_number: claim.idNumber,
+              date_of_birth: claim.dateOfBirth,
+              age: claim.age,
+              sex: claim.sex,
+              date_of_issue: claim.dateOfIssue,
+              address: claim.address,
+              item_name: du?.unit.displayName ?? "",
+              discount_amount: du?.discountAmount ?? 0,
+              id_photo_path: photoPath,
+            });
+          if (insertErr) console.warn("[senior-id] claim insert failed:", insertErr.message);
+        }),
+      );
+    })();
+
     setCart({});
     setClaims({});
     setView("receipt");
@@ -2478,6 +2526,7 @@ function MenuItemCard({
 // Shared shape between DineIn and Pickup onConfirm — optional pickup fields
 // are populated only by the pickup view.
 type ConfirmArgs = {
+  bookingId: string;
   referenceCode: string;
   slot: AvailableSlot;
   customerName: string;
@@ -2697,8 +2746,8 @@ function DineInReservationView({
       setSubmitError(friendlyBookingError(error.message));
       return;
     }
-    const result = (data ?? {}) as { reference_code?: string };
-    if (!result.reference_code) {
+    const result = (data ?? {}) as { booking_id?: string; reference_code?: string };
+    if (!result.reference_code || !result.booking_id) {
       setSubmitting(false);
       setSubmitError("Booking didn't return a reference code. Contact us in Messenger.");
       return;
@@ -2706,6 +2755,7 @@ function DineInReservationView({
 
     setSubmitting(false);
     onConfirm({
+      bookingId: result.booking_id,
       referenceCode: result.reference_code,
       slot: selectedSlot,
       customerName: customerName.trim(),
@@ -3374,8 +3424,8 @@ function PickupReservationView({
       setSubmitError(friendlyBookingError(error.message));
       return;
     }
-    const result = (data ?? {}) as { reference_code?: string };
-    if (!result.reference_code) {
+    const result = (data ?? {}) as { booking_id?: string; reference_code?: string };
+    if (!result.reference_code || !result.booking_id) {
       setSubmitting(false);
       setSubmitError(
         "Booking didn't return a reference code. Contact us in Messenger.",
@@ -3385,6 +3435,7 @@ function PickupReservationView({
 
     setSubmitting(false);
     onConfirm({
+      bookingId: result.booking_id,
       referenceCode: result.reference_code,
       slot: selectedSlot,
       customerName: customerName.trim(),
