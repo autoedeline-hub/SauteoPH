@@ -2616,8 +2616,9 @@ function DineInReservationView({
   const [groupSize, setGroupSize] = useState<number>(invite?.groupSize ?? 2);
   const [notes, setNotes] = useState("");
 
-  // QR display fallback — flips to true when /maya-qr.png 404s so the
-  // payment card still renders gracefully without the image.
+  // QR display fallback — flips to true when the image 404s so the
+  // payment card still renders gracefully without the image. Reset whenever
+  // the user enters the payment sub-step so a fixed/replaced image is retried.
   const [qrImgError, setQrImgError] = useState(false);
 
   // Wizard step is owned by MenuPage (so the page layout can swap on step 2
@@ -2631,6 +2632,7 @@ function DineInReservationView({
   const [paymentSubStep, setPaymentSubStep] = useState<"details" | "pay">(
     "details",
   );
+  useEffect(() => { if (paymentSubStep === "pay") setQrImgError(false); }, [paymentSubStep]);
 
   // Whenever we land on step 3, restart at the details sub-step. Avoids the
   // guest landing mid-form after they tap the stepper to jump back.
@@ -3335,8 +3337,10 @@ function PickupReservationView({
   const numberOfMeals = Math.max(cartUnitCount, 1);
   const [notes, setNotes] = useState("");
 
-  // QR display fallback — flips to true when /maya-qr.png 404s.
+  // QR display fallback — flips to true when the image 404s. Reset whenever
+  // the user enters step 4 (payment) so a fixed/replaced image is retried.
   const [qrImgError, setQrImgError] = useState(false);
+  useEffect(() => { if (step === 4) setQrImgError(false); }, [step]);
 
   // Wizard step is owned by MenuPage (so the page layout can swap on
   // step 2 for the menu's fixed-height layout). Visible ordering:
