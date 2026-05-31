@@ -102,10 +102,10 @@ const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?:
   { key: "menu", label: "Menu", icon: UtensilsCrossed },
   { key: "pipeline", label: "Pipelines", icon: TrendingUp },
   { key: "bookings", label: "Orders", icon: ShoppingBag },
-  { key: "seniorids", label: "Senior IDs", icon: ShieldCheck },
   { key: "invites", label: "Invites", icon: Mail },
   { key: "contacts", label: "Waitlist", icon: Clock },
   { key: "slots", label: "Time Slot", icon: CalendarClock },
+  { key: "seniorids", label: "Senior IDs", icon: ShieldCheck },
   { key: "escalations", label: "Escalation", icon: AlertCircle },
   { key: "knowledge", label: "FAQs", icon: BookOpen },
 ];
@@ -1185,7 +1185,7 @@ function SeniorIdsTab() {
 
       {/* Filter pills */}
       <div className="flex items-center gap-2">
-        {(["pending", "all", "verified"] as const).map(f => (
+        {(["all", "pending", "verified"] as const).map(f => (
           <button
             key={f}
             onClick={() => setFilter(f)}

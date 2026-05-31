@@ -799,6 +799,7 @@ export function MenuPage({
             cartCount={cartCount}
             discountSummary={discountSummary}
             onCheckout={() => setView("wizard")}
+            allowDiscount={effectiveChannel === "dine_in"}
           />
         )}
         {view === "wizard" &&
@@ -824,6 +825,7 @@ export function MenuPage({
                   cartCount={cartCount}
                   discountSummary={discountSummary}
                   onCheckout={() => setWizardStep(3)}
+                  allowDiscount={false}
                 />
               )}
               onBack={() => setView("menu")}
@@ -851,6 +853,7 @@ export function MenuPage({
                   cartCount={cartCount}
                   discountSummary={discountSummary}
                   onCheckout={() => setWizardStep(3)}
+                  allowDiscount={true}
                 />
               )}
               onBack={() => setView("menu")}
@@ -878,6 +881,7 @@ function MenuView({
   cartCount,
   discountSummary,
   onCheckout,
+  allowDiscount,
 }: {
   categories: Category[];
   items: MenuItem[];
@@ -898,6 +902,7 @@ function MenuView({
   // cart footer; falls back to gross when no lines are claimed.
   discountSummary: DiscountSummary;
   onCheckout: () => void;
+  allowDiscount: boolean;
 }) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1215,6 +1220,7 @@ function MenuView({
         quickAdd={variantTarget?.quickAdd ?? false}
         onClose={() => setVariantTarget(null)}
         onAdd={handleVariantAdd}
+        allowDiscount={allowDiscount}
       />
     </div>
   );
@@ -1345,6 +1351,7 @@ function VariantSelectModal({
   quickAdd,
   onClose,
   onAdd,
+  allowDiscount,
 }: {
   item: MenuItem | null;
   quickAdd: boolean;
@@ -1356,6 +1363,7 @@ function VariantSelectModal({
     keepOpen: boolean,
     claim?: Claimant,
   ) => void;
+  allowDiscount: boolean;
 }) {
   // Keep mounted for one render after close so the fade-out animates.
   const [mounted, setMounted] = useState(!!item);
@@ -1680,59 +1688,62 @@ function VariantSelectModal({
             )}
           </div>
 
-          {/* For whom? — Regular / Senior / PWD. Picking a non-regular
-              option locks qty to 1 (one ID = one unit per RA 9994) and
-              expands the ID form below. */}
-          <div className="px-5 pt-3 pb-2">
-            <div className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
-              For whom?
-            </div>
-            <div className="inline-flex rounded-full bg-muted/50 p-0.5 w-full">
-              {(
-                [
-                  { value: "regular", label: "Regular" },
-                  { value: "senior", label: "Senior" },
-                  { value: "pwd", label: "PWD" },
-                ] as const
-              ).map((opt) => {
-                const active = claimKind === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => setClaimKind(opt.value)}
-                    aria-pressed={active}
-                    className={`flex-1 px-3 py-1.5 rounded-full text-xs font-semibold transition ${
-                      active
-                        ? "bg-foreground text-background shadow-sm"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
-            {isClaimed && (
-              <p className="mt-2 text-[11px] text-muted-foreground leading-snug">
-                Upload one valid ID per discounted unit. 20% off applies to
-                this line only — to discount another unit, add it again
-                with a separate ID.
-              </p>
-            )}
-          </div>
+          {/* For whom? — dine-in only. Pickup can't verify IDs on the spot
+              so the Senior/PWD discount section is hidden entirely there. */}
+          {allowDiscount && (
+            <>
+              <div className="px-5 pt-3 pb-2">
+                <div className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
+                  For whom?
+                </div>
+                <div className="inline-flex rounded-full bg-muted/50 p-0.5 w-full">
+                  {(
+                    [
+                      { value: "regular", label: "Regular" },
+                      { value: "senior", label: "Senior" },
+                      { value: "pwd", label: "PWD" },
+                    ] as const
+                  ).map((opt) => {
+                    const active = claimKind === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => setClaimKind(opt.value)}
+                        aria-pressed={active}
+                        className={`flex-1 px-3 py-1.5 rounded-full text-xs font-semibold transition ${
+                          active
+                            ? "bg-foreground text-background shadow-sm"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {isClaimed && (
+                  <p className="mt-2 text-[11px] text-muted-foreground leading-snug">
+                    Upload one valid ID per discounted unit. 20% off applies to
+                    this line only — to discount another unit, add it again
+                    with a separate ID.
+                  </p>
+                )}
+              </div>
 
-          {isClaimed && (
-            <div className="px-5 pt-1 pb-2">
-              <ClaimantCard
-                index={0}
-                claimant={claim}
-                autoFill={claimAutoFill}
-                onChange={(patch) => setClaim((prev) => ({ ...prev, ...patch }))}
-                onPhotoChange={onClaimPhotoChange}
-                onRemove={() => setClaimKind("regular")}
-              />
-            </div>
+              {isClaimed && (
+                <div className="px-5 pt-1 pb-2">
+                  <ClaimantCard
+                    index={0}
+                    claimant={claim}
+                    autoFill={claimAutoFill}
+                    onChange={(patch) => setClaim((prev) => ({ ...prev, ...patch }))}
+                    onPhotoChange={onClaimPhotoChange}
+                    onRemove={() => setClaimKind("regular")}
+                  />
+                </div>
+              )}
+            </>
           )}
 
           {/* Variant list — only rendered when variants exist.
