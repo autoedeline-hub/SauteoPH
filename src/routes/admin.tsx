@@ -6052,10 +6052,12 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
         </p>
       </div>
 
-      {/* Main 5-column kanban — horizontal scroll on narrow screens. */}
-      <div className="overflow-x-auto -mx-2 px-2">
-        <div className="grid grid-cols-[repeat(5,minmax(240px,1fr))] gap-3 min-w-[1260px]">
-          {mainStages.map((stage) => (
+      {/* Main 5-column kanban. Columns share the available width (no
+          horizontal scrollbar at the board level); when a single column has
+          more than ~5 cards, scrolling happens vertically inside that column
+          via overflow-y-auto + max-height on the column body below. */}
+      <div className="grid grid-cols-5 gap-3 min-w-0">
+        {mainStages.map((stage) => (
             <PipelineColumn
               key={stage}
               label={STAGE_LABELS[channel][stage]}
@@ -6092,7 +6094,6 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
               )}
             />
           ))}
-        </div>
       </div>
 
       {/* Collapsed lane — cancelled + expired together, less visually noisy
@@ -6157,7 +6158,10 @@ function PipelineColumn({
           {loading ? "…" : cards.length}
         </div>
       </div>
-      <div className="flex-1 p-2 space-y-2">
+      {/* Body caps at ~5 cards. A 6th card pushes the column into overflow,
+          which paints a thin vertical scrollbar; columns with ≤5 cards never
+          show one. max-h is tuned to ~5 × card height + gaps + padding. */}
+      <div className="flex-1 p-2 space-y-2 overflow-y-auto max-h-[34rem]">
         {!loading && cards.length === 0 && (
           <div className="text-[11px] text-muted-foreground/70 italic px-2 py-3 text-center">
             Empty
