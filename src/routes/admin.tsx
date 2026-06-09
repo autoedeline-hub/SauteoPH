@@ -5784,6 +5784,17 @@ function InviteRow({
               .filter(Boolean)
               .join(" · ")}
           </div>
+          {inv.platform_id && (
+            <a
+              href={`https://www.facebook.com/messages/t/${inv.platform_id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
+            >
+              <Facebook className="h-3 w-3" />
+              Message on Messenger
+            </a>
+          )}
           <div className="text-[11px]">
             {status === "unused" && (
               <span className={`inline-flex items-center gap-1 ${countdownColor}`}>
