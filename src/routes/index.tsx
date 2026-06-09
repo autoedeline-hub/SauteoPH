@@ -3559,8 +3559,6 @@ function PickupReservationView({
   onBack: () => void;
   onConfirm: (args: ConfirmArgs) => void;
 }) {
-  const [pickupStage, setPickupStage] = useState<"landing" | "rules" | "booking">("landing");
-
   // Senior/PWD claims happen at item-add time inside the variant modal;
   // no claim form lives on this payment step. The breakdown below reads
   // from discountSummary the same way dine-in does.
@@ -3743,15 +3741,6 @@ function PickupReservationView({
   // Step 2 (menu) needs the wider, fixed-height layout to host MenuView's
   // sticky cart bar; the other steps use the standard centered wrapper.
   const isMenuStep = step === 2;
-
-  if (pickupStage !== "booking") {
-    return (
-      <>
-        <PickupInviteLanding onProceed={() => setPickupStage("rules")} />
-        {pickupStage === "rules" && <PickupRulesModal onAccept={() => setPickupStage("booking")} />}
-      </>
-    );
-  }
 
   return (
     <div
