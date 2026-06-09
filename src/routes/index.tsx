@@ -2689,7 +2689,7 @@ function DineInRulesModal({ onAccept }: { onAccept: () => void }) {
 
 /* ── Pickup landing page (invite flow) ───────────────────────────────── */
 
-function PickupInviteLanding({ onProceed }: { onProceed: () => void }) {
+export function PickupInviteLanding({ onProceed }: { onProceed: () => void }) {
   return (
     <div className="max-w-3xl mx-auto text-center py-4">
       <div className="mx-auto h-16 w-16 rounded-full bg-mustard/30 flex items-center justify-center mb-6">

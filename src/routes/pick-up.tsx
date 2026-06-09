@@ -1,9 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { ChevronRight, ShoppingBag } from "lucide-react";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
-import { MenuPage, PickupRulesModal } from "./index";
+import { MenuPage, PickupRulesModal, PickupInviteLanding } from "./index";
 
 export const Route = createFileRoute("/pick-up")({
   component: PickupPage,
@@ -23,41 +22,13 @@ function PickupPage() {
   const [stage, setStage] = useState<"landing" | "rules" | "booking">("landing");
   if (stage === "booking") return <MenuPage forcedChannel="pickup" />;
   return (
-    <>
-      <PickupIntro onStart={() => setStage("rules")} />
-      {stage === "rules" && <PickupRulesModal onAccept={() => setStage("booking")} />}
-    </>
-  );
-}
-
-function PickupIntro({ onStart }: { onStart: () => void }) {
-  return (
     <div className="min-h-screen flex flex-col">
       <Header />
-      <main className="flex-1 w-full max-w-3xl mx-auto px-4 sm:px-6 py-12 md:py-20">
-        <div className="text-center mb-10 md:mb-14">
-          <div className="mx-auto h-16 w-16 rounded-full bg-mustard/30 flex items-center justify-center mb-6">
-            <ShoppingBag className="h-7 w-7 text-primary" />
-          </div>
-          <h1 className="font-display text-3xl md:text-5xl mb-3">
-            Order Sautéo for pickup
-          </h1>
-          <p className="text-muted-foreground text-base md:text-lg max-w-xl mx-auto">
-            Get your favorite dishes to go. Pick your window (4 PM, 6 PM, or
-            8 PM), choose from the menu, and pay with Maya QR.
-          </p>
-        </div>
-
-        <div className="flex justify-center">
-          <button
-            onClick={onStart}
-            className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm md:text-base font-semibold hover:opacity-90 transition"
-          >
-            Start your order <ChevronRight className="h-4 w-4" />
-          </button>
-        </div>
+      <main className="flex-1 w-full max-w-3xl mx-auto px-4 sm:px-6 py-8 md:py-12">
+        <PickupInviteLanding onProceed={() => setStage("rules")} />
       </main>
       <Footer />
+      {stage === "rules" && <PickupRulesModal onAccept={() => setStage("booking")} />}
     </div>
   );
 }
