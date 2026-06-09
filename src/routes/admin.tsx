@@ -4397,7 +4397,7 @@ function InviteStatusPill({
     | { state: "none" };
 }) {
   if (status.state === "none") {
-    return <span className="text-xs text-muted-foreground/70">—</span>;
+    return null;
   }
   if (status.state === "active") {
     return (
