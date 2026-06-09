@@ -2552,6 +2552,64 @@ type ConfirmArgs = {
   paymentReference?: string | null;
 };
 
+/* ── Dine-in invite landing page ─────────────────────────────────────── */
+
+function DineInInviteLanding({ onProceed }: { onProceed: () => void }) {
+  return (
+    <div className="max-w-3xl mx-auto text-center py-4">
+      <div className="mx-auto h-16 w-16 rounded-full bg-mustard/30 flex items-center justify-center mb-6">
+        <CalendarClock className="h-7 w-7 text-primary" />
+      </div>
+      <h1 className="font-display text-3xl md:text-5xl mb-3">
+        Reserve your table at Sautéo
+      </h1>
+      <p className="text-muted-foreground text-base md:text-lg max-w-xl mx-auto mb-10 md:mb-14">
+        An intimate dining experience. Pick your time slot, share your party
+        size, and we'll have your seat ready.
+      </p>
+
+      <div className="grid gap-3 md:gap-4 md:grid-cols-3 mb-10 md:mb-12 text-left">
+        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
+          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
+            <CalendarClock className="h-5 w-5 text-primary" />
+          </div>
+          <h3 className="font-display text-lg mb-1">Pick a time slot</h3>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            See live availability and reserve in a few taps.
+          </p>
+        </div>
+        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
+          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
+            <Users className="h-5 w-5 text-primary" />
+          </div>
+          <h3 className="font-display text-lg mb-1">Bring your group</h3>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            Reserve for one or share the table — let us know the party size.
+          </p>
+        </div>
+        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
+          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
+            <MessageCircle className="h-5 w-5 text-primary" />
+          </div>
+          <h3 className="font-display text-lg mb-1">Invite-only</h3>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            Your personal booking link is active — no waiting needed.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex justify-center">
+        <button
+          onClick={onProceed}
+          className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm md:text-base font-semibold hover:opacity-90 transition"
+        >
+          Reserve my table <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ── Dine-in rules modal ──────────────────────────────────────────────── */
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -2665,7 +2723,7 @@ function DineInReservationView({
   onBack: () => void;
   onConfirm: (args: ConfirmArgs) => void;
 }) {
-  const [rulesAccepted, setRulesAccepted] = useState(false);
+  const [stage, setStage] = useState<"landing" | "rules" | "booking">("landing");
 
   // Senior/PWD claims now happen at item-add time inside the variant modal
   // (per-line attribution). No claim form lives on this payment step —
@@ -2911,9 +2969,16 @@ function DineInReservationView({
   // by MenuPage via `isMenuView`.
   const isMenuStep = step === 2;
 
+  if (stage !== "booking") {
+    return (
+      <>
+        <DineInInviteLanding onProceed={() => setStage("rules")} />
+        {stage === "rules" && <DineInRulesModal onAccept={() => setStage("booking")} />}
+      </>
+    );
+  }
+
   return (
-    <>
-      {!rulesAccepted && <DineInRulesModal onAccept={() => setRulesAccepted(true)} />}
     <div
       className={
         isMenuStep
@@ -3337,7 +3402,6 @@ function DineInReservationView({
       </>
       )}
     </div>
-    </>
   );
 }
 
