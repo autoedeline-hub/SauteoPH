@@ -3,6 +3,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { format, subDays, subMonths } from "date-fns";
 import { inviteLinkPath } from "@/lib/invite";
+import {
+  fetchSiteRules,
+  saveSiteRules,
+  DINEIN_DEFAULTS,
+  PICKUP_DEFAULTS,
+  type SiteRule,
+  type SiteContentKey,
+} from "@/lib/siteContent";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
 import {
   Area,
@@ -49,6 +57,9 @@ import {
   ShieldCheck,
   ShieldAlert,
   ExternalLink,
+  FileText,
+  Save,
+  RefreshCw,
 } from "lucide-react";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
@@ -91,7 +102,7 @@ const REFUND_LABEL: Record<string, string> = {
   forfeited: "Forfeited",
 };
 
-type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge";
+type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge" | "rules";
 
 // Nav order is the *user-facing journey*, top → bottom: situational
 // awareness (Overview) → core catalog (Menu) → in-flight customer flow
@@ -108,6 +119,7 @@ const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?:
   { key: "seniorids", label: "Senior IDs", icon: ShieldCheck },
   { key: "escalations", label: "Escalation", icon: AlertCircle },
   { key: "knowledge", label: "FAQs", icon: BookOpen },
+  { key: "rules", label: "Rules", icon: FileText },
 ];
 
 const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
@@ -121,6 +133,7 @@ const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   slots: { title: "Time Slot", subtitle: "Open, close, and adjust capacity for each service." },
   escalations: { title: "Escalation", subtitle: "Messenger questions the chatbot couldn't answer — review and resolve here." },
   knowledge: { title: "FAQs", subtitle: "Answers the chatbot uses when guests message Sautéo." },
+  rules: { title: "Booking Rules", subtitle: "Edit the rules shown to guests on the dine-in and pickup booking pages." },
 };
 
 const FAQ_TOPICS = [
@@ -253,6 +266,7 @@ function AdminPage() {
           {tab === "menu" && <MenuTab />}
           {tab === "slots" && <SlotsTab />}
           {tab === "knowledge" && <KnowledgeTab />}
+          {tab === "rules" && <RulesTab />}
         </div>
       </main>
     </div>
@@ -4783,6 +4797,137 @@ function ContactLine({
     <div className="flex items-center gap-2 text-foreground">
       <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
       <span className="truncate">{value}</span>
+    </div>
+  );
+}
+
+/* ============ Booking Rules ============ */
+function RulesTab() {
+  type Section = { key: SiteContentKey; label: string; defaults: SiteRule[] };
+  const SECTIONS: Section[] = [
+    { key: "dinein_rules", label: "Dine-in Rules", defaults: DINEIN_DEFAULTS },
+    { key: "pickup_rules", label: "Pickup Rules", defaults: PICKUP_DEFAULTS },
+  ];
+
+  const [activeKey, setActiveKey] = useState<SiteContentKey>("dinein_rules");
+  const [drafts, setDrafts] = useState<Record<SiteContentKey, SiteRule[]>>({
+    dinein_rules: DINEIN_DEFAULTS,
+    pickup_rules: PICKUP_DEFAULTS,
+  });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<{ key: SiteContentKey; ok: boolean; msg: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([
+      fetchSiteRules("dinein_rules"),
+      fetchSiteRules("pickup_rules"),
+    ]).then(([di, pu]) => {
+      if (cancelled) return;
+      setDrafts({ dinein_rules: di, pickup_rules: pu });
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  function updateRule(key: SiteContentKey, idx: number, field: "title" | "body", value: string) {
+    setDrafts((prev) => {
+      const updated = prev[key].map((r, i) => i === idx ? { ...r, [field]: value } : r);
+      return { ...prev, [key]: updated };
+    });
+    setFeedback(null);
+  }
+
+  async function handleSave(key: SiteContentKey) {
+    setSaving(true);
+    setFeedback(null);
+    const { error } = await saveSiteRules(key, drafts[key]);
+    setSaving(false);
+    setFeedback({ key, ok: !error, msg: error ?? "Rules saved." });
+    setTimeout(() => setFeedback(null), 3500);
+  }
+
+  const activeSection = SECTIONS.find((s) => s.key === activeKey)!;
+  const rules = drafts[activeKey];
+
+  return (
+    <div className="space-y-6">
+      {/* Sub-tab switcher */}
+      <div className="flex rounded-lg border border-border overflow-hidden text-sm w-fit">
+        {SECTIONS.map((s) => (
+          <button
+            key={s.key}
+            onClick={() => { setActiveKey(s.key); setFeedback(null); }}
+            className={`px-4 py-2 transition ${
+              activeKey === s.key
+                ? "bg-foreground text-background font-medium"
+                : "text-muted-foreground hover:bg-muted/50"
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-muted-foreground text-sm py-12 justify-center">
+          <RefreshCw className="w-4 h-4 animate-spin" />
+          Loading…
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            These rules are shown to guests on the{" "}
+            <span className="text-foreground font-medium">{activeSection.label.toLowerCase()}</span>{" "}
+            booking page. Edit any title or body, then press Save.
+          </p>
+
+          {rules.map((rule, idx) => (
+            <div key={rule.id} className="rounded-2xl border border-border bg-card p-5 space-y-3">
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-mono text-muted-foreground shrink-0 w-5 text-right">{idx + 1}.</span>
+                <input
+                  type="text"
+                  value={rule.title}
+                  onChange={(e) => updateRule(activeKey, idx, "title", e.target.value)}
+                  className="flex-1 bg-transparent text-sm font-semibold text-foreground placeholder-muted-foreground border-b border-border focus:border-foreground focus:outline-none py-0.5 transition-colors"
+                  placeholder="Rule title"
+                />
+              </div>
+              <textarea
+                value={rule.body}
+                onChange={(e) => updateRule(activeKey, idx, "body", e.target.value)}
+                rows={3}
+                className="w-full bg-muted/40 text-sm text-foreground placeholder-muted-foreground rounded-lg px-3 py-2 border border-border focus:border-foreground focus:outline-none resize-none transition-colors"
+                placeholder="Rule description shown to guests…"
+              />
+            </div>
+          ))}
+
+          <div className="flex items-center gap-3 pt-2">
+            <button
+              onClick={() => handleSave(activeKey)}
+              disabled={saving}
+              className="flex items-center gap-2 px-5 py-2 rounded-lg bg-foreground hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed text-background text-sm font-semibold transition-opacity"
+            >
+              {saving ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Save className="w-4 h-4" />
+              )}
+              {saving ? "Saving…" : "Save Changes"}
+            </button>
+
+            {feedback && feedback.key === activeKey && (
+              <span className={`text-sm font-medium ${feedback.ok ? "text-emerald-600" : "text-red-500"}`}>
+                {feedback.ok ? "✓ " : "✗ "}{feedback.msg}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

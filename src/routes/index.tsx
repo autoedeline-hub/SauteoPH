@@ -6,12 +6,15 @@ import { Footer } from "@/components/Footer";
 import {
   AlertTriangle,
   CalendarClock,
+  CalendarDays,
   Camera,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
+  Clock,
+  CreditCard,
   Image as ImageIcon,
   Loader2,
   MessageCircle,
@@ -25,6 +28,7 @@ import {
   Trash2,
   Upload,
   User as UserIcon,
+  Users,
   X,
 } from "lucide-react";
 import {
@@ -43,6 +47,7 @@ import {
   type LoadedInvite,
 } from "@/lib/invite";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
+import { useSiteRules } from "@/lib/siteContent";
 
 // Bare `/` redirects to the read-only /menu page. The booking flows
 // (/dine-in, /pick-up) stay reachable only via the tokenized invite
@@ -2547,6 +2552,85 @@ type ConfirmArgs = {
   paymentReference?: string | null;
 };
 
+/* ── Dine-in rules modal ──────────────────────────────────────────────── */
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+      {children}
+    </p>
+  );
+}
+
+function Rule({ icon, title, body }: { icon: React.ReactNode; title: string; body: string }) {
+  return (
+    <div className="flex gap-3">
+      <div className="mt-0.5 shrink-0">{icon}</div>
+      <div>
+        <p className="text-sm font-semibold text-foreground leading-snug">{title}</p>
+        <p className="text-sm text-muted-foreground mt-0.5 leading-relaxed">{body}</p>
+      </div>
+    </div>
+  );
+}
+
+function DineInRulesModal({ onAccept }: { onAccept: () => void }) {
+  const rules = useSiteRules("dinein_rules");
+  const byId = useMemo(() => Object.fromEntries(rules.map((r) => [r.id, r])), [rules]);
+  const t = (id: string) => byId[id]?.title ?? "";
+  const b = (id: string) => byId[id]?.body ?? "";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+      <div className="relative w-full max-w-md bg-background rounded-2xl shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="bg-primary px-6 py-5">
+          <div className="flex items-center gap-3">
+            <CalendarClock className="h-5 w-5 text-primary-foreground shrink-0" />
+            <div>
+              <h2 className="font-display text-lg text-primary-foreground leading-tight">
+                Dine-In Reservation Rules
+              </h2>
+              <p className="text-primary-foreground/70 text-xs mt-0.5">
+                Please read before booking your table
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Rules & guidelines */}
+        <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
+          <div className="space-y-4">
+            <SectionLabel>Reservation Rules</SectionLabel>
+            <Rule icon={<CalendarDays className="h-4 w-4 text-blue-500" />} title={t("available_days")} body={b("available_days")} />
+            <Rule icon={<MessageCircle className="h-4 w-4 text-primary" />} title={t("invite_only")} body={b("invite_only")} />
+            <Rule icon={<CreditCard className="h-4 w-4 text-green-500" />} title={t("full_payment")} body={b("full_payment")} />
+            <Rule icon={<AlertTriangle className="h-4 w-4 text-red-500" />} title={t("no_refunds")} body={b("no_refunds")} />
+          </div>
+          <div className="space-y-4 pt-1">
+            <SectionLabel>Dining Guidelines</SectionLabel>
+            <Rule icon={<Clock className="h-4 w-4 text-amber-500" />} title={t("arrive_on_time")} body={b("arrive_on_time")} />
+            <Rule icon={<Users className="h-4 w-4 text-primary" />} title={t("party_size")} body={b("party_size")} />
+            <Rule icon={<Sparkles className="h-4 w-4 text-primary" />} title={t("intimate_setting")} body={b("intimate_setting")} />
+          </div>
+        </div>
+
+        {/* CTA */}
+        <div className="px-6 py-4 border-t border-border bg-muted/30">
+          <button
+            onClick={onAccept}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm font-semibold hover:opacity-90 transition"
+          >
+            I understand, proceed to booking <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Dine-in reservation wizard ───────────────────────────────────────── */
+
 function DineInReservationView({
   invite,
   cart,
@@ -2581,6 +2665,8 @@ function DineInReservationView({
   onBack: () => void;
   onConfirm: (args: ConfirmArgs) => void;
 }) {
+  const [rulesAccepted, setRulesAccepted] = useState(false);
+
   // Senior/PWD claims now happen at item-add time inside the variant modal
   // (per-line attribution). No claim form lives on this payment step —
   // the discount breakdown below still reads from `discountSummary`.
@@ -2826,6 +2912,8 @@ function DineInReservationView({
   const isMenuStep = step === 2;
 
   return (
+    <>
+      {!rulesAccepted && <DineInRulesModal onAccept={() => setRulesAccepted(true)} />}
     <div
       className={
         isMenuStep
@@ -3249,6 +3337,7 @@ function DineInReservationView({
       </>
       )}
     </div>
+    </>
   );
 }
 
