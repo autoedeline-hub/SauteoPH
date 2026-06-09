@@ -2687,6 +2687,116 @@ function DineInRulesModal({ onAccept }: { onAccept: () => void }) {
   );
 }
 
+/* ── Pickup landing page (invite flow) ───────────────────────────────── */
+
+function PickupInviteLanding({ onProceed }: { onProceed: () => void }) {
+  return (
+    <div className="max-w-3xl mx-auto text-center py-4">
+      <div className="mx-auto h-16 w-16 rounded-full bg-mustard/30 flex items-center justify-center mb-6">
+        <ShoppingBag className="h-7 w-7 text-primary" />
+      </div>
+      <h1 className="font-display text-3xl md:text-5xl mb-3">
+        Order Sautéo for pickup
+      </h1>
+      <p className="text-muted-foreground text-base md:text-lg max-w-xl mx-auto mb-10 md:mb-14">
+        Get your favorite dishes to go. Pick your window, choose from the
+        menu, and pay with Maya QR.
+      </p>
+
+      <div className="grid gap-3 md:gap-4 md:grid-cols-3 mb-10 md:mb-12 text-left">
+        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
+          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
+            <CalendarClock className="h-5 w-5 text-primary" />
+          </div>
+          <h3 className="font-display text-lg mb-1">Pick your window</h3>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            Choose from available pickup slots — 4 PM, 6 PM, or 8 PM.
+          </p>
+        </div>
+        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
+          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
+            <ShoppingBag className="h-5 w-5 text-primary" />
+          </div>
+          <h3 className="font-display text-lg mb-1">Choose from the menu</h3>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            Browse all available pickup items and build your order.
+          </p>
+        </div>
+        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
+          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
+            <CreditCard className="h-5 w-5 text-primary" />
+          </div>
+          <h3 className="font-display text-lg mb-1">Pay with Maya QR</h3>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            Scan the InstaPay QR, send your screenshot, and we'll confirm.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex justify-center">
+        <button
+          onClick={onProceed}
+          className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm md:text-base font-semibold hover:opacity-90 transition"
+        >
+          Start my order <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Pickup rules modal ───────────────────────────────────────────────── */
+
+export function PickupRulesModal({ onAccept }: { onAccept: () => void }) {
+  const rules = useSiteRules("pickup_rules");
+  const byId = useMemo(() => Object.fromEntries(rules.map((r) => [r.id, r])), [rules]);
+  const t = (id: string) => byId[id]?.title ?? "";
+  const b = (id: string) => byId[id]?.body ?? "";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+      <div className="relative w-full max-w-md bg-background rounded-2xl shadow-2xl overflow-hidden">
+        <div className="bg-primary px-6 py-5">
+          <div className="flex items-center gap-3">
+            <ShoppingBag className="h-5 w-5 text-primary-foreground shrink-0" />
+            <div>
+              <h2 className="font-display text-lg text-primary-foreground leading-tight">
+                Pickup Order Rules
+              </h2>
+              <p className="text-primary-foreground/70 text-xs mt-0.5">
+                Please read before placing your order
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
+          <div className="space-y-4">
+            <SectionLabel>Order &amp; Payment</SectionLabel>
+            <Rule icon={<CheckCircle2 className="h-4 w-4 text-green-500" />} title={t("order_confirmation")} body={b("order_confirmation")} />
+            <Rule icon={<CreditCard className="h-4 w-4 text-green-500" />} title={t("payment_required")} body={b("payment_required")} />
+          </div>
+          <div className="space-y-4 pt-1">
+            <SectionLabel>Pickup Policy</SectionLabel>
+            <Rule icon={<Clock className="h-4 w-4 text-amber-500" />} title={t("pickup_window")} body={b("pickup_window")} />
+            <Rule icon={<AlertTriangle className="h-4 w-4 text-red-500" />} title={t("changes_policy")} body={b("changes_policy")} />
+            <Rule icon={<ShoppingBag className="h-4 w-4 text-primary" />} title={t("availability")} body={b("availability")} />
+          </div>
+        </div>
+
+        <div className="px-6 py-4 border-t border-border bg-muted/30">
+          <button
+            onClick={onAccept}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm font-semibold hover:opacity-90 transition"
+          >
+            I understand, start my order <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Dine-in reservation wizard ───────────────────────────────────────── */
 
 function DineInReservationView({
@@ -3449,6 +3559,8 @@ function PickupReservationView({
   onBack: () => void;
   onConfirm: (args: ConfirmArgs) => void;
 }) {
+  const [pickupStage, setPickupStage] = useState<"landing" | "rules" | "booking">("landing");
+
   // Senior/PWD claims happen at item-add time inside the variant modal;
   // no claim form lives on this payment step. The breakdown below reads
   // from discountSummary the same way dine-in does.
@@ -3631,6 +3743,15 @@ function PickupReservationView({
   // Step 2 (menu) needs the wider, fixed-height layout to host MenuView's
   // sticky cart bar; the other steps use the standard centered wrapper.
   const isMenuStep = step === 2;
+
+  if (pickupStage !== "booking") {
+    return (
+      <>
+        <PickupInviteLanding onProceed={() => setPickupStage("rules")} />
+        {pickupStage === "rules" && <PickupRulesModal onAccept={() => setPickupStage("booking")} />}
+      </>
+    );
+  }
 
   return (
     <div

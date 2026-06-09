@@ -3,7 +3,7 @@ import { useState } from "react";
 import { ChevronRight, ShoppingBag } from "lucide-react";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
-import { MenuPage } from "./index";
+import { MenuPage, PickupRulesModal } from "./index";
 
 export const Route = createFileRoute("/pick-up")({
   component: PickupPage,
@@ -20,9 +20,14 @@ export const Route = createFileRoute("/pick-up")({
 });
 
 function PickupPage() {
-  const [started, setStarted] = useState(false);
-  if (started) return <MenuPage forcedChannel="pickup" />;
-  return <PickupIntro onStart={() => setStarted(true)} />;
+  const [stage, setStage] = useState<"landing" | "rules" | "booking">("landing");
+  if (stage === "booking") return <MenuPage forcedChannel="pickup" />;
+  return (
+    <>
+      <PickupIntro onStart={() => setStage("rules")} />
+      {stage === "rules" && <PickupRulesModal onAccept={() => setStage("booking")} />}
+    </>
+  );
 }
 
 function PickupIntro({ onStart }: { onStart: () => void }) {
@@ -56,4 +61,3 @@ function PickupIntro({ onStart }: { onStart: () => void }) {
     </div>
   );
 }
-
