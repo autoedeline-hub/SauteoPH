@@ -7,10 +7,14 @@
 
 import { supabase } from "@/integrations/supabase/client";
 
+export type ConsoleRole = "admin" | "member";
+
 export type TeamMember = {
   id: string;
   email: string;
   full_name: string | null;
+  console_role: ConsoleRole;
+  tabs: string[];
   created_at: string;
   last_sign_in_at: string | null;
 };
@@ -38,6 +42,8 @@ export async function createTeamMember(input: {
   email: string;
   password: string;
   full_name: string;
+  console_role?: ConsoleRole;
+  tabs?: string[];
 }): Promise<TeamMember> {
   const { data, error } = await supabase.functions.invoke<{ member: TeamMember } & ErrorBody>(
     "admin-team",
@@ -51,6 +57,8 @@ export async function updateTeamMember(input: {
   email?: string;
   password?: string;
   full_name?: string;
+  console_role?: ConsoleRole;
+  tabs?: string[];
 }): Promise<TeamMember> {
   const { data, error } = await supabase.functions.invoke<{ member: TeamMember } & ErrorBody>(
     "admin-team",

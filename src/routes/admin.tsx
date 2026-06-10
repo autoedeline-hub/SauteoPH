@@ -69,6 +69,7 @@ import {
   updateTeamMember,
   deleteTeamMember,
   type TeamMember,
+  type ConsoleRole,
 } from "@/lib/adminTeam";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
@@ -132,6 +133,12 @@ const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?:
   { key: "team", label: "Team", icon: Users },
 ];
 
+// Sections a "member" account can be granted access to. "overview" is
+// always visible to everyone; "team" is admin-only (manages who can sign
+// in at all, so it's never delegated to a restricted member).
+const ASSIGNABLE_TABS = NAV.filter(n => n.key !== "overview" && n.key !== "team");
+const ASSIGNABLE_TAB_KEYS = new Set(ASSIGNABLE_TABS.map(n => n.key));
+
 const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   overview: { title: "Overview", subtitle: "A calm summary of what's happening at Sautéo today." },
   menu: { title: "Menu", subtitle: "Curate the dishes available to guests." },
@@ -155,6 +162,8 @@ const FAQ_TOPICS = [
 function AdminPage() {
   const [session, setSession] = useState<any>(null);
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  const [consoleRole, setConsoleRole] = useState<ConsoleRole>("admin");
+  const [permittedTabs, setPermittedTabs] = useState<TabKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>("overview");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -190,10 +199,31 @@ function AdminPage() {
     (async () => {
       setLoading(true);
       const { data } = await supabase.from("user_roles").select("role").eq("user_id", session.user.id).eq("role", "admin").maybeSingle();
-      setIsAdmin(!!data);
+      const admin = !!data;
+      setIsAdmin(admin);
+      if (admin) {
+        // Fresh fetch (not the cached session) so permission edits made by
+        // another admin take effect on this user's next page load.
+        const { data: userData } = await supabase.auth.getUser();
+        const meta = userData?.user?.user_metadata ?? {};
+        setConsoleRole(meta.console_role === "member" ? "member" : "admin");
+        setPermittedTabs(
+          Array.isArray(meta.tabs)
+            ? meta.tabs.filter((t: unknown): t is TabKey => ASSIGNABLE_TAB_KEYS.has(t as TabKey))
+            : [],
+        );
+      }
       setLoading(false);
     })();
   }, [session]);
+
+  const visibleNav = consoleRole === "admin"
+    ? NAV
+    : NAV.filter(item => item.key === "overview" || permittedTabs.includes(item.key));
+
+  useEffect(() => {
+    if (!visibleNav.some(item => item.key === tab)) setTab("overview");
+  }, [tab, visibleNav]);
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading…</div>;
   if (!session) return <AdminLogin />;
@@ -206,6 +236,7 @@ function AdminPage() {
       {/* Sidebar (desktop) */}
       <aside className="hidden lg:flex w-64 shrink-0 flex-col bg-card border-r border-border">
         <SidebarContent
+          nav={visibleNav}
           tab={tab}
           onTab={(t) => { setTab(t); setMobileNavOpen(false); }}
           email={session.user.email}
@@ -249,6 +280,7 @@ function AdminPage() {
               </button>
             </div>
             <SidebarContent
+              nav={visibleNav}
               tab={tab}
               onTab={(t) => { setTab(t); setMobileNavOpen(false); }}
               email={session.user.email}
@@ -287,8 +319,9 @@ function AdminPage() {
 
 /* ============ Sidebar ============ */
 function SidebarContent({
-  tab, onTab, email, compact, badges,
+  nav, tab, onTab, email, compact, badges,
 }: {
+  nav: typeof NAV;
   tab: TabKey;
   onTab: (t: TabKey) => void;
   email?: string;
@@ -312,7 +345,7 @@ function SidebarContent({
       )}
 
       <nav className="flex-1 px-3 py-5 space-y-1">
-        {NAV.map(({ key, label, icon: Icon }) => {
+        {nav.map(({ key, label, icon: Icon }) => {
           const active = tab === key;
           const badge = badges?.[key] ?? 0;
           return (
@@ -6967,6 +7000,9 @@ function TeamMemberRow({
     : !canDelete
       ? "At least one admin is required"
       : "Remove from team";
+  const tabLabels = member.tabs
+    .map(t => ASSIGNABLE_TABS.find(n => n.key === t)?.label)
+    .filter((l): l is string => !!l);
 
   return (
     <li className="group relative bg-card border border-border rounded-xl px-4 py-3 hover:border-foreground/20 hover:shadow-sm transition">
@@ -6983,8 +7019,22 @@ function TeamMemberRow({
                 You
               </span>
             )}
+            {member.console_role === "admin" ? (
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-primary/10 text-primary">
+                Full access
+              </span>
+            ) : (
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-muted text-muted-foreground">
+                Limited
+              </span>
+            )}
           </div>
           <div className="text-xs text-muted-foreground truncate">{member.email}</div>
+          {member.console_role === "member" && (
+            <div className="text-[11px] text-muted-foreground/70 truncate">
+              {tabLabels.length > 0 ? `Access: ${tabLabels.join(", ")}` : "No sections assigned yet"}
+            </div>
+          )}
           <div className="text-[11px] text-muted-foreground/70">
             Joined {format(new Date(member.created_at), "MMM d, yyyy")}
             {" · "}
@@ -7036,8 +7086,18 @@ function TeamMemberEditor({
   const [email, setEmail] = useState(member?.email ?? "");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [consoleRole, setConsoleRole] = useState<ConsoleRole>(member?.console_role ?? "admin");
+  const [tabs, setTabs] = useState<Set<TabKey>>(new Set((member?.tabs ?? []) as TabKey[]));
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const toggleTab = (key: TabKey) => {
+    setTabs(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
 
   const inputCls =
     "w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition";
@@ -7058,19 +7118,39 @@ function TeamMemberEditor({
           email: email.trim().toLowerCase(),
           password,
           full_name: fullName.trim(),
+          console_role: consoleRole,
+          tabs: consoleRole === "member" ? [...tabs] : undefined,
         });
       } else {
-        const payload: { user_id: string; full_name?: string; email?: string; password?: string } = {
+        const payload: {
+          user_id: string;
+          full_name?: string;
+          email?: string;
+          password?: string;
+          console_role?: ConsoleRole;
+          tabs?: string[];
+        } = {
           user_id: member!.id,
         };
         if (fullName.trim() !== (member!.full_name ?? "")) payload.full_name = fullName.trim();
         if (email.trim().toLowerCase() !== member!.email) payload.email = email.trim().toLowerCase();
         if (password) payload.password = password;
+
+        const consoleRoleChanged = consoleRole !== member!.console_role;
+        if (consoleRoleChanged) payload.console_role = consoleRole;
+
+        const memberTabs = new Set(member!.tabs);
+        const tabsChanged = tabs.size !== memberTabs.size || [...tabs].some(t => !memberTabs.has(t));
+        if (consoleRole === "member" && (consoleRoleChanged || tabsChanged)) {
+          payload.tabs = [...tabs];
+        }
+
         saved = Object.keys(payload).length > 1 ? await updateTeamMember(payload) : member!;
       }
       onSaved(saved);
     } catch (e: any) {
-      setErrorMsg(e?.message ?? "Something went wrong");
+      const msg = e?.message ?? "Something went wrong";
+      setErrorMsg(msg === "last_full_admin" ? "At least one team member must keep full admin access." : msg);
     } finally {
       setBusy(false);
     }
@@ -7153,9 +7233,69 @@ function TeamMemberEditor({
             </div>
           </div>
 
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+              Console access
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setConsoleRole("admin")}
+                className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                  consoleRole === "admin"
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border hover:bg-muted/50"
+                }`}
+              >
+                Full admin
+              </button>
+              <button
+                type="button"
+                onClick={() => setConsoleRole("member")}
+                className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                  consoleRole === "member"
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border hover:bg-muted/50"
+                }`}
+              >
+                Limited member
+              </button>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1.5">
+              {consoleRole === "admin"
+                ? "Full access to every section, including Team."
+                : "Only sees Overview plus the sections checked below."}
+            </p>
+
+            {consoleRole === "member" && (
+              <div className="mt-2 grid grid-cols-2 gap-1.5">
+                {ASSIGNABLE_TABS.map(({ key, label, icon: Icon }) => {
+                  const checked = tabs.has(key);
+                  return (
+                    <label
+                      key={key}
+                      className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs cursor-pointer transition ${
+                        checked ? "border-foreground/40 bg-muted/50" : "border-border hover:bg-muted/30"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleTab(key)}
+                        className="h-3.5 w-3.5 accent-foreground"
+                      />
+                      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span className="truncate">{label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           <p className="text-[11px] text-muted-foreground bg-muted/40 border border-border rounded-lg p-3 leading-relaxed">
             {mode === "create"
-              ? "This creates a Supabase Auth account with full admin access — they can sign in immediately with the password above. Share it with them directly; it won't be shown again."
+              ? `This creates a Supabase Auth account${consoleRole === "admin" ? " with full admin access" : " with access limited to the sections you choose"} — they can sign in immediately with the password above. Share it with them directly; it won't be shown again.`
               : "Changes apply immediately. Leaving the password blank keeps their current password."}
           </p>
 
