@@ -54,13 +54,22 @@ import {
   Instagram,
   BookOpen,
   EyeOff,
+  Eye,
   ShieldCheck,
   ShieldAlert,
   ExternalLink,
   FileText,
   Save,
   RefreshCw,
+  Users,
 } from "lucide-react";
+import {
+  listTeamMembers,
+  createTeamMember,
+  updateTeamMember,
+  deleteTeamMember,
+  type TeamMember,
+} from "@/lib/adminTeam";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
 
@@ -102,7 +111,7 @@ const REFUND_LABEL: Record<string, string> = {
   forfeited: "Forfeited",
 };
 
-type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge" | "rules";
+type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge" | "rules" | "team";
 
 // Nav order is the *user-facing journey*, top → bottom: situational
 // awareness (Overview) → core catalog (Menu) → in-flight customer flow
@@ -120,6 +129,7 @@ const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?:
   { key: "escalations", label: "Escalation", icon: AlertCircle },
   { key: "knowledge", label: "FAQs", icon: BookOpen },
   { key: "rules", label: "Rules", icon: FileText },
+  { key: "team", label: "Team", icon: Users },
 ];
 
 const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
@@ -134,6 +144,7 @@ const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   escalations: { title: "Escalation", subtitle: "Messenger questions the chatbot couldn't answer — review and resolve here." },
   knowledge: { title: "FAQs", subtitle: "Answers the chatbot uses when guests message Sautéo." },
   rules: { title: "Booking Rules", subtitle: "Edit the rules shown to guests on the dine-in and pickup booking pages." },
+  team: { title: "Team", subtitle: "Manage who can sign in to the admin console." },
 };
 
 const FAQ_TOPICS = [
@@ -267,6 +278,7 @@ function AdminPage() {
           {tab === "slots" && <SlotsTab />}
           {tab === "knowledge" && <KnowledgeTab />}
           {tab === "rules" && <RulesTab />}
+          {tab === "team" && <TeamTab currentUserId={session.user.id} />}
         </div>
       </main>
     </div>
@@ -6800,6 +6812,377 @@ function PipelineCollapsedLane({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ============ Team ============
+   Lets an existing admin create/edit/remove OTHER admin logins, replacing
+   the old "ask a dev to run grant_admin_by_email() in the SQL Editor" flow.
+   All privileged work (Supabase Auth admin API + user_roles) happens in the
+   `admin-team` edge function — this tab is just CRUD UI over it. */
+
+const TEAM_EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
+
+// Generates a temp password the admin can hand to a new teammate directly
+// (no email-invite flow). Avoids ambiguous look-alike characters (0/O, 1/l/I).
+function generateTempPassword(length = 12): string {
+  const charset = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*";
+  const arr = new Uint32Array(length);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, n => charset[n % charset.length]).join("");
+}
+
+function TeamTab({ currentUserId }: { currentUserId: string }) {
+  const [members, setMembers] = useState<TeamMember[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [bannerMsg, setBannerMsg] = useState<string | null>(null);
+  const [editor, setEditor] = useState<
+    { mode: "create" } | { mode: "edit"; member: TeamMember } | null
+  >(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      setMembers(await listTeamMembers());
+    } catch (e: any) {
+      setErrorMsg(e?.message ?? "Failed to load team");
+    }
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const flashBanner = (msg: string) => {
+    setBannerMsg(msg);
+    window.setTimeout(() => setBannerMsg(p => (p === msg ? null : p)), 4000);
+  };
+
+  const handleSaved = (member: TeamMember, mode: "create" | "edit") => {
+    setMembers(prev =>
+      mode === "create"
+        ? [...prev, member]
+        : prev.map(m => (m.id === member.id ? member : m)),
+    );
+    setEditor(null);
+    flashBanner(
+      mode === "create"
+        ? `Added ${member.full_name ?? member.email} to the team.`
+        : `Updated ${member.full_name ?? member.email}.`,
+    );
+  };
+
+  const handleDelete = async (member: TeamMember) => {
+    if (member.id === currentUserId || members.length <= 1) return;
+    const name = member.full_name ?? member.email;
+    if (!confirm(`Remove ${name} from the admin team? They will lose access immediately.`)) return;
+    try {
+      await deleteTeamMember(member.id);
+      setMembers(prev => prev.filter(m => m.id !== member.id));
+      flashBanner(`Removed ${name}.`);
+    } catch (e: any) {
+      alert(`Couldn't remove: ${e?.message ?? "unknown error"}`);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {bannerMsg && (
+        <div className="bg-mustard/15 border border-mustard/40 text-charcoal rounded-2xl px-4 py-3 text-sm flex items-center gap-2 shadow-sm">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span>{bannerMsg}</span>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-3 px-1">
+        <p className="text-xs text-muted-foreground">
+          {loading
+            ? "Loading…"
+            : `${members.length} ${members.length === 1 ? "admin" : "admins"} can sign in to this console.`}
+        </p>
+        <button
+          onClick={() => setEditor({ mode: "create" })}
+          className="inline-flex items-center gap-1.5 bg-primary text-primary-foreground rounded-full px-4 py-2 text-xs font-semibold hover:opacity-90 shadow-sm transition"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add member
+        </button>
+      </div>
+
+      {errorMsg && (
+        <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-2.5">
+          {errorMsg}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="bg-card border border-border rounded-2xl py-12 text-center text-muted-foreground text-sm">
+          Loading team…
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {members.map(m => (
+            <TeamMemberRow
+              key={m.id}
+              member={m}
+              isSelf={m.id === currentUserId}
+              canDelete={members.length > 1}
+              onEdit={() => setEditor({ mode: "edit", member: m })}
+              onDelete={() => handleDelete(m)}
+            />
+          ))}
+        </ul>
+      )}
+
+      {editor && (
+        <TeamMemberEditor
+          mode={editor.mode}
+          member={editor.mode === "edit" ? editor.member : undefined}
+          onClose={() => setEditor(null)}
+          onSaved={member => handleSaved(member, editor.mode)}
+        />
+      )}
+    </div>
+  );
+}
+
+function TeamMemberRow({
+  member,
+  isSelf,
+  canDelete,
+  onEdit,
+  onDelete,
+}: {
+  member: TeamMember;
+  isSelf: boolean;
+  canDelete: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const displayName = member.full_name ?? member.email;
+  const deleteDisabled = isSelf || !canDelete;
+  const deleteTitle = isSelf
+    ? "You can't remove your own account"
+    : !canDelete
+      ? "At least one admin is required"
+      : "Remove from team";
+
+  return (
+    <li className="group relative bg-card border border-border rounded-xl px-4 py-3 hover:border-foreground/20 hover:shadow-sm transition">
+      <div className="flex items-center gap-4">
+        <div className="flex items-center justify-center h-10 w-10 rounded-lg shrink-0 bg-primary/10 text-primary">
+          <Users className="h-4 w-4" />
+        </div>
+
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-foreground truncate">{displayName}</span>
+            {isSelf && (
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-mustard/20 text-charcoal">
+                You
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground truncate">{member.email}</div>
+          <div className="text-[11px] text-muted-foreground/70">
+            Joined {format(new Date(member.created_at), "MMM d, yyyy")}
+            {" · "}
+            {member.last_sign_in_at
+              ? `Last sign-in ${format(new Date(member.last_sign_in_at), "MMM d, yyyy")}`
+              : "Never signed in"}
+          </div>
+        </div>
+
+        <div className="shrink-0 flex items-center gap-1">
+          <button
+            onClick={onEdit}
+            aria-label="Edit member"
+            className="opacity-0 group-hover:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          >
+            <Pencil className="h-4 w-4" />
+          </button>
+          <button
+            onClick={onDelete}
+            disabled={deleteDisabled}
+            aria-label="Remove member"
+            title={deleteTitle}
+            className={`opacity-0 group-hover:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition p-1.5 rounded-md ${
+              deleteDisabled
+                ? "text-muted-foreground/40 cursor-not-allowed"
+                : "text-muted-foreground hover:text-destructive hover:bg-destructive/5"
+            }`}
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function TeamMemberEditor({
+  mode,
+  member,
+  onClose,
+  onSaved,
+}: {
+  mode: "create" | "edit";
+  member?: TeamMember;
+  onClose: () => void;
+  onSaved: (member: TeamMember) => void;
+}) {
+  const [fullName, setFullName] = useState(member?.full_name ?? "");
+  const [email, setEmail] = useState(member?.email ?? "");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const inputCls =
+    "w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition";
+
+  const nameOk = fullName.trim().length >= 2 && fullName.trim().length <= 80;
+  const emailOk = TEAM_EMAIL_RE.test(email.trim());
+  const passwordOk = mode === "create" ? password.length >= 8 : password === "" || password.length >= 8;
+  const canSubmit = !busy && nameOk && emailOk && passwordOk;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setErrorMsg(null);
+    setBusy(true);
+    try {
+      let saved: TeamMember;
+      if (mode === "create") {
+        saved = await createTeamMember({
+          email: email.trim().toLowerCase(),
+          password,
+          full_name: fullName.trim(),
+        });
+      } else {
+        const payload: { user_id: string; full_name?: string; email?: string; password?: string } = {
+          user_id: member!.id,
+        };
+        if (fullName.trim() !== (member!.full_name ?? "")) payload.full_name = fullName.trim();
+        if (email.trim().toLowerCase() !== member!.email) payload.email = email.trim().toLowerCase();
+        if (password) payload.password = password;
+        saved = Object.keys(payload).length > 1 ? await updateTeamMember(payload) : member!;
+      }
+      onSaved(saved);
+    } catch (e: any) {
+      setErrorMsg(e?.message ?? "Something went wrong");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6 bg-charcoal/40">
+      <div className="bg-card border border-border rounded-2xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+        <div className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <h3 className="font-display text-lg font-semibold">
+            {mode === "create" ? "Add team member" : "Edit team member"}
+          </h3>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="p-1 text-muted-foreground hover:text-foreground rounded-lg"
+          >
+            <XIcon className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="sm:col-span-2">
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                Full name *
+              </label>
+              <input
+                value={fullName}
+                onChange={e => setFullName(e.target.value)}
+                placeholder="Juan Dela Cruz"
+                className={inputCls}
+                maxLength={80}
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                Email *
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="staff@sauteo.ph"
+                className={inputCls}
+                autoComplete="email"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                {mode === "create" ? "Temporary password *" : "New password (leave blank to keep current)"}
+              </label>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    placeholder="At least 8 characters"
+                    className={`${inputCls} pr-9`}
+                    autoComplete="new-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(s => !s)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setPassword(generateTempPassword()); setShowPassword(true); }}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 border border-border hover:bg-muted/50 transition shrink-0"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" /> Generate
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <p className="text-[11px] text-muted-foreground bg-muted/40 border border-border rounded-lg p-3 leading-relaxed">
+            {mode === "create"
+              ? "This creates a Supabase Auth account with full admin access — they can sign in immediately with the password above. Share it with them directly; it won't be shown again."
+              : "Changes apply immediately. Leaving the password blank keeps their current password."}
+          </p>
+
+          {errorMsg && (
+            <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-2.5">
+              {errorMsg}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-4 border-t border-border flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-full px-4 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canSubmit}
+            className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
+          >
+            {busy ? "Saving…" : mode === "create" ? "Add member" : "Save changes"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
