@@ -2726,7 +2726,7 @@ function MenuItemEditor({
               </div>
             </div>
             <div>
-              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Display order</label>
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Order No.</label>
               <input
                 type="number"
                 step="1"
