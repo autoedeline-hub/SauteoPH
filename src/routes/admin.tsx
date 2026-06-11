@@ -2726,7 +2726,7 @@ function MenuItemEditor({
               </div>
             </div>
             <div>
-              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Sort order</label>
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Display order</label>
               <input
                 type="number"
                 step="1"
@@ -2735,6 +2735,7 @@ function MenuItemEditor({
                 placeholder="0"
                 className={`${menuInputCls} tabular-nums`}
               />
+              <p className="text-[11px] text-muted-foreground mt-1">Lower number shows first in this category.</p>
             </div>
           </div>
 
