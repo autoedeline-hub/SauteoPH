@@ -4192,15 +4192,16 @@ function ClaimantCard({
               </button>
             ))}
           </div>
-          {/* Validation badge. Only show "Complete" once the user has
-              actually filled things in — otherwise a brand-new blank card
-              would falsely flash green. */}
-          {hasInteracted && missingLabels.length === 0 && (
+          {/* Validation badge. Only show once OCR has finished (or the user
+              has typed something) — otherwise a brand-new card, or one still
+              mid-scan, would falsely flash "Missing" before the fields even
+              render. */}
+          {hasInteracted && autoFill.state !== "loading" && missingLabels.length === 0 && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold uppercase tracking-wider">
               <Check className="h-3 w-3" /> Complete
             </span>
           )}
-          {hasInteracted && missingLabels.length > 0 && (
+          {hasInteracted && autoFill.state !== "loading" && missingLabels.length > 0 && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-destructive/10 text-destructive text-[10px] font-semibold uppercase tracking-wider">
               <AlertTriangle className="h-3 w-3" />
               Missing: {missingLabels.join(", ")}
@@ -4217,107 +4218,9 @@ function ClaimantCard({
         </button>
       </div>
 
-      {/* 6-column grid lets us put the small DOB/age/sex/issue fields on
-          one tidy row on tablet+ while name and address stay full-width.
-          On mobile everything stacks to single column. */}
-      <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
-        <div className="col-span-2 sm:col-span-4">
-          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-            Full name (as on ID)
-          </label>
-          <input
-            type="text"
-            value={claimant.fullName}
-            onChange={(e) => onChange({ fullName: e.target.value })}
-            placeholder="Juan Dela Cruz"
-            className={`${inputCls} ${hasInteracted && nameMissing ? errorRing : ""}`}
-            autoComplete="off"
-          />
-        </div>
-        <div className="col-span-2 sm:col-span-2">
-          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-            ID number
-          </label>
-          <input
-            type="text"
-            value={claimant.idNumber}
-            onChange={(e) => onChange({ idNumber: e.target.value })}
-            placeholder={claimant.kind === "pwd" ? "RR-XXXXXX-XX..." : "e.g. 8764"}
-            className={inputCls}
-            autoComplete="off"
-          />
-        </div>
-
-        <div className="col-span-2 sm:col-span-2">
-          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-            Date of birth
-          </label>
-          <input
-            type="text"
-            value={claimant.dateOfBirth}
-            onChange={(e) => onChange({ dateOfBirth: e.target.value })}
-            placeholder="MM/DD/YYYY"
-            className={`${inputCls} ${hasInteracted && dobMissing ? errorRing : ""}`}
-            autoComplete="off"
-          />
-        </div>
-        <div className="col-span-1 sm:col-span-1">
-          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-            Age
-          </label>
-          <input
-            type="text"
-            inputMode="numeric"
-            value={claimant.age}
-            onChange={(e) => onChange({ age: e.target.value })}
-            placeholder="65"
-            className={`${inputCls} ${hasInteracted && ageMissing ? errorRing : ""}`}
-            autoComplete="off"
-          />
-        </div>
-        <div className="col-span-1 sm:col-span-1">
-          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-            Sex
-          </label>
-          <select
-            value={claimant.sex}
-            onChange={(e) => onChange({ sex: e.target.value })}
-            className={inputCls}
-          >
-            <option value="">—</option>
-            <option value="M">M</option>
-            <option value="F">F</option>
-          </select>
-        </div>
-        <div className="col-span-2 sm:col-span-2">
-          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-            Date of issue
-          </label>
-          <input
-            type="text"
-            value={claimant.dateOfIssue}
-            onChange={(e) => onChange({ dateOfIssue: e.target.value })}
-            placeholder="MM/DD/YYYY"
-            className={`${inputCls} ${hasInteracted && issuedMissing ? errorRing : ""}`}
-            autoComplete="off"
-          />
-        </div>
-
-        <div className="col-span-2 sm:col-span-6">
-          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-            Address
-          </label>
-          <input
-            type="text"
-            value={claimant.address}
-            onChange={(e) => onChange({ address: e.target.value })}
-            placeholder="Street, Barangay, City"
-            className={inputCls}
-            autoComplete="off"
-          />
-        </div>
-      </div>
-
+      {/* Upload-first flow: the detail fields below stay hidden until a
+          photo is selected, so the customer's first (and ideally only)
+          action is "upload ID" — OCR then fills the fields in for review. */}
       <div>
         <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
           ID photo
@@ -4380,6 +4283,13 @@ function ClaimantCard({
           )}
         </div>
 
+        {!claimant.idPhotoFile && (
+          <p className="mt-2 text-xs text-muted-foreground leading-relaxed">
+            Upload a photo of the Senior Citizen / PWD ID — we'll read the
+            details automatically.
+          </p>
+        )}
+
         {/* Autofill status row. Renders nothing in idle/off states so the
             form looks clean before/after a photo is dropped; renders a
             spinner while the LLM reads the ID; shows a "please verify" hint
@@ -4394,7 +4304,7 @@ function ClaimantCard({
         {autoFill.state === "filled" && (
           <div className="mt-2 inline-flex items-center gap-2 text-xs text-primary">
             <Sparkles className="h-3.5 w-3.5" />
-            Auto-filled from your ID — please double-check the fields above.
+            Auto-filled from your ID — please double-check the fields below.
             {autoFill.confidence > 0 && (
               <span className="text-muted-foreground">
                 ({Math.round(autoFill.confidence * 100)}% confidence)
@@ -4405,10 +4315,112 @@ function ClaimantCard({
         {autoFill.state === "failed" && (
           <div className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
             <AlertTriangle className="h-3.5 w-3.5" />
-            Couldn't read the ID automatically — please type the fields manually.
+            Couldn't read the ID automatically — please type the fields in below.
           </div>
         )}
       </div>
+
+      {/* Detail fields — revealed once a photo is selected. OCR (if
+          available) fills these in; the customer reviews/corrects them. */}
+      {claimant.idPhotoFile && (
+        <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
+          <div className="col-span-2 sm:col-span-4">
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Full name (as on ID)
+            </label>
+            <input
+              type="text"
+              value={claimant.fullName}
+              onChange={(e) => onChange({ fullName: e.target.value })}
+              placeholder="Juan Dela Cruz"
+              className={`${inputCls} ${hasInteracted && nameMissing ? errorRing : ""}`}
+              autoComplete="off"
+            />
+          </div>
+          <div className="col-span-2 sm:col-span-2">
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              ID number
+            </label>
+            <input
+              type="text"
+              value={claimant.idNumber}
+              onChange={(e) => onChange({ idNumber: e.target.value })}
+              placeholder={claimant.kind === "pwd" ? "RR-XXXXXX-XX..." : "e.g. 8764"}
+              className={inputCls}
+              autoComplete="off"
+            />
+          </div>
+
+          <div className="col-span-2 sm:col-span-2">
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Date of birth
+            </label>
+            <input
+              type="text"
+              value={claimant.dateOfBirth}
+              onChange={(e) => onChange({ dateOfBirth: e.target.value })}
+              placeholder="MM/DD/YYYY"
+              className={`${inputCls} ${hasInteracted && dobMissing ? errorRing : ""}`}
+              autoComplete="off"
+            />
+          </div>
+          <div className="col-span-1 sm:col-span-1">
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Age
+            </label>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={claimant.age}
+              onChange={(e) => onChange({ age: e.target.value })}
+              placeholder="65"
+              className={`${inputCls} ${hasInteracted && ageMissing ? errorRing : ""}`}
+              autoComplete="off"
+            />
+          </div>
+          <div className="col-span-1 sm:col-span-1">
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Sex
+            </label>
+            <select
+              value={claimant.sex}
+              onChange={(e) => onChange({ sex: e.target.value })}
+              className={inputCls}
+            >
+              <option value="">—</option>
+              <option value="M">M</option>
+              <option value="F">F</option>
+            </select>
+          </div>
+          <div className="col-span-2 sm:col-span-2">
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Date of issue
+            </label>
+            <input
+              type="text"
+              value={claimant.dateOfIssue}
+              onChange={(e) => onChange({ dateOfIssue: e.target.value })}
+              placeholder="MM/DD/YYYY"
+              className={`${inputCls} ${hasInteracted && issuedMissing ? errorRing : ""}`}
+              autoComplete="off"
+            />
+          </div>
+
+          <div className="col-span-2 sm:col-span-6">
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+              Address
+            </label>
+            <input
+              type="text"
+              value={claimant.address}
+              onChange={(e) => onChange({ address: e.target.value })}
+              placeholder="Street, Barangay, City"
+              className={inputCls}
+              autoComplete="off"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
