@@ -1520,9 +1520,12 @@ function VariantSelectModal({
 
   const claimFieldsValid =
     claim.fullName.trim().length >= 2 &&
+    claim.idNumber.trim().length >= 1 &&
     claim.age.trim().length >= 1 &&
     claim.dateOfBirth.trim().length >= 4 &&
+    claim.sex.trim().length >= 1 &&
     claim.dateOfIssue.trim().length >= 4 &&
+    claim.address.trim().length >= 1 &&
     !!claim.idPhotoFile;
 
   // Auto-hide the in-modal "Added!" pill ~2s after each add.
@@ -4139,18 +4142,24 @@ function ClaimantCard({
   const inputCls =
     "w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition";
   // Per-required-field "is this filled in?" flags so we can highlight the
-  // specific input that's blocking submit. Matches the validity check used
-  // by allClaimsValid in ReservationView — keep them in sync.
+  // specific input that's blocking submit. Matches claimFieldsValid above —
+  // keep them in sync.
   const nameMissing = claimant.fullName.trim().length < 2;
+  const idNumberMissing = claimant.idNumber.trim().length < 1;
   const ageMissing = claimant.age.trim().length < 1;
   const dobMissing = claimant.dateOfBirth.trim().length < 4;
+  const sexMissing = claimant.sex.trim().length < 1;
   const issuedMissing = claimant.dateOfIssue.trim().length < 4;
+  const addressMissing = claimant.address.trim().length < 1;
   const photoMissing = !claimant.idPhotoFile;
   const missingLabels = [
     nameMissing && "Name",
-    ageMissing && "Age",
+    idNumberMissing && "ID number",
     dobMissing && "Date of birth",
+    ageMissing && "Age",
+    sexMissing && "Sex",
     issuedMissing && "Date of issue",
+    addressMissing && "Address",
     photoMissing && "ID photo",
   ].filter(Boolean) as string[];
   // Subtle red ring on inputs whose value is empty. Only kicks in once the
@@ -4343,7 +4352,7 @@ function ClaimantCard({
               value={claimant.idNumber}
               onChange={(e) => onChange({ idNumber: e.target.value })}
               placeholder={claimant.kind === "pwd" ? "RR-XXXXXX-XX..." : "e.g. 8764"}
-              className={inputCls}
+              className={`${inputCls} ${hasInteracted && idNumberMissing ? errorRing : ""}`}
               autoComplete="off"
             />
           </div>
@@ -4382,7 +4391,7 @@ function ClaimantCard({
             <select
               value={claimant.sex}
               onChange={(e) => onChange({ sex: e.target.value })}
-              className={inputCls}
+              className={`${inputCls} ${hasInteracted && sexMissing ? errorRing : ""}`}
             >
               <option value="">—</option>
               <option value="M">M</option>
@@ -4412,7 +4421,7 @@ function ClaimantCard({
               value={claimant.address}
               onChange={(e) => onChange({ address: e.target.value })}
               placeholder="Street, Barangay, City"
-              className={inputCls}
+              className={`${inputCls} ${hasInteracted && addressMissing ? errorRing : ""}`}
               autoComplete="off"
             />
           </div>
