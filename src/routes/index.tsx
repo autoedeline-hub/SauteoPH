@@ -1532,14 +1532,11 @@ function VariantSelectModal({
     return () => window.clearTimeout(t);
   }, [showAdded, addedNonce]);
 
-  // When a new item is opened, default the accordion to its first group
-  // (only relevant for items whose variants build 2+ groups; otherwise
-  // openGroup is unused).
+  // When a new item is opened, start with all accordion groups collapsed —
+  // the customer expands a group by tapping its header.
   useEffect(() => {
     if (!item) return;
-    const vs = item.variants ?? [];
-    const gs = buildVariantGroups(vs);
-    setOpenGroup(gs.length >= 2 ? gs[0].name : null);
+    setOpenGroup(null);
   }, [item]);
 
   // Toggle a variant's selection. As a side effect, opens the accordion
