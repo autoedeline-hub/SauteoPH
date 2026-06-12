@@ -4179,25 +4179,6 @@ function ClaimantCard({
     <div className="border border-border rounded-xl p-4 bg-background space-y-3">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="h-7 w-7 rounded-full bg-muted flex items-center justify-center text-xs font-semibold tabular-nums">
-            {index + 1}
-          </div>
-          <div className="inline-flex rounded-full bg-muted p-0.5">
-            {(["senior", "pwd"] as const).map((k) => (
-              <button
-                key={k}
-                type="button"
-                onClick={() => onChange({ kind: k })}
-                className={`text-[11px] uppercase tracking-wider px-2.5 py-1 rounded-full transition ${
-                  claimant.kind === k
-                    ? "bg-foreground text-background font-semibold"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {k === "senior" ? "Senior" : "PWD"}
-              </button>
-            ))}
-          </div>
           {/* Validation badge. Only show once OCR has finished (or the user
               has typed something) — otherwise a brand-new card, or one still
               mid-scan, would falsely flash "Missing" before the fields even
