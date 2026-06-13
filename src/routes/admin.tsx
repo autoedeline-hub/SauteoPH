@@ -4900,55 +4900,58 @@ function RulesTab() {
         </div>
       ) : (
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            These rules are shown to guests on the{" "}
-            <span className="text-foreground font-medium">{activeSection.label.toLowerCase()}</span>{" "}
-            booking page. Each rule has its own Save — edits to one don't affect the others.
-          </p>
+          <div className="flex items-start justify-between gap-4">
+            <p className="text-sm text-muted-foreground">
+              These rules are shown to guests on the{" "}
+              <span className="text-foreground font-medium">{activeSection.label.toLowerCase()}</span>{" "}
+              booking page. Each rule has its own Save — edits to one don't affect the others.
+            </p>
+            <button
+              onClick={() => setDraftIds((prev) => [...prev, `draft-${prev.length}-${Date.now()}`])}
+              className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition shrink-0"
+            >
+              <Plus className="h-4 w-4" />
+              Add rule
+            </button>
+          </div>
 
-          {rules.length === 0 && draftIds.length === 0 ? (
-            <EmptyState
-              icon={FileText}
-              title="No rules yet"
-              hint='Click "Add rule" to create the first rule shown on this booking page.'
-            />
-          ) : (
-            rules.map((rule) => (
-              <RuleCard
-                key={rule.id}
-                rule={rule}
-                groupLabels={groupLabels}
-                onSaved={() => load(activeKey)}
-                onDeleted={() => load(activeKey)}
+          <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-2">
+            {rules.length === 0 && draftIds.length === 0 ? (
+              <EmptyState
+                icon={FileText}
+                title="No rules yet"
+                hint='Click "Add rule" to create the first rule shown on this booking page.'
               />
-            ))
-          )}
+            ) : (
+              rules.map((rule) => (
+                <RuleCard
+                  key={rule.id}
+                  rule={rule}
+                  groupLabels={groupLabels}
+                  onSaved={() => load(activeKey)}
+                  onDeleted={() => load(activeKey)}
+                />
+              ))
+            )}
 
-          {draftIds.map((id) => (
-            <RuleCard
-              key={id}
-              rule={{
-                id,
-                section: activeKey,
-                group_label: groupLabels[0] ?? "General",
-                title: "",
-                body: "",
-                sort_order: nextSortOrder,
-              }}
-              groupLabels={groupLabels}
-              isNew
-              onSaved={() => load(activeKey)}
-              onDeleted={() => setDraftIds((prev) => prev.filter((d) => d !== id))}
-            />
-          ))}
-
-          <button
-            onClick={() => setDraftIds((prev) => [...prev, `draft-${prev.length}-${Date.now()}`])}
-            className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition"
-          >
-            <Plus className="h-4 w-4" />
-            Add rule
-          </button>
+            {draftIds.map((id) => (
+              <RuleCard
+                key={id}
+                rule={{
+                  id,
+                  section: activeKey,
+                  group_label: groupLabels[0] ?? "General",
+                  title: "",
+                  body: "",
+                  sort_order: nextSortOrder,
+                }}
+                groupLabels={groupLabels}
+                isNew
+                onSaved={() => load(activeKey)}
+                onDeleted={() => setDraftIds((prev) => prev.filter((d) => d !== id))}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>
