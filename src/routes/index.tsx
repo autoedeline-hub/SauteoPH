@@ -16,6 +16,7 @@ import {
   Clock,
   CreditCard,
   Image as ImageIcon,
+  Info,
   Loader2,
   MessageCircle,
   Minus,
@@ -47,7 +48,7 @@ import {
   type LoadedInvite,
 } from "@/lib/invite";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
-import { useSiteRules } from "@/lib/siteContent";
+import { useBookingRules, type BookingRule } from "@/lib/siteContent";
 
 // Bare `/` redirects to the read-only /menu page. The booking flows
 // (/dine-in, /pick-up) stay reachable only via the tokenized invite
@@ -2632,11 +2633,34 @@ function Rule({ icon, title, body }: { icon: React.ReactNode; title: string; bod
   );
 }
 
+// Icon shown next to each rule, keyed by the admin-editable group heading.
+// Falls back to a generic icon for any custom group an admin adds.
+const RULE_GROUP_ICONS: Record<string, React.ReactNode> = {
+  "Reservation Rules": <CalendarDays className="h-4 w-4 text-blue-500" />,
+  "Dining Guidelines": <Sparkles className="h-4 w-4 text-primary" />,
+  "Order & Payment": <CreditCard className="h-4 w-4 text-green-500" />,
+  "Pickup Policy": <Clock className="h-4 w-4 text-amber-500" />,
+};
+const DEFAULT_RULE_ICON = <Info className="h-4 w-4 text-muted-foreground" />;
+
+// Group rules by their `group_label`, preserving the order groups first
+// appear in (rules already arrive sorted by `sort_order`).
+function groupRules(rules: BookingRule[]): { label: string; items: BookingRule[] }[] {
+  const groups: { label: string; items: BookingRule[] }[] = [];
+  for (const r of rules) {
+    let g = groups.find((g) => g.label === r.group_label);
+    if (!g) {
+      g = { label: r.group_label, items: [] };
+      groups.push(g);
+    }
+    g.items.push(r);
+  }
+  return groups;
+}
+
 function DineInRulesModal({ onAccept }: { onAccept: () => void }) {
-  const rules = useSiteRules("dinein_rules");
-  const byId = useMemo(() => Object.fromEntries(rules.map((r) => [r.id, r])), [rules]);
-  const t = (id: string) => byId[id]?.title ?? "";
-  const b = (id: string) => byId[id]?.body ?? "";
+  const rules = useBookingRules("dinein");
+  const groups = useMemo(() => groupRules(rules), [rules]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
@@ -2658,19 +2682,19 @@ function DineInRulesModal({ onAccept }: { onAccept: () => void }) {
 
         {/* Rules & guidelines */}
         <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
-          <div className="space-y-4">
-            <SectionLabel>Reservation Rules</SectionLabel>
-            <Rule icon={<CalendarDays className="h-4 w-4 text-blue-500" />} title={t("available_days")} body={b("available_days")} />
-            <Rule icon={<MessageCircle className="h-4 w-4 text-primary" />} title={t("invite_only")} body={b("invite_only")} />
-            <Rule icon={<CreditCard className="h-4 w-4 text-green-500" />} title={t("full_payment")} body={b("full_payment")} />
-            <Rule icon={<AlertTriangle className="h-4 w-4 text-red-500" />} title={t("no_refunds")} body={b("no_refunds")} />
-          </div>
-          <div className="space-y-4 pt-1">
-            <SectionLabel>Dining Guidelines</SectionLabel>
-            <Rule icon={<Clock className="h-4 w-4 text-amber-500" />} title={t("arrive_on_time")} body={b("arrive_on_time")} />
-            <Rule icon={<Users className="h-4 w-4 text-primary" />} title={t("party_size")} body={b("party_size")} />
-            <Rule icon={<Sparkles className="h-4 w-4 text-primary" />} title={t("intimate_setting")} body={b("intimate_setting")} />
-          </div>
+          {groups.map((g) => (
+            <div key={g.label} className="space-y-4 pt-1 first:pt-0">
+              <SectionLabel>{g.label}</SectionLabel>
+              {g.items.map((r) => (
+                <Rule
+                  key={r.id}
+                  icon={RULE_GROUP_ICONS[g.label] ?? DEFAULT_RULE_ICON}
+                  title={r.title}
+                  body={r.body}
+                />
+              ))}
+            </div>
+          ))}
         </div>
 
         {/* CTA */}
@@ -2748,10 +2772,8 @@ export function PickupInviteLanding({ onProceed }: { onProceed: () => void }) {
 /* ── Pickup rules modal ───────────────────────────────────────────────── */
 
 export function PickupRulesModal({ onAccept }: { onAccept: () => void }) {
-  const rules = useSiteRules("pickup_rules");
-  const byId = useMemo(() => Object.fromEntries(rules.map((r) => [r.id, r])), [rules]);
-  const t = (id: string) => byId[id]?.title ?? "";
-  const b = (id: string) => byId[id]?.body ?? "";
+  const rules = useBookingRules("pickup");
+  const groups = useMemo(() => groupRules(rules), [rules]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
@@ -2771,17 +2793,19 @@ export function PickupRulesModal({ onAccept }: { onAccept: () => void }) {
         </div>
 
         <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
-          <div className="space-y-4">
-            <SectionLabel>Order &amp; Payment</SectionLabel>
-            <Rule icon={<CheckCircle2 className="h-4 w-4 text-green-500" />} title={t("order_confirmation")} body={b("order_confirmation")} />
-            <Rule icon={<CreditCard className="h-4 w-4 text-green-500" />} title={t("payment_required")} body={b("payment_required")} />
-          </div>
-          <div className="space-y-4 pt-1">
-            <SectionLabel>Pickup Policy</SectionLabel>
-            <Rule icon={<Clock className="h-4 w-4 text-amber-500" />} title={t("pickup_window")} body={b("pickup_window")} />
-            <Rule icon={<AlertTriangle className="h-4 w-4 text-red-500" />} title={t("changes_policy")} body={b("changes_policy")} />
-            <Rule icon={<ShoppingBag className="h-4 w-4 text-primary" />} title={t("availability")} body={b("availability")} />
-          </div>
+          {groups.map((g) => (
+            <div key={g.label} className="space-y-4 pt-1 first:pt-0">
+              <SectionLabel>{g.label}</SectionLabel>
+              {g.items.map((r) => (
+                <Rule
+                  key={r.id}
+                  icon={RULE_GROUP_ICONS[g.label] ?? DEFAULT_RULE_ICON}
+                  title={r.title}
+                  body={r.body}
+                />
+              ))}
+            </div>
+          ))}
         </div>
 
         <div className="px-6 py-4 border-t border-border bg-muted/30">

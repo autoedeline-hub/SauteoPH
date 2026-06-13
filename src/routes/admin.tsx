@@ -4,12 +4,9 @@ import { supabase } from "@/integrations/supabase/client";
 import { format, subDays, subMonths } from "date-fns";
 import { inviteLinkPath } from "@/lib/invite";
 import {
-  fetchSiteRules,
-  saveSiteRules,
-  DINEIN_DEFAULTS,
-  PICKUP_DEFAULTS,
-  type SiteRule,
-  type SiteContentKey,
+  fetchBookingRules,
+  type BookingRule,
+  type RuleSection,
 } from "@/lib/siteContent";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
 import {
@@ -4849,54 +4846,33 @@ function ContactLine({
 
 /* ============ Booking Rules ============ */
 function RulesTab() {
-  type Section = { key: SiteContentKey; label: string; defaults: SiteRule[] };
+  type Section = { key: RuleSection; label: string };
   const SECTIONS: Section[] = [
-    { key: "dinein_rules", label: "Dine-in Rules", defaults: DINEIN_DEFAULTS },
-    { key: "pickup_rules", label: "Pickup Rules", defaults: PICKUP_DEFAULTS },
+    { key: "dinein", label: "Dine-in Rules" },
+    { key: "pickup", label: "Pickup Rules" },
   ];
 
-  const [activeKey, setActiveKey] = useState<SiteContentKey>("dinein_rules");
-  const [drafts, setDrafts] = useState<Record<SiteContentKey, SiteRule[]>>({
-    dinein_rules: DINEIN_DEFAULTS,
-    pickup_rules: PICKUP_DEFAULTS,
-  });
+  const [activeKey, setActiveKey] = useState<RuleSection>("dinein");
+  const [rules, setRules] = useState<BookingRule[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<{ key: SiteContentKey; ok: boolean; msg: string } | null>(null);
+  const [draftIds, setDraftIds] = useState<string[]>([]);
 
-  useEffect(() => {
-    let cancelled = false;
+  const load = useCallback(async (section: RuleSection) => {
     setLoading(true);
-    Promise.all([
-      fetchSiteRules("dinein_rules"),
-      fetchSiteRules("pickup_rules"),
-    ]).then(([di, pu]) => {
-      if (cancelled) return;
-      setDrafts({ dinein_rules: di, pickup_rules: pu });
-      setLoading(false);
-    });
-    return () => { cancelled = true; };
+    const data = await fetchBookingRules(section);
+    setRules(data);
+    setDraftIds([]);
+    setLoading(false);
   }, []);
 
-  function updateRule(key: SiteContentKey, idx: number, field: "title" | "body", value: string) {
-    setDrafts((prev) => {
-      const updated = prev[key].map((r, i) => i === idx ? { ...r, [field]: value } : r);
-      return { ...prev, [key]: updated };
-    });
-    setFeedback(null);
-  }
-
-  async function handleSave(key: SiteContentKey) {
-    setSaving(true);
-    setFeedback(null);
-    const { error } = await saveSiteRules(key, drafts[key]);
-    setSaving(false);
-    setFeedback({ key, ok: !error, msg: error ?? "Rules saved." });
-    setTimeout(() => setFeedback(null), 3500);
-  }
+  useEffect(() => { load(activeKey); }, [activeKey, load]);
 
   const activeSection = SECTIONS.find((s) => s.key === activeKey)!;
-  const rules = drafts[activeKey];
+  const groupLabels = useMemo(
+    () => [...new Set(rules.map((r) => r.group_label))],
+    [rules],
+  );
+  const nextSortOrder = rules.length > 0 ? Math.max(...rules.map((r) => r.sort_order)) + 1 : 0;
 
   return (
     <div className="space-y-6">
@@ -4905,7 +4881,7 @@ function RulesTab() {
         {SECTIONS.map((s) => (
           <button
             key={s.key}
-            onClick={() => { setActiveKey(s.key); setFeedback(null); }}
+            onClick={() => setActiveKey(s.key)}
             className={`px-4 py-2 transition ${
               activeKey === s.key
                 ? "bg-foreground text-background font-medium"
@@ -4927,53 +4903,194 @@ function RulesTab() {
           <p className="text-sm text-muted-foreground">
             These rules are shown to guests on the{" "}
             <span className="text-foreground font-medium">{activeSection.label.toLowerCase()}</span>{" "}
-            booking page. Edit any title or body, then press Save.
+            booking page. Each rule has its own Save — edits to one don't affect the others.
           </p>
 
-          {rules.map((rule, idx) => (
-            <div key={rule.id} className="rounded-2xl border border-border bg-card p-5 space-y-3">
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-mono text-muted-foreground shrink-0 w-5 text-right">{idx + 1}.</span>
-                <input
-                  type="text"
-                  value={rule.title}
-                  onChange={(e) => updateRule(activeKey, idx, "title", e.target.value)}
-                  className="flex-1 bg-transparent text-sm font-semibold text-foreground placeholder-muted-foreground border-b border-border focus:border-foreground focus:outline-none py-0.5 transition-colors"
-                  placeholder="Rule title"
-                />
-              </div>
-              <textarea
-                value={rule.body}
-                onChange={(e) => updateRule(activeKey, idx, "body", e.target.value)}
-                rows={3}
-                className="w-full bg-muted/40 text-sm text-foreground placeholder-muted-foreground rounded-lg px-3 py-2 border border-border focus:border-foreground focus:outline-none resize-none transition-colors"
-                placeholder="Rule description shown to guests…"
+          {rules.length === 0 && draftIds.length === 0 ? (
+            <EmptyState
+              icon={FileText}
+              title="No rules yet"
+              hint='Click "Add rule" to create the first rule shown on this booking page.'
+            />
+          ) : (
+            rules.map((rule) => (
+              <RuleCard
+                key={rule.id}
+                rule={rule}
+                groupLabels={groupLabels}
+                onSaved={() => load(activeKey)}
+                onDeleted={() => load(activeKey)}
               />
-            </div>
+            ))
+          )}
+
+          {draftIds.map((id) => (
+            <RuleCard
+              key={id}
+              rule={{
+                id,
+                section: activeKey,
+                group_label: groupLabels[0] ?? "General",
+                title: "",
+                body: "",
+                sort_order: nextSortOrder,
+              }}
+              groupLabels={groupLabels}
+              isNew
+              onSaved={() => load(activeKey)}
+              onDeleted={() => setDraftIds((prev) => prev.filter((d) => d !== id))}
+            />
           ))}
 
-          <div className="flex items-center gap-3 pt-2">
-            <button
-              onClick={() => handleSave(activeKey)}
-              disabled={saving}
-              className="flex items-center gap-2 px-5 py-2 rounded-lg bg-foreground hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed text-background text-sm font-semibold transition-opacity"
-            >
-              {saving ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
-              ) : (
-                <Save className="w-4 h-4" />
-              )}
-              {saving ? "Saving…" : "Save Changes"}
-            </button>
-
-            {feedback && feedback.key === activeKey && (
-              <span className={`text-sm font-medium ${feedback.ok ? "text-emerald-600" : "text-red-500"}`}>
-                {feedback.ok ? "✓ " : "✗ "}{feedback.msg}
-              </span>
-            )}
-          </div>
+          <button
+            onClick={() => setDraftIds((prev) => [...prev, `draft-${prev.length}-${Date.now()}`])}
+            className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition"
+          >
+            <Plus className="h-4 w-4" />
+            Add rule
+          </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function RuleCard({
+  rule, groupLabels, isNew, onSaved, onDeleted,
+}: {
+  rule: BookingRule;
+  groupLabels: string[];
+  isNew?: boolean;
+  onSaved: () => void;
+  onDeleted: () => void;
+}) {
+  const [title, setTitle] = useState(rule.title);
+  const [body, setBody] = useState(rule.body);
+  const [groupLabel, setGroupLabel] = useState(rule.group_label);
+  const [sortOrder, setSortOrder] = useState(String(rule.sort_order));
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+  const datalistId = `rule-group-${rule.id}`;
+
+  async function handleSave() {
+    const t = title.trim();
+    const b = body.trim();
+    if (!t || !b) {
+      setFeedback({ ok: false, msg: "Title and body are required." });
+      return;
+    }
+    setSaving(true);
+    setFeedback(null);
+    const payload = {
+      section: rule.section,
+      group_label: groupLabel.trim() || "General",
+      title: t,
+      body: b,
+      sort_order: Number(sortOrder) || 0,
+    };
+    const { error } = isNew
+      ? await supabase.from("booking_rules").insert(payload)
+      : await supabase.from("booking_rules").update(payload).eq("id", rule.id);
+    setSaving(false);
+    if (error) {
+      setFeedback({ ok: false, msg: error.message });
+      return;
+    }
+    if (isNew) {
+      onSaved();
+    } else {
+      setFeedback({ ok: true, msg: "Saved." });
+      setTimeout(() => setFeedback(null), 2500);
+      onSaved();
+    }
+  }
+
+  async function handleDelete() {
+    if (isNew) {
+      onDeleted();
+      return;
+    }
+    if (!confirm(`Delete "${rule.title || "this rule"}"?`)) return;
+    setSaving(true);
+    const { error } = await supabase.from("booking_rules").delete().eq("id", rule.id);
+    setSaving(false);
+    if (error) {
+      setFeedback({ ok: false, msg: error.message });
+      return;
+    }
+    onDeleted();
+  }
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5 space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => { setTitle(e.target.value); setFeedback(null); }}
+          className="w-full bg-transparent text-sm font-semibold text-foreground placeholder-muted-foreground border-b border-border focus:border-foreground focus:outline-none py-0.5 transition-colors"
+          placeholder="Rule title"
+        />
+        <input
+          type="text"
+          list={datalistId}
+          value={groupLabel}
+          onChange={(e) => { setGroupLabel(e.target.value); setFeedback(null); }}
+          className="w-full sm:w-48 bg-muted/40 text-xs text-foreground placeholder-muted-foreground rounded-lg px-2.5 py-1 border border-border focus:border-foreground focus:outline-none transition-colors"
+          placeholder="Section heading"
+        />
+        <datalist id={datalistId}>
+          {groupLabels.map((g) => <option key={g} value={g} />)}
+        </datalist>
+      </div>
+      <textarea
+        value={body}
+        onChange={(e) => { setBody(e.target.value); setFeedback(null); }}
+        rows={3}
+        className="w-full bg-muted/40 text-sm text-foreground placeholder-muted-foreground rounded-lg px-3 py-2 border border-border focus:border-foreground focus:outline-none resize-none transition-colors"
+        placeholder="Rule description shown to guests…"
+      />
+      <div className="flex items-center gap-3">
+        <label className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+          Order
+          <input
+            type="number"
+            step="1"
+            value={sortOrder}
+            onChange={(e) => { setSortOrder(e.target.value); setFeedback(null); }}
+            className="w-16 bg-muted/40 text-sm text-foreground tabular-nums rounded-lg px-2 py-1 border border-border focus:border-foreground focus:outline-none transition-colors"
+          />
+        </label>
+
+        <div className="flex-1" />
+
+        {feedback && (
+          <span className={`text-sm font-medium ${feedback.ok ? "text-emerald-600" : "text-red-500"}`}>
+            {feedback.ok ? "✓ " : "✗ "}{feedback.msg}
+          </span>
+        )}
+
+        <button
+          onClick={handleDelete}
+          disabled={saving}
+          className="inline-flex items-center gap-1.5 text-destructive hover:bg-destructive/10 rounded-lg px-3 py-2 text-sm disabled:opacity-50"
+        >
+          <Trash2 className="h-4 w-4" /> {isNew ? "Cancel" : "Delete"}
+        </button>
+
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-2 px-5 py-2 rounded-lg bg-foreground hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed text-background text-sm font-semibold transition-opacity"
+        >
+          {saving ? (
+            <RefreshCw className="w-4 h-4 animate-spin" />
+          ) : (
+            <Save className="w-4 h-4" />
+          )}
+          {saving ? "Saving…" : isNew ? "Create" : "Save"}
+        </button>
+      </div>
     </div>
   );
 }
