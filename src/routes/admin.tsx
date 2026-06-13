@@ -88,6 +88,20 @@ type Booking = {
   payments?: { id: string; status: string; reference_number: string | null; screenshot_url: string | null }[];
 };
 
+// Page ID for the Sautéo Facebook page, used to deep-link into a specific
+// customer's conversation within Meta Business Suite's inbox.
+const FB_PAGE_ASSET_ID = "1119234891273865";
+
+function messengerConversationUrl(platformId: string): string {
+  const params = new URLSearchParams({
+    nav_ref: "manage_page_ap_plus_inbox_message_button",
+    asset_id: FB_PAGE_ASSET_ID,
+    business_id: "",
+    selected_item_id: platformId,
+  });
+  return `https://business.facebook.com/latest/inbox/all/?${params.toString()}`;
+}
+
 const SOURCE_LABEL: Record<string, string> = {
   web: "Web",
   messenger: "Messenger",
@@ -4338,7 +4352,7 @@ function EscalationsTab() {
                     <span>{new Date(row.created_at).toLocaleString()}</span>
                     <span>·</span>
                     <a
-                      href={`https://www.facebook.com/messages/t/${row.platform_id}`}
+                      href={messengerConversationUrl(row.platform_id)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
@@ -5952,7 +5966,7 @@ function InviteRow({
           </div>
           {inv.platform_id && (
             <a
-              href={`https://www.facebook.com/messages/t/${inv.platform_id}`}
+              href={messengerConversationUrl(inv.platform_id)}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
