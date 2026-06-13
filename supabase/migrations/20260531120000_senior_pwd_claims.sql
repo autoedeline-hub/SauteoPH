@@ -74,7 +74,7 @@ VALUES (
   'senior-pwd-ids',
   'senior-pwd-ids',
   false,           -- private: reads go through admin-minted signed URLs
-  10485760,        -- 10 MB — phone camera photos can be large
+  10485760,        -- 10 MB -- phone camera photos can be large
   ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']
 )
 ON CONFLICT (id) DO UPDATE

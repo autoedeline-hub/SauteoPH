@@ -1,7 +1,19 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { CalendarClock, MessageCircle, Users } from "lucide-react";
+import { useState, useMemo } from "react";
+import {
+  CalendarClock,
+  MessageCircle,
+  Users,
+  CalendarDays,
+  CreditCard,
+  AlertTriangle,
+  Clock,
+  Sparkles,
+  ChevronRight,
+} from "lucide-react";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
+import { useSiteRules } from "@/integrations/site-content";
 
 // Public-facing dine-in marketing page. Booking is invite-only — guests
 // reach the actual reservation flow only via /dine-in/<token>, which the
@@ -25,8 +37,13 @@ export const Route = createFileRoute("/dine-in")({
 });
 
 function DineInPage() {
+  const [rulesAccepted, setRulesAccepted] = useState(false);
+
   return (
     <div className="min-h-screen flex flex-col">
+      {!rulesAccepted && (
+        <DineInRulesModal onAccept={() => setRulesAccepted(true)} />
+      )}
       <Header />
       <main className="flex-1 w-full max-w-3xl mx-auto px-4 sm:px-6 py-12 md:py-20">
         <div className="text-center mb-10 md:mb-14">
@@ -62,10 +79,15 @@ function DineInPage() {
 
         <div className="flex justify-center">
           <a
-            href={MESSENGER_URL}
+            href={rulesAccepted ? MESSENGER_URL : undefined}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm md:text-base font-semibold hover:opacity-90 transition"
+            aria-disabled={!rulesAccepted}
+            className={`inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm md:text-base font-semibold transition ${
+              rulesAccepted
+                ? "hover:opacity-90"
+                : "opacity-40 cursor-not-allowed pointer-events-none"
+            }`}
           >
             <MessageCircle className="h-4 w-4" />
             Chat on Messenger
@@ -73,6 +95,123 @@ function DineInPage() {
         </div>
       </main>
       <Footer />
+    </div>
+  );
+}
+
+function DineInRulesModal({ onAccept }: { onAccept: () => void }) {
+  const rules = useSiteRules("dinein_rules");
+  const byId = useMemo(
+    () => Object.fromEntries(rules.map((r) => [r.id, r])),
+    [rules],
+  );
+  const t = (id: string) => byId[id]?.title ?? "";
+  const b = (id: string) => byId[id]?.body ?? "";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+      <div className="relative w-full max-w-md bg-background rounded-2xl shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="bg-primary px-6 py-5">
+          <div className="flex items-center gap-3">
+            <CalendarClock className="h-5 w-5 text-primary-foreground shrink-0" />
+            <div>
+              <h2 className="font-display text-lg text-primary-foreground leading-tight">
+                Dine-In Reservation Rules
+              </h2>
+              <p className="text-primary-foreground/70 text-xs mt-0.5">
+                Please read before booking your table
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Rules & guidelines */}
+        <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
+          {/* Reservation rules — booking & payment policy */}
+          <div className="space-y-4">
+            <SectionLabel>Reservation Rules</SectionLabel>
+            <Rule
+              icon={<CalendarDays className="h-4 w-4 text-blue-500" />}
+              title={t("available_days")}
+              body={b("available_days")}
+            />
+            <Rule
+              icon={<MessageCircle className="h-4 w-4 text-primary" />}
+              title={t("invite_only")}
+              body={b("invite_only")}
+            />
+            <Rule
+              icon={<CreditCard className="h-4 w-4 text-green-500" />}
+              title={t("full_payment")}
+              body={b("full_payment")}
+            />
+            <Rule
+              icon={<AlertTriangle className="h-4 w-4 text-red-500" />}
+              title={t("no_refunds")}
+              body={b("no_refunds")}
+            />
+          </div>
+
+          {/* Dining guidelines — day-of conduct */}
+          <div className="space-y-4 pt-1">
+            <SectionLabel>Dining Guidelines</SectionLabel>
+            <Rule
+              icon={<Clock className="h-4 w-4 text-amber-500" />}
+              title={t("arrive_on_time")}
+              body={b("arrive_on_time")}
+            />
+            <Rule
+              icon={<Users className="h-4 w-4 text-primary" />}
+              title={t("party_size")}
+              body={b("party_size")}
+            />
+            <Rule
+              icon={<Sparkles className="h-4 w-4 text-mustard" />}
+              title={t("intimate_setting")}
+              body={b("intimate_setting")}
+            />
+          </div>
+        </div>
+
+        {/* CTA */}
+        <div className="px-6 py-4 border-t border-border bg-muted/30">
+          <button
+            onClick={onAccept}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm font-semibold hover:opacity-90 transition"
+          >
+            I understand, proceed to booking <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+      {children}
+    </p>
+  );
+}
+
+function Rule({
+  icon,
+  title,
+  body,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  body: string;
+}) {
+  return (
+    <div className="flex gap-3">
+      <div className="mt-0.5 shrink-0">{icon}</div>
+      <div>
+        <p className="text-sm font-semibold text-foreground leading-snug">{title}</p>
+        <p className="text-sm text-muted-foreground mt-0.5 leading-relaxed">{body}</p>
+      </div>
     </div>
   );
 }

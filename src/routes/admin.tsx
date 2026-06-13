@@ -1,13 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import {
+  fetchSiteRules,
+  saveSiteRules,
+  type SiteRule,
+  type SiteContentKey,
+} from "@/integrations/site-content";
 import { format, subDays, subMonths } from "date-fns";
 import { inviteLinkPath } from "@/lib/invite";
-import {
-  fetchBookingRules,
-  type BookingRule,
-  type RuleSection,
-} from "@/lib/siteContent";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
 import {
   Area,
@@ -51,23 +52,11 @@ import {
   Instagram,
   BookOpen,
   EyeOff,
-  Eye,
   ShieldCheck,
   ShieldAlert,
   ExternalLink,
-  FileText,
-  Save,
-  RefreshCw,
-  Users,
+  ScrollText,
 } from "lucide-react";
-import {
-  listTeamMembers,
-  createTeamMember,
-  updateTeamMember,
-  deleteTeamMember,
-  type TeamMember,
-  type ConsoleRole,
-} from "@/lib/adminTeam";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
 
@@ -87,20 +76,6 @@ type Booking = {
   booking_items?: { item_name: string; quantity: number }[];
   payments?: { id: string; status: string; reference_number: string | null; screenshot_url: string | null }[];
 };
-
-// Page ID for the Sautéo Facebook page, used to deep-link into a specific
-// customer's conversation within Meta Business Suite's inbox.
-const FB_PAGE_ASSET_ID = "1119234891273865";
-
-function messengerConversationUrl(platformId: string): string {
-  const params = new URLSearchParams({
-    nav_ref: "manage_page_ap_plus_inbox_message_button",
-    asset_id: FB_PAGE_ASSET_ID,
-    business_id: "",
-    selected_item_id: platformId,
-  });
-  return `https://business.facebook.com/latest/inbox/all/?${params.toString()}`;
-}
 
 const SOURCE_LABEL: Record<string, string> = {
   web: "Web",
@@ -123,7 +98,7 @@ const REFUND_LABEL: Record<string, string> = {
   forfeited: "Forfeited",
 };
 
-type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge" | "rules" | "team";
+type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge" | "agreement";
 
 // Nav order is the *user-facing journey*, top → bottom: situational
 // awareness (Overview) → core catalog (Menu) → in-flight customer flow
@@ -140,15 +115,8 @@ const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?:
   { key: "seniorids", label: "Senior IDs", icon: ShieldCheck },
   { key: "escalations", label: "Escalation", icon: AlertCircle },
   { key: "knowledge", label: "FAQs", icon: BookOpen },
-  { key: "rules", label: "Rules", icon: FileText },
-  { key: "team", label: "Team", icon: Users },
+  { key: "agreement", label: "Agreement", icon: ScrollText },
 ];
-
-// Sections a "member" account can be granted access to. "overview" is
-// always visible to everyone; "team" is admin-only (manages who can sign
-// in at all, so it's never delegated to a restricted member).
-const ASSIGNABLE_TABS = NAV.filter(n => n.key !== "overview" && n.key !== "team");
-const ASSIGNABLE_TAB_KEYS = new Set(ASSIGNABLE_TABS.map(n => n.key));
 
 const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   overview: { title: "Overview", subtitle: "A calm summary of what's happening at Sautéo today." },
@@ -161,8 +129,7 @@ const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   slots: { title: "Time Slot", subtitle: "Open, close, and adjust capacity for each service." },
   escalations: { title: "Escalation", subtitle: "Messenger questions the chatbot couldn't answer — review and resolve here." },
   knowledge: { title: "FAQs", subtitle: "Answers the chatbot uses when guests message Sautéo." },
-  rules: { title: "Booking Rules", subtitle: "Edit the rules shown to guests on the dine-in and pickup booking pages." },
-  team: { title: "Team", subtitle: "Manage who can sign in to the admin console." },
+  agreement: { title: "Agreement", subtitle: "Edit the dine-in and pick-up rules guests see before booking." },
 };
 
 const FAQ_TOPICS = [
@@ -173,8 +140,6 @@ const FAQ_TOPICS = [
 function AdminPage() {
   const [session, setSession] = useState<any>(null);
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
-  const [consoleRole, setConsoleRole] = useState<ConsoleRole>("admin");
-  const [permittedTabs, setPermittedTabs] = useState<TabKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>("overview");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -210,31 +175,10 @@ function AdminPage() {
     (async () => {
       setLoading(true);
       const { data } = await supabase.from("user_roles").select("role").eq("user_id", session.user.id).eq("role", "admin").maybeSingle();
-      const admin = !!data;
-      setIsAdmin(admin);
-      if (admin) {
-        // Fresh fetch (not the cached session) so permission edits made by
-        // another admin take effect on this user's next page load.
-        const { data: userData } = await supabase.auth.getUser();
-        const meta = userData?.user?.user_metadata ?? {};
-        setConsoleRole(meta.console_role === "member" ? "member" : "admin");
-        setPermittedTabs(
-          Array.isArray(meta.tabs)
-            ? meta.tabs.filter((t: unknown): t is TabKey => ASSIGNABLE_TAB_KEYS.has(t as TabKey))
-            : [],
-        );
-      }
+      setIsAdmin(!!data);
       setLoading(false);
     })();
   }, [session]);
-
-  const visibleNav = consoleRole === "admin"
-    ? NAV
-    : NAV.filter(item => item.key === "overview" || permittedTabs.includes(item.key));
-
-  useEffect(() => {
-    if (!visibleNav.some(item => item.key === tab)) setTab("overview");
-  }, [tab, visibleNav]);
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading…</div>;
   if (!session) return <AdminLogin />;
@@ -247,7 +191,6 @@ function AdminPage() {
       {/* Sidebar (desktop) */}
       <aside className="hidden lg:flex w-64 shrink-0 flex-col bg-card border-r border-border">
         <SidebarContent
-          nav={visibleNav}
           tab={tab}
           onTab={(t) => { setTab(t); setMobileNavOpen(false); }}
           email={session.user.email}
@@ -291,7 +234,6 @@ function AdminPage() {
               </button>
             </div>
             <SidebarContent
-              nav={visibleNav}
               tab={tab}
               onTab={(t) => { setTab(t); setMobileNavOpen(false); }}
               email={session.user.email}
@@ -320,8 +262,7 @@ function AdminPage() {
           {tab === "menu" && <MenuTab />}
           {tab === "slots" && <SlotsTab />}
           {tab === "knowledge" && <KnowledgeTab />}
-          {tab === "rules" && <RulesTab />}
-          {tab === "team" && <TeamTab currentUserId={session.user.id} />}
+          {tab === "agreement" && <AgreementTab />}
         </div>
       </main>
     </div>
@@ -330,9 +271,8 @@ function AdminPage() {
 
 /* ============ Sidebar ============ */
 function SidebarContent({
-  nav, tab, onTab, email, compact, badges,
+  tab, onTab, email, compact, badges,
 }: {
-  nav: typeof NAV;
   tab: TabKey;
   onTab: (t: TabKey) => void;
   email?: string;
@@ -356,7 +296,7 @@ function SidebarContent({
       )}
 
       <nav className="flex-1 px-3 py-5 space-y-1">
-        {nav.map(({ key, label, icon: Icon }) => {
+        {NAV.map(({ key, label, icon: Icon }) => {
           const active = tab === key;
           const badge = badges?.[key] ?? 0;
           return (
@@ -1174,11 +1114,10 @@ function SeniorIdsTab() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const q = supabase
+    const { data } = await supabase
       .from("senior_pwd_claims")
       .select("*")
       .order("created_at", { ascending: false });
-    const { data } = await q;
     setClaims((data ?? []) as SeniorClaim[]);
     setLoading(false);
   }, []);
@@ -1445,6 +1384,26 @@ function BookingsTab() {
       alert(`Couldn't confirm booking: ${bookingErr.message}`);
       return;
     }
+    // Notify n8n to send confirmation DM + email
+    try {
+      await fetch("https://n8n.srv1161779.hstgr.cloud/webhook/sauteo-order-confirmation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: b.id,
+          reference_code: b.reference_code,
+          customer_name: b.customer_name,
+          customer_email: b.customer_email,
+          customer_phone: b.customer_phone,
+          platform_id: b.platform_id ?? null,
+          total_amount: b.total_amount,
+          pickup_mode: b.pickup_mode ?? null,
+          status: "confirmed",
+          confirmed_at: now,
+          slot: b.time_slots ?? null,
+        }),
+      });
+    } catch (_) {}
     load();
   };
 
@@ -1534,9 +1493,9 @@ function BookingsTab() {
           gets too cramped under ~1280px even with whitespace-nowrap.
           Vertical scroll is scoped to the table body so admin doesn't
           have to scroll the page when the list grows. */}
-      <div className="hidden xl:block bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+      <div className="hidden xl:block bg-card border border-border rounded-2xl shadow-sm overflow-x-auto">
         <div className="overflow-auto max-h-[calc(100vh-280px)]">
-          <table className="w-full text-sm">
+          <table className="w-full min-w-max text-sm">
             <thead className="sticky top-0 z-20 bg-muted text-muted-foreground text-[11px] uppercase tracking-wider border-b border-border">
               <tr>
                 <th className="px-3 py-3 font-medium text-center">Ref</th>
@@ -2737,7 +2696,7 @@ function MenuItemEditor({
               </div>
             </div>
             <div>
-              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Order No.</label>
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Sort order</label>
               <input
                 type="number"
                 step="1"
@@ -2746,7 +2705,6 @@ function MenuItemEditor({
                 placeholder="0"
                 className={`${menuInputCls} tabular-nums`}
               />
-              <p className="text-[11px] text-muted-foreground mt-1">Lower number shows first in this category.</p>
             </div>
           </div>
 
@@ -4352,7 +4310,7 @@ function EscalationsTab() {
                     <span>{new Date(row.created_at).toLocaleString()}</span>
                     <span>·</span>
                     <a
-                      href={messengerConversationUrl(row.platform_id)}
+                      href={`https://www.facebook.com/messages/t/${row.platform_id}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
@@ -4454,7 +4412,7 @@ function InviteStatusPill({
     | { state: "none" };
 }) {
   if (status.state === "none") {
-    return null;
+    return <span className="text-xs text-muted-foreground/70">—</span>;
   }
   if (status.state === "active") {
     return (
@@ -4854,260 +4812,6 @@ function ContactLine({
     <div className="flex items-center gap-2 text-foreground">
       <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
       <span className="truncate">{value}</span>
-    </div>
-  );
-}
-
-/* ============ Booking Rules ============ */
-function RulesTab() {
-  type Section = { key: RuleSection; label: string };
-  const SECTIONS: Section[] = [
-    { key: "dinein", label: "Dine-in Rules" },
-    { key: "pickup", label: "Pickup Rules" },
-  ];
-
-  const [activeKey, setActiveKey] = useState<RuleSection>("dinein");
-  const [rules, setRules] = useState<BookingRule[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [draftIds, setDraftIds] = useState<string[]>([]);
-
-  const load = useCallback(async (section: RuleSection) => {
-    setLoading(true);
-    const data = await fetchBookingRules(section);
-    setRules(data);
-    setDraftIds([]);
-    setLoading(false);
-  }, []);
-
-  useEffect(() => { load(activeKey); }, [activeKey, load]);
-
-  const activeSection = SECTIONS.find((s) => s.key === activeKey)!;
-  const groupLabels = useMemo(
-    () => [...new Set(rules.map((r) => r.group_label))],
-    [rules],
-  );
-  const nextSortOrder = rules.length > 0 ? Math.max(...rules.map((r) => r.sort_order)) + 1 : 0;
-
-  return (
-    <div className="space-y-6">
-      {/* Sub-tab switcher */}
-      <div className="flex rounded-lg border border-border overflow-hidden text-sm w-fit">
-        {SECTIONS.map((s) => (
-          <button
-            key={s.key}
-            onClick={() => setActiveKey(s.key)}
-            className={`px-4 py-2 transition ${
-              activeKey === s.key
-                ? "bg-foreground text-background font-medium"
-                : "text-muted-foreground hover:bg-muted/50"
-            }`}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
-
-      {loading ? (
-        <div className="flex items-center gap-2 text-muted-foreground text-sm py-12 justify-center">
-          <RefreshCw className="w-4 h-4 animate-spin" />
-          Loading…
-        </div>
-      ) : (
-        <div className="space-y-4">
-          <div className="flex items-start justify-between gap-4">
-            <p className="text-sm text-muted-foreground">
-              These rules are shown to guests on the{" "}
-              <span className="text-foreground font-medium">{activeSection.label.toLowerCase()}</span>{" "}
-              booking page. Each rule has its own Save — edits to one don't affect the others.
-            </p>
-            <button
-              onClick={() => setDraftIds((prev) => [...prev, `draft-${prev.length}-${Date.now()}`])}
-              className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition shrink-0"
-            >
-              <Plus className="h-4 w-4" />
-              Add rule
-            </button>
-          </div>
-
-          <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-2">
-            {rules.length === 0 && draftIds.length === 0 ? (
-              <EmptyState
-                icon={FileText}
-                title="No rules yet"
-                hint='Click "Add rule" to create the first rule shown on this booking page.'
-              />
-            ) : (
-              rules.map((rule) => (
-                <RuleCard
-                  key={rule.id}
-                  rule={rule}
-                  groupLabels={groupLabels}
-                  onSaved={() => load(activeKey)}
-                  onDeleted={() => load(activeKey)}
-                />
-              ))
-            )}
-
-            {draftIds.map((id) => (
-              <RuleCard
-                key={id}
-                rule={{
-                  id,
-                  section: activeKey,
-                  group_label: groupLabels[0] ?? "General",
-                  title: "",
-                  body: "",
-                  sort_order: nextSortOrder,
-                }}
-                groupLabels={groupLabels}
-                isNew
-                onSaved={() => load(activeKey)}
-                onDeleted={() => setDraftIds((prev) => prev.filter((d) => d !== id))}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function RuleCard({
-  rule, groupLabels, isNew, onSaved, onDeleted,
-}: {
-  rule: BookingRule;
-  groupLabels: string[];
-  isNew?: boolean;
-  onSaved: () => void;
-  onDeleted: () => void;
-}) {
-  const [title, setTitle] = useState(rule.title);
-  const [body, setBody] = useState(rule.body);
-  const [groupLabel, setGroupLabel] = useState(rule.group_label);
-  const [sortOrder, setSortOrder] = useState(String(rule.sort_order));
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
-  const datalistId = `rule-group-${rule.id}`;
-
-  async function handleSave() {
-    const t = title.trim();
-    const b = body.trim();
-    if (!t || !b) {
-      setFeedback({ ok: false, msg: "Title and body are required." });
-      return;
-    }
-    setSaving(true);
-    setFeedback(null);
-    const payload = {
-      section: rule.section,
-      group_label: groupLabel.trim() || "General",
-      title: t,
-      body: b,
-      sort_order: Number(sortOrder) || 0,
-    };
-    const { error } = isNew
-      ? await supabase.from("booking_rules").insert(payload)
-      : await supabase.from("booking_rules").update(payload).eq("id", rule.id);
-    setSaving(false);
-    if (error) {
-      setFeedback({ ok: false, msg: error.message });
-      return;
-    }
-    if (isNew) {
-      onSaved();
-    } else {
-      setFeedback({ ok: true, msg: "Saved." });
-      setTimeout(() => setFeedback(null), 2500);
-      onSaved();
-    }
-  }
-
-  async function handleDelete() {
-    if (isNew) {
-      onDeleted();
-      return;
-    }
-    if (!confirm(`Delete "${rule.title || "this rule"}"?`)) return;
-    setSaving(true);
-    const { error } = await supabase.from("booking_rules").delete().eq("id", rule.id);
-    setSaving(false);
-    if (error) {
-      setFeedback({ ok: false, msg: error.message });
-      return;
-    }
-    onDeleted();
-  }
-
-  return (
-    <div className="rounded-2xl border border-border bg-card p-5 space-y-3">
-      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => { setTitle(e.target.value); setFeedback(null); }}
-          className="w-full bg-transparent text-sm font-semibold text-foreground placeholder-muted-foreground border-b border-border focus:border-foreground focus:outline-none py-0.5 transition-colors"
-          placeholder="Rule title"
-        />
-        <input
-          type="text"
-          list={datalistId}
-          value={groupLabel}
-          onChange={(e) => { setGroupLabel(e.target.value); setFeedback(null); }}
-          className="w-full sm:w-48 bg-muted/40 text-xs text-foreground placeholder-muted-foreground rounded-lg px-2.5 py-1 border border-border focus:border-foreground focus:outline-none transition-colors"
-          placeholder="Section heading"
-        />
-        <datalist id={datalistId}>
-          {groupLabels.map((g) => <option key={g} value={g} />)}
-        </datalist>
-      </div>
-      <textarea
-        value={body}
-        onChange={(e) => { setBody(e.target.value); setFeedback(null); }}
-        rows={3}
-        className="w-full bg-muted/40 text-sm text-foreground placeholder-muted-foreground rounded-lg px-3 py-2 border border-border focus:border-foreground focus:outline-none resize-none transition-colors"
-        placeholder="Rule description shown to guests…"
-      />
-      <div className="flex items-center gap-3">
-        <label className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-          Order
-          <input
-            type="number"
-            step="1"
-            value={sortOrder}
-            onChange={(e) => { setSortOrder(e.target.value); setFeedback(null); }}
-            className="w-16 bg-muted/40 text-sm text-foreground tabular-nums rounded-lg px-2 py-1 border border-border focus:border-foreground focus:outline-none transition-colors"
-          />
-        </label>
-
-        <div className="flex-1" />
-
-        {feedback && (
-          <span className={`text-sm font-medium ${feedback.ok ? "text-emerald-600" : "text-red-500"}`}>
-            {feedback.ok ? "✓ " : "✗ "}{feedback.msg}
-          </span>
-        )}
-
-        <button
-          onClick={handleDelete}
-          disabled={saving}
-          className="inline-flex items-center gap-1.5 text-destructive hover:bg-destructive/10 rounded-lg px-3 py-2 text-sm disabled:opacity-50"
-        >
-          <Trash2 className="h-4 w-4" /> {isNew ? "Cancel" : "Delete"}
-        </button>
-
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="flex items-center gap-2 px-5 py-2 rounded-lg bg-foreground hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed text-background text-sm font-semibold transition-opacity"
-        >
-          {saving ? (
-            <RefreshCw className="w-4 h-4 animate-spin" />
-          ) : (
-            <Save className="w-4 h-4" />
-          )}
-          {saving ? "Saving…" : isNew ? "Create" : "Save"}
-        </button>
-      </div>
     </div>
   );
 }
@@ -5966,7 +5670,7 @@ function InviteRow({
           </div>
           {inv.platform_id && (
             <a
-              href={messengerConversationUrl(inv.platform_id)}
+              href={`https://www.facebook.com/messages/t/${inv.platform_id}`}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
@@ -6984,480 +6688,118 @@ function PipelineCollapsedLane({
   );
 }
 
-/* ============ Team ============
-   Lets an existing admin create/edit/remove OTHER admin logins, replacing
-   the old "ask a dev to run grant_admin_by_email() in the SQL Editor" flow.
-   All privileged work (Supabase Auth admin API + user_roles) happens in the
-   `admin-team` edge function — this tab is just CRUD UI over it. */
+const AGREEMENT_SECTIONS: Record<SiteContentKey, { label: string; ids: string[] }[]> = {
+  dinein_rules: [
+    { label: "Reservation Rules", ids: ["available_days", "invite_only", "full_payment", "no_refunds"] },
+    { label: "Dining Guidelines", ids: ["arrive_on_time", "party_size", "intimate_setting"] },
+  ],
+  pickup_rules: [
+    { label: "Pick-Up Rules", ids: ["cutoff", "available_days", "full_payment", "no_refunds", "be_on_time"] },
+  ],
+};
 
-const TEAM_EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
-
-// Generates a temp password the admin can hand to a new teammate directly
-// (no email-invite flow). Avoids ambiguous look-alike characters (0/O, 1/l/I).
-function generateTempPassword(length = 12): string {
-  const charset = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*";
-  const arr = new Uint32Array(length);
-  crypto.getRandomValues(arr);
-  return Array.from(arr, n => charset[n % charset.length]).join("");
-}
-
-function TeamTab({ currentUserId }: { currentUserId: string }) {
-  const [members, setMembers] = useState<TeamMember[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [bannerMsg, setBannerMsg] = useState<string | null>(null);
-  const [editor, setEditor] = useState<
-    { mode: "create" } | { mode: "edit"; member: TeamMember } | null
-  >(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setErrorMsg(null);
-    try {
-      setMembers(await listTeamMembers());
-    } catch (e: any) {
-      setErrorMsg(e?.message ?? "Failed to load team");
-    }
-    setLoading(false);
-  }, []);
-  useEffect(() => { load(); }, [load]);
-
-  const flashBanner = (msg: string) => {
-    setBannerMsg(msg);
-    window.setTimeout(() => setBannerMsg(p => (p === msg ? null : p)), 4000);
-  };
-
-  const handleSaved = (member: TeamMember, mode: "create" | "edit") => {
-    setMembers(prev =>
-      mode === "create"
-        ? [...prev, member]
-        : prev.map(m => (m.id === member.id ? member : m)),
-    );
-    setEditor(null);
-    flashBanner(
-      mode === "create"
-        ? `Added ${member.full_name ?? member.email} to the team.`
-        : `Updated ${member.full_name ?? member.email}.`,
-    );
-  };
-
-  const handleDelete = async (member: TeamMember) => {
-    if (member.id === currentUserId || members.length <= 1) return;
-    const name = member.full_name ?? member.email;
-    if (!confirm(`Remove ${name} from the admin team? They will lose access immediately.`)) return;
-    try {
-      await deleteTeamMember(member.id);
-      setMembers(prev => prev.filter(m => m.id !== member.id));
-      flashBanner(`Removed ${name}.`);
-    } catch (e: any) {
-      alert(`Couldn't remove: ${e?.message ?? "unknown error"}`);
-    }
-  };
-
+function AgreementTab() {
   return (
-    <div className="space-y-4">
-      {bannerMsg && (
-        <div className="bg-mustard/15 border border-mustard/40 text-charcoal rounded-2xl px-4 py-3 text-sm flex items-center gap-2 shadow-sm">
-          <CheckCircle2 className="h-4 w-4 shrink-0" />
-          <span>{bannerMsg}</span>
-        </div>
-      )}
-
-      <div className="flex items-center justify-between gap-3 px-1">
-        <p className="text-xs text-muted-foreground">
-          {loading
-            ? "Loading…"
-            : `${members.length} ${members.length === 1 ? "admin" : "admins"} can sign in to this console.`}
-        </p>
-        <button
-          onClick={() => setEditor({ mode: "create" })}
-          className="inline-flex items-center gap-1.5 bg-primary text-primary-foreground rounded-full px-4 py-2 text-xs font-semibold hover:opacity-90 shadow-sm transition"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Add member
-        </button>
-      </div>
-
-      {errorMsg && (
-        <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-2.5">
-          {errorMsg}
-        </div>
-      )}
-
-      {loading ? (
-        <div className="bg-card border border-border rounded-2xl py-12 text-center text-muted-foreground text-sm">
-          Loading team…
-        </div>
-      ) : (
-        <ul className="space-y-2">
-          {members.map(m => (
-            <TeamMemberRow
-              key={m.id}
-              member={m}
-              isSelf={m.id === currentUserId}
-              canDelete={members.length > 1}
-              onEdit={() => setEditor({ mode: "edit", member: m })}
-              onDelete={() => handleDelete(m)}
-            />
-          ))}
-        </ul>
-      )}
-
-      {editor && (
-        <TeamMemberEditor
-          mode={editor.mode}
-          member={editor.mode === "edit" ? editor.member : undefined}
-          onClose={() => setEditor(null)}
-          onSaved={member => handleSaved(member, editor.mode)}
-        />
-      )}
+    <div className="space-y-8">
+      <AgreementEditor pageKey="dinein_rules" heading="Dine-In agreement" />
+      <AgreementEditor pageKey="pickup_rules" heading="Pick-Up agreement" />
     </div>
   );
 }
 
-function TeamMemberRow({
-  member,
-  isSelf,
-  canDelete,
-  onEdit,
-  onDelete,
-}: {
-  member: TeamMember;
-  isSelf: boolean;
-  canDelete: boolean;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  const displayName = member.full_name ?? member.email;
-  const deleteDisabled = isSelf || !canDelete;
-  const deleteTitle = isSelf
-    ? "You can't remove your own account"
-    : !canDelete
-      ? "At least one admin is required"
-      : "Remove from team";
-  const tabLabels = member.tabs
-    .map(t => ASSIGNABLE_TABS.find(n => n.key === t)?.label)
-    .filter((l): l is string => !!l);
+function AgreementEditor({ pageKey, heading }: { pageKey: SiteContentKey; heading: string }) {
+  const [draft, setDraft] = useState<SiteRule[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
-  return (
-    <li className="group relative bg-card border border-border rounded-xl px-4 py-3 hover:border-foreground/20 hover:shadow-sm transition">
-      <div className="flex items-center gap-4">
-        <div className="flex items-center justify-center h-10 w-10 rounded-lg shrink-0 bg-primary/10 text-primary">
-          <Users className="h-4 w-4" />
-        </div>
-
-        <div className="min-w-0 flex-1 space-y-0.5">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-medium text-foreground truncate">{displayName}</span>
-            {isSelf && (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-mustard/20 text-charcoal">
-                You
-              </span>
-            )}
-            {member.console_role === "admin" ? (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-primary/10 text-primary">
-                Full access
-              </span>
-            ) : (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-muted text-muted-foreground">
-                Limited
-              </span>
-            )}
-          </div>
-          <div className="text-xs text-muted-foreground truncate">{member.email}</div>
-          {member.console_role === "member" && (
-            <div className="text-[11px] text-muted-foreground/70 truncate">
-              {tabLabels.length > 0 ? `Access: ${tabLabels.join(", ")}` : "No sections assigned yet"}
-            </div>
-          )}
-          <div className="text-[11px] text-muted-foreground/70">
-            Joined {format(new Date(member.created_at), "MMM d, yyyy")}
-            {" · "}
-            {member.last_sign_in_at
-              ? `Last sign-in ${format(new Date(member.last_sign_in_at), "MMM d, yyyy")}`
-              : "Never signed in"}
-          </div>
-        </div>
-
-        <div className="shrink-0 flex items-center gap-1">
-          <button
-            onClick={onEdit}
-            aria-label="Edit member"
-            className="opacity-0 group-hover:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50"
-          >
-            <Pencil className="h-4 w-4" />
-          </button>
-          <button
-            onClick={onDelete}
-            disabled={deleteDisabled}
-            aria-label="Remove member"
-            title={deleteTitle}
-            className={`opacity-0 group-hover:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition p-1.5 rounded-md ${
-              deleteDisabled
-                ? "text-muted-foreground/40 cursor-not-allowed"
-                : "text-muted-foreground hover:text-destructive hover:bg-destructive/5"
-            }`}
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-    </li>
-  );
-}
-
-function TeamMemberEditor({
-  mode,
-  member,
-  onClose,
-  onSaved,
-}: {
-  mode: "create" | "edit";
-  member?: TeamMember;
-  onClose: () => void;
-  onSaved: (member: TeamMember) => void;
-}) {
-  const [fullName, setFullName] = useState(member?.full_name ?? "");
-  const [email, setEmail] = useState(member?.email ?? "");
-  const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [consoleRole, setConsoleRole] = useState<ConsoleRole>(member?.console_role ?? "admin");
-  const [tabs, setTabs] = useState<Set<TabKey>>(new Set((member?.tabs ?? []) as TabKey[]));
-  const [busy, setBusy] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  const toggleTab = (key: TabKey) => {
-    setTabs(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
+  useEffect(() => {
+    let alive = true;
+    fetchSiteRules(pageKey).then((r) => {
+      if (alive) setDraft(r);
     });
+    return () => {
+      alive = false;
+    };
+  }, [pageKey]);
+
+  const update = (id: string, field: "title" | "body", value: string) => {
+    setDraft((prev) =>
+      prev ? prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)) : prev,
+    );
+    setSavedAt(null);
+    setErr(null);
   };
 
-  const inputCls =
-    "w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition";
-
-  const nameOk = fullName.trim().length >= 2 && fullName.trim().length <= 80;
-  const emailOk = TEAM_EMAIL_RE.test(email.trim());
-  const passwordOk = mode === "create" ? password.length >= 8 : password === "" || password.length >= 8;
-  const canSubmit = !busy && nameOk && emailOk && passwordOk;
-
-  const submit = async () => {
-    if (!canSubmit) return;
-    setErrorMsg(null);
-    setBusy(true);
-    try {
-      let saved: TeamMember;
-      if (mode === "create") {
-        saved = await createTeamMember({
-          email: email.trim().toLowerCase(),
-          password,
-          full_name: fullName.trim(),
-          console_role: consoleRole,
-          tabs: consoleRole === "member" ? [...tabs] : undefined,
-        });
-      } else {
-        const payload: {
-          user_id: string;
-          full_name?: string;
-          email?: string;
-          password?: string;
-          console_role?: ConsoleRole;
-          tabs?: string[];
-        } = {
-          user_id: member!.id,
-        };
-        if (fullName.trim() !== (member!.full_name ?? "")) payload.full_name = fullName.trim();
-        if (email.trim().toLowerCase() !== member!.email) payload.email = email.trim().toLowerCase();
-        if (password) payload.password = password;
-
-        const consoleRoleChanged = consoleRole !== member!.console_role;
-        if (consoleRoleChanged) payload.console_role = consoleRole;
-
-        const memberTabs = new Set(member!.tabs);
-        const tabsChanged = tabs.size !== memberTabs.size || [...tabs].some(t => !memberTabs.has(t));
-        if (consoleRole === "member" && (consoleRoleChanged || tabsChanged)) {
-          payload.tabs = [...tabs];
-        }
-
-        saved = Object.keys(payload).length > 1 ? await updateTeamMember(payload) : member!;
-      }
-      onSaved(saved);
-    } catch (e: any) {
-      const msg = e?.message ?? "Something went wrong";
-      setErrorMsg(msg === "last_full_admin" ? "At least one team member must keep full admin access." : msg);
-    } finally {
-      setBusy(false);
-    }
+  const save = async () => {
+    if (!draft) return;
+    setSaving(true);
+    setErr(null);
+    const { error } = await saveSiteRules(pageKey, draft);
+    setSaving(false);
+    if (error) setErr(error);
+    else setSavedAt(new Date().toLocaleString());
   };
+
+  if (!draft) {
+    return (
+      <div className="bg-card border border-border rounded-2xl py-12 text-center text-muted-foreground text-sm shadow-sm">
+        Loading {heading}…
+      </div>
+    );
+  }
+
+  const byId = Object.fromEntries(draft.map((r) => [r.id, r]));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6 bg-charcoal/40">
-      <div className="bg-card border border-border rounded-2xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
-        <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-          <h3 className="font-display text-lg font-semibold">
-            {mode === "create" ? "Add team member" : "Edit team member"}
-          </h3>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="p-1 text-muted-foreground hover:text-foreground rounded-lg"
-          >
-            <XIcon className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="sm:col-span-2">
-              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
-                Full name *
-              </label>
-              <input
-                value={fullName}
-                onChange={e => setFullName(e.target.value)}
-                placeholder="Juan Dela Cruz"
-                className={inputCls}
-                maxLength={80}
-              />
-            </div>
-            <div className="sm:col-span-2">
-              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
-                Email *
-              </label>
-              <input
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="staff@sauteo.ph"
-                className={inputCls}
-                autoComplete="email"
-              />
-            </div>
-            <div className="sm:col-span-2">
-              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
-                {mode === "create" ? "Temporary password *" : "New password (leave blank to keep current)"}
-              </label>
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    onChange={e => setPassword(e.target.value)}
-                    placeholder="At least 8 characters"
-                    className={`${inputCls} pr-9`}
-                    autoComplete="new-password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(s => !s)}
-                    aria-label={showPassword ? "Hide password" : "Show password"}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  >
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => { setPassword(generateTempPassword()); setShowPassword(true); }}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 border border-border hover:bg-muted/50 transition shrink-0"
-                >
-                  <RefreshCw className="h-3.5 w-3.5" /> Generate
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
-              Console access
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setConsoleRole("admin")}
-                className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
-                  consoleRole === "admin"
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border hover:bg-muted/50"
-                }`}
-              >
-                Full admin
-              </button>
-              <button
-                type="button"
-                onClick={() => setConsoleRole("member")}
-                className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
-                  consoleRole === "member"
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border hover:bg-muted/50"
-                }`}
-              >
-                Limited member
-              </button>
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-1.5">
-              {consoleRole === "admin"
-                ? "Full access to every section, including Team."
-                : "Only sees Overview plus the sections checked below."}
-            </p>
-
-            {consoleRole === "member" && (
-              <div className="mt-2 grid grid-cols-2 gap-1.5">
-                {ASSIGNABLE_TABS.map(({ key, label, icon: Icon }) => {
-                  const checked = tabs.has(key);
-                  return (
-                    <label
-                      key={key}
-                      className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs cursor-pointer transition ${
-                        checked ? "border-foreground/40 bg-muted/50" : "border-border hover:bg-muted/30"
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleTab(key)}
-                        className="h-3.5 w-3.5 accent-foreground"
-                      />
-                      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                      <span className="truncate">{label}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          <p className="text-[11px] text-muted-foreground bg-muted/40 border border-border rounded-lg p-3 leading-relaxed">
-            {mode === "create"
-              ? `This creates a Supabase Auth account${consoleRole === "admin" ? " with full admin access" : " with access limited to the sections you choose"} — they can sign in immediately with the password above. Share it with them directly; it won't be shown again.`
-              : "Changes apply immediately. Leaving the password blank keeps their current password."}
+    <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-5">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="font-display text-xl">{heading}</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Text only — icons and order stay fixed. Changes show on the guest page after save.
           </p>
-
-          {errorMsg && (
-            <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-2.5">
-              {errorMsg}
-            </div>
-          )}
         </div>
-
-        <div className="px-5 py-4 border-t border-border flex items-center justify-end gap-2">
+        <div className="flex items-center gap-3">
+          {savedAt && <span className="text-xs text-muted-foreground">Saved {savedAt}</span>}
+          {err && <span className="text-xs text-red-500">{err}</span>}
           <button
-            onClick={onClose}
-            disabled={busy}
-            className="rounded-full px-4 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 disabled:opacity-50"
+            onClick={save}
+            disabled={saving}
+            className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
           >
-            Cancel
-          </button>
-          <button
-            onClick={submit}
-            disabled={!canSubmit}
-            className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50"
-          >
-            {busy ? "Saving…" : mode === "create" ? "Add member" : "Save changes"}
+            {saving ? "Saving…" : "Save"}
           </button>
         </div>
       </div>
+
+      {AGREEMENT_SECTIONS[pageKey].map((section) => (
+        <div key={section.label} className="space-y-4">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+            {section.label}
+          </p>
+          {section.ids.map((id) => {
+            const rule = byId[id];
+            if (!rule) return null;
+            return (
+              <div key={id} className="space-y-1.5 border border-border rounded-xl p-4">
+                <input
+                  type="text"
+                  value={rule.title}
+                  onChange={(e) => update(id, "title", e.target.value)}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+                />
+                <textarea
+                  value={rule.body}
+                  onChange={(e) => update(id, "body", e.target.value)}
+                  rows={3}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-muted-foreground focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition resize-y"
+                />
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }

@@ -6,17 +6,13 @@ import { Footer } from "@/components/Footer";
 import {
   AlertTriangle,
   CalendarClock,
-  CalendarDays,
   Camera,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
-  Clock,
-  CreditCard,
   Image as ImageIcon,
-  Info,
   Loader2,
   MessageCircle,
   Minus,
@@ -29,7 +25,6 @@ import {
   Trash2,
   Upload,
   User as UserIcon,
-  Users,
   X,
 } from "lucide-react";
 import {
@@ -48,7 +43,6 @@ import {
   type LoadedInvite,
 } from "@/lib/invite";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
-import { useBookingRules, type BookingRule } from "@/lib/siteContent";
 
 // Bare `/` redirects to the read-only /menu page. The booking flows
 // (/dine-in, /pick-up) stay reachable only via the tokenized invite
@@ -659,7 +653,16 @@ export function MenuPage({
   // placeOrder is the post-RPC step. ReservationView calls create_booking
   // and, on success, passes the returned reference_code and the chosen
   // slot back here so we can render the receipt with real data.
-  const placeOrder = (args: ConfirmArgs) => {
+  const placeOrder = (args: {
+    bookingId: string;
+    referenceCode: string;
+    slot: AvailableSlot;
+    customerName: string;
+    groupSize: number;
+    pickupMode?: "dine_in" | "personal_pickup" | "lalamove" | "grab";
+    courierAddress?: string | null;
+    paymentReference?: string | null;
+  }) => {
     const lineItems: ReceiptLine[] = Object.entries(cart)
       .map(([key, qty]) => {
         const { itemId, variantIndex } = parseCartKey(key);
@@ -707,7 +710,6 @@ export function MenuPage({
       courierAddress: args.courierAddress ?? null,
       paymentReference: args.paymentReference ?? null,
     });
-
     // Upload ID photos + persist claim rows. Best-effort: failures are logged
     // but never shown to the customer — the booking is already confirmed.
     // We capture claims in a local snapshot before clearing state so the async
@@ -1120,7 +1122,7 @@ function MenuView({
                             shrink the name in a flex layout — without it,
                             flex children default to min-width: auto and
                             the long set-menu names blow past the chevron. */}
-                        <span className="font-display text-xl md:text-2xl font-semibold text-foreground tracking-tight truncate min-w-0">
+                        <span className="font-display text-xl md:text-2xl font-semibold text-foreground tracking-tight min-w-0">
                           {c.name}
                         </span>
                         <span className="text-sm text-muted-foreground shrink-0">
@@ -1401,6 +1403,7 @@ function VariantSelectModal({
     state: "idle",
   });
   const claimExtractAbort = useRef<AbortController | null>(null);
+  const scrollBodyRef = useRef<HTMLDivElement | null>(null);
   const isClaimed = claimKind !== "regular";
 
   useEffect(() => {
@@ -1410,6 +1413,10 @@ function VariantSelectModal({
       setSelectedIndices(new Set());
       setQty(1);
       setShowAdded(false);
+      // Scroll modal body to top so variant checkboxes are visible immediately
+      // (without this the modal opened scrolled to the middle on items with a
+      // tall image, hiding all checkboxes above the fold).
+      if (scrollBodyRef.current) scrollBodyRef.current.scrollTop = 0;
       // Fresh modal session — reset the claim form so a stale ID from a
       // prior item doesn't bleed across opens. Revoke the previous photo
       // URL inside the functional updater so we always free the *current*
@@ -1521,12 +1528,9 @@ function VariantSelectModal({
 
   const claimFieldsValid =
     claim.fullName.trim().length >= 2 &&
-    claim.idNumber.trim().length >= 1 &&
     claim.age.trim().length >= 1 &&
     claim.dateOfBirth.trim().length >= 4 &&
-    claim.sex.trim().length >= 1 &&
     claim.dateOfIssue.trim().length >= 4 &&
-    claim.address.trim().length >= 1 &&
     !!claim.idPhotoFile;
 
   // Auto-hide the in-modal "Added!" pill ~2s after each add.
@@ -1536,11 +1540,14 @@ function VariantSelectModal({
     return () => window.clearTimeout(t);
   }, [showAdded, addedNonce]);
 
-  // When a new item is opened, start with all accordion groups collapsed —
-  // the customer expands a group by tapping its header.
+  // When a new item is opened, default the accordion to its first group
+  // (only relevant for items whose variants build 2+ groups; otherwise
+  // openGroup is unused).
   useEffect(() => {
     if (!item) return;
-    setOpenGroup(null);
+    const vs = item.variants ?? [];
+    const gs = buildVariantGroups(vs);
+    setOpenGroup(gs.length >= 2 ? gs[0].name : null);
   }, [item]);
 
   // Toggle a variant's selection. As a side effect, opens the accordion
@@ -1659,7 +1666,7 @@ function VariantSelectModal({
             Image height is capped so variant pickers are visible above the
             fold; otherwise on mobile a square hero ate the whole modal and
             customers couldn't tell why "Add to cart" was disabled. */}
-        <div className="flex-1 overflow-y-auto min-h-0">
+        <div ref={scrollBodyRef} className="flex-1 overflow-y-auto min-h-0">
           {/* Image */}
           <div
             className={`w-full bg-muted overflow-hidden ${
@@ -1694,10 +1701,11 @@ function VariantSelectModal({
             )}
           </div>
 
-          {/* For whom? — dine-in only. Pickup can't verify IDs on the spot
-              so the Senior/PWD discount section is hidden entirely there. */}
           {allowDiscount && (
             <>
+              {/* For whom? — Regular / Senior / PWD. Picking a non-regular
+                  option locks qty to 1 (one ID = one unit per RA 9994) and
+                  expands the ID form below. */}
               <div className="px-5 pt-3 pb-2">
                 <div className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
                   For whom?
@@ -2553,276 +2561,6 @@ type ConfirmArgs = {
   paymentReference?: string | null;
 };
 
-/* ── Dine-in invite landing page ─────────────────────────────────────── */
-
-function DineInInviteLanding({ onProceed }: { onProceed: () => void }) {
-  return (
-    <div className="max-w-3xl mx-auto text-center py-4">
-      <div className="mx-auto h-16 w-16 rounded-full bg-mustard/30 flex items-center justify-center mb-6">
-        <CalendarClock className="h-7 w-7 text-primary" />
-      </div>
-      <h1 className="font-display text-3xl md:text-5xl mb-3">
-        Reserve your table at Sautéo
-      </h1>
-      <p className="text-muted-foreground text-base md:text-lg max-w-xl mx-auto mb-10 md:mb-14">
-        An intimate dining experience. Pick your time slot, share your party
-        size, and we'll have your seat ready.
-      </p>
-
-      <div className="grid gap-3 md:gap-4 md:grid-cols-3 mb-10 md:mb-12 text-left">
-        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
-          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
-            <CalendarClock className="h-5 w-5 text-primary" />
-          </div>
-          <h3 className="font-display text-lg mb-1">Pick a time slot</h3>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            See live availability and reserve in a few taps.
-          </p>
-        </div>
-        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
-          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
-            <Users className="h-5 w-5 text-primary" />
-          </div>
-          <h3 className="font-display text-lg mb-1">Bring your group</h3>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            Reserve for one or share the table — let us know the party size.
-          </p>
-        </div>
-        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
-          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
-            <MessageCircle className="h-5 w-5 text-primary" />
-          </div>
-          <h3 className="font-display text-lg mb-1">Invite-only</h3>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            Your personal booking link is active — no waiting needed.
-          </p>
-        </div>
-      </div>
-
-      <div className="flex justify-center">
-        <button
-          onClick={onProceed}
-          className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm md:text-base font-semibold hover:opacity-90 transition"
-        >
-          Reserve my table <ChevronRight className="h-4 w-4" />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ── Dine-in rules modal ──────────────────────────────────────────────── */
-
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/80">
-      {children}
-    </p>
-  );
-}
-
-function Rule({ icon, title, body }: { icon: React.ReactNode; title: string; body: string }) {
-  return (
-    <div className="flex gap-3">
-      <div className="mt-0.5 shrink-0">{icon}</div>
-      <div>
-        <p className="text-sm font-semibold text-foreground leading-snug">{title}</p>
-        <p className="text-sm text-muted-foreground mt-0.5 leading-relaxed">{body}</p>
-      </div>
-    </div>
-  );
-}
-
-// Icon shown next to each rule, keyed by the admin-editable group heading.
-// Falls back to a generic icon for any custom group an admin adds.
-const RULE_GROUP_ICONS: Record<string, React.ReactNode> = {
-  "Reservation Rules": <CalendarDays className="h-4 w-4 text-blue-500" />,
-  "Dining Guidelines": <Sparkles className="h-4 w-4 text-primary" />,
-  "Order & Payment": <CreditCard className="h-4 w-4 text-green-500" />,
-  "Pickup Policy": <Clock className="h-4 w-4 text-amber-500" />,
-};
-const DEFAULT_RULE_ICON = <Info className="h-4 w-4 text-muted-foreground" />;
-
-// Group rules by their `group_label`, preserving the order groups first
-// appear in (rules already arrive sorted by `sort_order`).
-function groupRules(rules: BookingRule[]): { label: string; items: BookingRule[] }[] {
-  const groups: { label: string; items: BookingRule[] }[] = [];
-  for (const r of rules) {
-    let g = groups.find((g) => g.label === r.group_label);
-    if (!g) {
-      g = { label: r.group_label, items: [] };
-      groups.push(g);
-    }
-    g.items.push(r);
-  }
-  return groups;
-}
-
-function DineInRulesModal({ onAccept }: { onAccept: () => void }) {
-  const rules = useBookingRules("dinein");
-  const groups = useMemo(() => groupRules(rules), [rules]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-      <div className="relative w-full max-w-md bg-background rounded-2xl shadow-2xl overflow-hidden">
-        {/* Header */}
-        <div className="bg-primary px-6 py-5">
-          <div className="flex items-center gap-3">
-            <CalendarClock className="h-5 w-5 text-primary-foreground shrink-0" />
-            <div>
-              <h2 className="font-display text-lg text-primary-foreground leading-tight">
-                Dine-In Reservation Rules
-              </h2>
-              <p className="text-primary-foreground/70 text-xs mt-0.5">
-                Please read before booking your table
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Rules & guidelines */}
-        <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
-          {groups.map((g) => (
-            <div key={g.label} className="space-y-4 pt-1 first:pt-0">
-              <SectionLabel>{g.label}</SectionLabel>
-              {g.items.map((r) => (
-                <Rule
-                  key={r.id}
-                  icon={RULE_GROUP_ICONS[g.label] ?? DEFAULT_RULE_ICON}
-                  title={r.title}
-                  body={r.body}
-                />
-              ))}
-            </div>
-          ))}
-        </div>
-
-        {/* CTA */}
-        <div className="px-6 py-4 border-t border-border bg-muted/30">
-          <button
-            onClick={onAccept}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm font-semibold hover:opacity-90 transition"
-          >
-            I understand, proceed to booking <ChevronRight className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Pickup landing page (invite flow) ───────────────────────────────── */
-
-export function PickupInviteLanding({ onProceed }: { onProceed: () => void }) {
-  return (
-    <div className="max-w-3xl mx-auto text-center py-4">
-      <div className="mx-auto h-16 w-16 rounded-full bg-mustard/30 flex items-center justify-center mb-6">
-        <ShoppingBag className="h-7 w-7 text-primary" />
-      </div>
-      <h1 className="font-display text-3xl md:text-5xl mb-3">
-        Order Sautéo for pickup
-      </h1>
-      <p className="text-muted-foreground text-base md:text-lg max-w-xl mx-auto mb-10 md:mb-14">
-        Get your favorite dishes to go. Pick your window, choose from the
-        menu, and pay with Maya QR.
-      </p>
-
-      <div className="grid gap-3 md:gap-4 md:grid-cols-3 mb-10 md:mb-12 text-left">
-        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
-          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
-            <CalendarClock className="h-5 w-5 text-primary" />
-          </div>
-          <h3 className="font-display text-lg mb-1">Pick your window</h3>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            Choose from available pickup slots — 4 PM, 6 PM, or 8 PM.
-          </p>
-        </div>
-        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
-          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
-            <ShoppingBag className="h-5 w-5 text-primary" />
-          </div>
-          <h3 className="font-display text-lg mb-1">Choose from the menu</h3>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            Browse all available pickup items and build your order.
-          </p>
-        </div>
-        <div className="bg-card border border-border rounded-2xl p-5 shadow-sm">
-          <div className="h-10 w-10 rounded-full bg-mustard/30 flex items-center justify-center mb-3">
-            <CreditCard className="h-5 w-5 text-primary" />
-          </div>
-          <h3 className="font-display text-lg mb-1">Pay with Maya QR</h3>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            Scan the InstaPay QR, send your screenshot, and we'll confirm.
-          </p>
-        </div>
-      </div>
-
-      <div className="flex justify-center">
-        <button
-          onClick={onProceed}
-          className="inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm md:text-base font-semibold hover:opacity-90 transition"
-        >
-          Start my order <ChevronRight className="h-4 w-4" />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ── Pickup rules modal ───────────────────────────────────────────────── */
-
-export function PickupRulesModal({ onAccept }: { onAccept: () => void }) {
-  const rules = useBookingRules("pickup");
-  const groups = useMemo(() => groupRules(rules), [rules]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-      <div className="relative w-full max-w-md bg-background rounded-2xl shadow-2xl overflow-hidden">
-        <div className="bg-primary px-6 py-5">
-          <div className="flex items-center gap-3">
-            <ShoppingBag className="h-5 w-5 text-primary-foreground shrink-0" />
-            <div>
-              <h2 className="font-display text-lg text-primary-foreground leading-tight">
-                Pickup Order Rules
-              </h2>
-              <p className="text-primary-foreground/70 text-xs mt-0.5">
-                Please read before placing your order
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
-          {groups.map((g) => (
-            <div key={g.label} className="space-y-4 pt-1 first:pt-0">
-              <SectionLabel>{g.label}</SectionLabel>
-              {g.items.map((r) => (
-                <Rule
-                  key={r.id}
-                  icon={RULE_GROUP_ICONS[g.label] ?? DEFAULT_RULE_ICON}
-                  title={r.title}
-                  body={r.body}
-                />
-              ))}
-            </div>
-          ))}
-        </div>
-
-        <div className="px-6 py-4 border-t border-border bg-muted/30">
-          <button
-            onClick={onAccept}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm font-semibold hover:opacity-90 transition"
-          >
-            I understand, start my order <ChevronRight className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Dine-in reservation wizard ───────────────────────────────────────── */
-
 function DineInReservationView({
   invite,
   cart,
@@ -2857,8 +2595,6 @@ function DineInReservationView({
   onBack: () => void;
   onConfirm: (args: ConfirmArgs) => void;
 }) {
-  const [stage, setStage] = useState<"landing" | "rules" | "booking">("landing");
-
   // Senior/PWD claims now happen at item-add time inside the variant modal
   // (per-line attribution). No claim form lives on this payment step —
   // the discount breakdown below still reads from `discountSummary`.
@@ -2894,9 +2630,8 @@ function DineInReservationView({
   const [groupSize, setGroupSize] = useState<number>(invite?.groupSize ?? 2);
   const [notes, setNotes] = useState("");
 
-  // QR display fallback — flips to true when the image 404s so the
-  // payment card still renders gracefully without the image. Reset whenever
-  // the user enters the payment sub-step so a fixed/replaced image is retried.
+  // QR display fallback — flips to true when /maya-qr.png 404s so the
+  // payment card still renders gracefully without the image.
   const [qrImgError, setQrImgError] = useState(false);
 
   // Wizard step is owned by MenuPage (so the page layout can swap on step 2
@@ -2910,7 +2645,6 @@ function DineInReservationView({
   const [paymentSubStep, setPaymentSubStep] = useState<"details" | "pay">(
     "details",
   );
-  useEffect(() => { if (paymentSubStep === "pay") setQrImgError(false); }, [paymentSubStep]);
 
   // Whenever we land on step 3, restart at the details sub-step. Avoids the
   // guest landing mid-form after they tap the stepper to jump back.
@@ -3037,7 +2771,7 @@ function DineInReservationView({
       setSubmitError(friendlyBookingError(error.message));
       return;
     }
-    const result = (data ?? {}) as { booking_id?: string; reference_code?: string };
+    const result = (data ?? {}) as { reference_code?: string; booking_id?: string };
     if (!result.reference_code || !result.booking_id) {
       setSubmitting(false);
       setSubmitError("Booking didn't return a reference code. Contact us in Messenger.");
@@ -3102,15 +2836,6 @@ function DineInReservationView({
   // wrapper. Page-level layout (h-screen vs min-h-screen) is also swapped
   // by MenuPage via `isMenuView`.
   const isMenuStep = step === 2;
-
-  if (stage !== "booking") {
-    return (
-      <>
-        <DineInInviteLanding onProceed={() => setStage("rules")} />
-        {stage === "rules" && <DineInRulesModal onAccept={() => setStage("booking")} />}
-      </>
-    );
-  }
 
   return (
     <div
@@ -3459,7 +3184,7 @@ function DineInReservationView({
             <div className="text-cream/80 text-sm space-y-1">
               <div className="break-words">
                 Maya / InstaPay:{" "}
-                <span className="font-mono text-cream">+63 123 456 789</span>
+                <span className="font-mono text-cream">09953645517</span>
               </div>
               <div className="pt-2 text-cream/60">
                 Amount:{" "}
@@ -3481,7 +3206,7 @@ function DineInReservationView({
                   </div>
                 ) : (
                   <img
-                    src="/maya-qr.jpg"
+                    src="/maya-qr.png"
                     alt="Scan to pay via Maya or any QR Ph–compatible app"
                     className="w-full h-full object-contain"
                     onError={() => setQrImgError(true)}
@@ -3624,10 +3349,8 @@ function PickupReservationView({
   const numberOfMeals = Math.max(cartUnitCount, 1);
   const [notes, setNotes] = useState("");
 
-  // QR display fallback — flips to true when the image 404s. Reset whenever
-  // the user enters step 4 (payment) so a fixed/replaced image is retried.
+  // QR display fallback — flips to true when /maya-qr.png 404s.
   const [qrImgError, setQrImgError] = useState(false);
-  useEffect(() => { if (step === 4) setQrImgError(false); }, [step]);
 
   // Wizard step is owned by MenuPage (so the page layout can swap on
   // step 2 for the menu's fixed-height layout). Visible ordering:
@@ -3717,6 +3440,8 @@ function PickupReservationView({
       ),
     };
     if (invite?.token) payload.invite_token = invite.token;
+    const pid = new URLSearchParams(window.location.search).get("pid");
+    if (pid) payload.platform_id = pid;
 
     const { data, error } = await (supabase.rpc as any)("create_booking", {
       payload,
@@ -3726,7 +3451,7 @@ function PickupReservationView({
       setSubmitError(friendlyBookingError(error.message));
       return;
     }
-    const result = (data ?? {}) as { booking_id?: string; reference_code?: string };
+    const result = (data ?? {}) as { reference_code?: string; booking_id?: string };
     if (!result.reference_code || !result.booking_id) {
       setSubmitting(false);
       setSubmitError(
@@ -4065,7 +3790,7 @@ function PickupReservationView({
                 <div className="text-cream/80 text-sm space-y-1">
                   <div className="break-words">
                     Maya / InstaPay:{" "}
-                    <span className="font-mono text-cream">+63 123 456 789</span>
+                    <span className="font-mono text-cream">09953645517</span>
                   </div>
                   <div className="pt-2 text-cream/60">
                     Amount:{" "}
@@ -4087,7 +3812,7 @@ function PickupReservationView({
                       </div>
                     ) : (
                       <img
-                        src="/maya-qr.jpg"
+                        src="/maya-qr.png"
                         alt="Scan to pay via Maya or any QR Ph–compatible app"
                         className="w-full h-full object-contain"
                         onError={() => setQrImgError(true)}
@@ -4166,24 +3891,18 @@ function ClaimantCard({
   const inputCls =
     "w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition";
   // Per-required-field "is this filled in?" flags so we can highlight the
-  // specific input that's blocking submit. Matches claimFieldsValid above —
-  // keep them in sync.
+  // specific input that's blocking submit. Matches the validity check used
+  // by allClaimsValid in ReservationView — keep them in sync.
   const nameMissing = claimant.fullName.trim().length < 2;
-  const idNumberMissing = claimant.idNumber.trim().length < 1;
   const ageMissing = claimant.age.trim().length < 1;
   const dobMissing = claimant.dateOfBirth.trim().length < 4;
-  const sexMissing = claimant.sex.trim().length < 1;
   const issuedMissing = claimant.dateOfIssue.trim().length < 4;
-  const addressMissing = claimant.address.trim().length < 1;
   const photoMissing = !claimant.idPhotoFile;
   const missingLabels = [
     nameMissing && "Name",
-    idNumberMissing && "ID number",
-    dobMissing && "Date of birth",
     ageMissing && "Age",
-    sexMissing && "Sex",
+    dobMissing && "Date of birth",
     issuedMissing && "Date of issue",
-    addressMissing && "Address",
     photoMissing && "ID photo",
   ].filter(Boolean) as string[];
   // Subtle red ring on inputs whose value is empty. Only kicks in once the
@@ -4203,16 +3922,34 @@ function ClaimantCard({
     <div className="border border-border rounded-xl p-4 bg-background space-y-3">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Validation badge. Only show once OCR has finished (or the user
-              has typed something) — otherwise a brand-new card, or one still
-              mid-scan, would falsely flash "Missing" before the fields even
-              render. */}
-          {hasInteracted && autoFill.state !== "loading" && missingLabels.length === 0 && (
+          <div className="h-7 w-7 rounded-full bg-muted flex items-center justify-center text-xs font-semibold tabular-nums">
+            {index + 1}
+          </div>
+          <div className="inline-flex rounded-full bg-muted p-0.5">
+            {(["senior", "pwd"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => onChange({ kind: k })}
+                className={`text-[11px] uppercase tracking-wider px-2.5 py-1 rounded-full transition ${
+                  claimant.kind === k
+                    ? "bg-foreground text-background font-semibold"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {k === "senior" ? "Senior" : "PWD"}
+              </button>
+            ))}
+          </div>
+          {/* Validation badge. Only show "Complete" once the user has
+              actually filled things in — otherwise a brand-new blank card
+              would falsely flash green. */}
+          {hasInteracted && missingLabels.length === 0 && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold uppercase tracking-wider">
               <Check className="h-3 w-3" /> Complete
             </span>
           )}
-          {hasInteracted && autoFill.state !== "loading" && missingLabels.length > 0 && (
+          {hasInteracted && missingLabels.length > 0 && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-destructive/10 text-destructive text-[10px] font-semibold uppercase tracking-wider">
               <AlertTriangle className="h-3 w-3" />
               Missing: {missingLabels.join(", ")}
@@ -4229,9 +3966,107 @@ function ClaimantCard({
         </button>
       </div>
 
-      {/* Upload-first flow: the detail fields below stay hidden until a
-          photo is selected, so the customer's first (and ideally only)
-          action is "upload ID" — OCR then fills the fields in for review. */}
+      {/* 6-column grid lets us put the small DOB/age/sex/issue fields on
+          one tidy row on tablet+ while name and address stay full-width.
+          On mobile everything stacks to single column. */}
+      <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
+        <div className="col-span-2 sm:col-span-4">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Full name (as on ID)
+          </label>
+          <input
+            type="text"
+            value={claimant.fullName}
+            onChange={(e) => onChange({ fullName: e.target.value })}
+            placeholder="Juan Dela Cruz"
+            className={`${inputCls} ${hasInteracted && nameMissing ? errorRing : ""}`}
+            autoComplete="off"
+          />
+        </div>
+        <div className="col-span-2 sm:col-span-2">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            ID number
+          </label>
+          <input
+            type="text"
+            value={claimant.idNumber}
+            onChange={(e) => onChange({ idNumber: e.target.value })}
+            placeholder={claimant.kind === "pwd" ? "RR-XXXXXX-XX..." : "e.g. 8764"}
+            className={inputCls}
+            autoComplete="off"
+          />
+        </div>
+
+        <div className="col-span-2 sm:col-span-2">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Date of birth
+          </label>
+          <input
+            type="text"
+            value={claimant.dateOfBirth}
+            onChange={(e) => onChange({ dateOfBirth: e.target.value })}
+            placeholder="MM/DD/YYYY"
+            className={`${inputCls} ${hasInteracted && dobMissing ? errorRing : ""}`}
+            autoComplete="off"
+          />
+        </div>
+        <div className="col-span-1 sm:col-span-1">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Age
+          </label>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={claimant.age}
+            onChange={(e) => onChange({ age: e.target.value })}
+            placeholder="65"
+            className={`${inputCls} ${hasInteracted && ageMissing ? errorRing : ""}`}
+            autoComplete="off"
+          />
+        </div>
+        <div className="col-span-1 sm:col-span-1">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Sex
+          </label>
+          <select
+            value={claimant.sex}
+            onChange={(e) => onChange({ sex: e.target.value })}
+            className={inputCls}
+          >
+            <option value="">—</option>
+            <option value="M">M</option>
+            <option value="F">F</option>
+          </select>
+        </div>
+        <div className="col-span-2 sm:col-span-2">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Date of issue
+          </label>
+          <input
+            type="text"
+            value={claimant.dateOfIssue}
+            onChange={(e) => onChange({ dateOfIssue: e.target.value })}
+            placeholder="MM/DD/YYYY"
+            className={`${inputCls} ${hasInteracted && issuedMissing ? errorRing : ""}`}
+            autoComplete="off"
+          />
+        </div>
+
+        <div className="col-span-2 sm:col-span-6">
+          <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+            Address
+          </label>
+          <input
+            type="text"
+            value={claimant.address}
+            onChange={(e) => onChange({ address: e.target.value })}
+            placeholder="Street, Barangay, City"
+            className={inputCls}
+            autoComplete="off"
+          />
+        </div>
+      </div>
+
       <div>
         <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
           ID photo
@@ -4294,13 +4129,6 @@ function ClaimantCard({
           )}
         </div>
 
-        {!claimant.idPhotoFile && (
-          <p className="mt-2 text-xs text-muted-foreground leading-relaxed">
-            Upload a photo of the Senior Citizen / PWD ID — we'll read the
-            details automatically.
-          </p>
-        )}
-
         {/* Autofill status row. Renders nothing in idle/off states so the
             form looks clean before/after a photo is dropped; renders a
             spinner while the LLM reads the ID; shows a "please verify" hint
@@ -4315,7 +4143,7 @@ function ClaimantCard({
         {autoFill.state === "filled" && (
           <div className="mt-2 inline-flex items-center gap-2 text-xs text-primary">
             <Sparkles className="h-3.5 w-3.5" />
-            Auto-filled from your ID — please double-check the fields below.
+            Auto-filled from your ID — please double-check the fields above.
             {autoFill.confidence > 0 && (
               <span className="text-muted-foreground">
                 ({Math.round(autoFill.confidence * 100)}% confidence)
@@ -4326,112 +4154,10 @@ function ClaimantCard({
         {autoFill.state === "failed" && (
           <div className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
             <AlertTriangle className="h-3.5 w-3.5" />
-            Couldn't read the ID automatically — please type the fields in below.
+            Couldn't read the ID automatically — please type the fields manually.
           </div>
         )}
       </div>
-
-      {/* Detail fields — revealed once a photo is selected. OCR (if
-          available) fills these in; the customer reviews/corrects them. */}
-      {claimant.idPhotoFile && (
-        <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
-          <div className="col-span-2 sm:col-span-4">
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              Full name (as on ID)
-            </label>
-            <input
-              type="text"
-              value={claimant.fullName}
-              onChange={(e) => onChange({ fullName: e.target.value })}
-              placeholder="Juan Dela Cruz"
-              className={`${inputCls} ${hasInteracted && nameMissing ? errorRing : ""}`}
-              autoComplete="off"
-            />
-          </div>
-          <div className="col-span-2 sm:col-span-2">
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              ID number
-            </label>
-            <input
-              type="text"
-              value={claimant.idNumber}
-              onChange={(e) => onChange({ idNumber: e.target.value })}
-              placeholder={claimant.kind === "pwd" ? "RR-XXXXXX-XX..." : "e.g. 8764"}
-              className={`${inputCls} ${hasInteracted && idNumberMissing ? errorRing : ""}`}
-              autoComplete="off"
-            />
-          </div>
-
-          <div className="col-span-2 sm:col-span-2">
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              Date of birth
-            </label>
-            <input
-              type="text"
-              value={claimant.dateOfBirth}
-              onChange={(e) => onChange({ dateOfBirth: e.target.value })}
-              placeholder="MM/DD/YYYY"
-              className={`${inputCls} ${hasInteracted && dobMissing ? errorRing : ""}`}
-              autoComplete="off"
-            />
-          </div>
-          <div className="col-span-1 sm:col-span-1">
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              Age
-            </label>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={claimant.age}
-              onChange={(e) => onChange({ age: e.target.value })}
-              placeholder="65"
-              className={`${inputCls} ${hasInteracted && ageMissing ? errorRing : ""}`}
-              autoComplete="off"
-            />
-          </div>
-          <div className="col-span-1 sm:col-span-1">
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              Sex
-            </label>
-            <select
-              value={claimant.sex}
-              onChange={(e) => onChange({ sex: e.target.value })}
-              className={`${inputCls} ${hasInteracted && sexMissing ? errorRing : ""}`}
-            >
-              <option value="">—</option>
-              <option value="M">M</option>
-              <option value="F">F</option>
-            </select>
-          </div>
-          <div className="col-span-2 sm:col-span-2">
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              Date of issue
-            </label>
-            <input
-              type="text"
-              value={claimant.dateOfIssue}
-              onChange={(e) => onChange({ dateOfIssue: e.target.value })}
-              placeholder="MM/DD/YYYY"
-              className={`${inputCls} ${hasInteracted && issuedMissing ? errorRing : ""}`}
-              autoComplete="off"
-            />
-          </div>
-
-          <div className="col-span-2 sm:col-span-6">
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              Address
-            </label>
-            <input
-              type="text"
-              value={claimant.address}
-              onChange={(e) => onChange({ address: e.target.value })}
-              placeholder="Street, Barangay, City"
-              className={`${inputCls} ${hasInteracted && addressMissing ? errorRing : ""}`}
-              autoComplete="off"
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

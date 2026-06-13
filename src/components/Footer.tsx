@@ -6,13 +6,16 @@ export function Footer() {
       id="visit"
       className="shrink-0 border-t border-border/50 bg-background/95 backdrop-blur-sm"
     >
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4 text-xs text-muted-foreground">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between text-xs text-muted-foreground">
         <span>
           Powered by{" "}
           <span className="font-semibold text-foreground">AutomatEdz</span>
         </span>
-        <Link to="/terms" className="hover:text-foreground transition">
-          Terms & Privacy
+        <Link
+          to="/terms"
+          className="hover:text-foreground transition"
+        >
+          Terms &amp; Privacy
         </Link>
       </div>
     </footer>

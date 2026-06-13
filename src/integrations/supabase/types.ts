@@ -444,39 +444,6 @@ export type Database = {
         }
         Relationships: []
       }
-      booking_rules: {
-        Row: {
-          id: string
-          section: string
-          group_label: string
-          title: string
-          body: string
-          sort_order: number
-          created_at: string
-          updated_at: string
-        }
-        Insert: {
-          id?: string
-          section: string
-          group_label?: string
-          title: string
-          body: string
-          sort_order?: number
-          created_at?: string
-          updated_at?: string
-        }
-        Update: {
-          id?: string
-          section?: string
-          group_label?: string
-          title?: string
-          body?: string
-          sort_order?: number
-          created_at?: string
-          updated_at?: string
-        }
-        Relationships: []
-      }
       crm_contacts: {
         Row: {
           id: string
