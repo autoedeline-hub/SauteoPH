@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as TermsRouteImport } from './routes/terms'
 import { Route as PickUpRouteImport } from './routes/pick-up'
 import { Route as MenuRouteImport } from './routes/menu'
 import { Route as DineInRouteImport } from './routes/dine-in'
@@ -18,6 +19,11 @@ import { Route as PickUpTokenRouteImport } from './routes/pick-up_.$token'
 import { Route as DineInTokenRouteImport } from './routes/dine-in_.$token'
 import { Route as BookTokenRouteImport } from './routes/book.$token'
 
+const TermsRoute = TermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PickUpRoute = PickUpRouteImport.update({
   id: '/pick-up',
   path: '/pick-up',
@@ -65,6 +71,7 @@ export interface FileRoutesByFullPath {
   '/dine-in': typeof DineInRoute
   '/menu': typeof MenuRoute
   '/pick-up': typeof PickUpRoute
+  '/terms': typeof TermsRoute
   '/book/$token': typeof BookTokenRoute
   '/dine-in/$token': typeof DineInTokenRoute
   '/pick-up/$token': typeof PickUpTokenRoute
@@ -75,6 +82,7 @@ export interface FileRoutesByTo {
   '/dine-in': typeof DineInRoute
   '/menu': typeof MenuRoute
   '/pick-up': typeof PickUpRoute
+  '/terms': typeof TermsRoute
   '/book/$token': typeof BookTokenRoute
   '/dine-in/$token': typeof DineInTokenRoute
   '/pick-up/$token': typeof PickUpTokenRoute
@@ -86,6 +94,7 @@ export interface FileRoutesById {
   '/dine-in': typeof DineInRoute
   '/menu': typeof MenuRoute
   '/pick-up': typeof PickUpRoute
+  '/terms': typeof TermsRoute
   '/book/$token': typeof BookTokenRoute
   '/dine-in_/$token': typeof DineInTokenRoute
   '/pick-up_/$token': typeof PickUpTokenRoute
@@ -98,6 +107,7 @@ export interface FileRouteTypes {
     | '/dine-in'
     | '/menu'
     | '/pick-up'
+    | '/terms'
     | '/book/$token'
     | '/dine-in/$token'
     | '/pick-up/$token'
@@ -108,6 +118,7 @@ export interface FileRouteTypes {
     | '/dine-in'
     | '/menu'
     | '/pick-up'
+    | '/terms'
     | '/book/$token'
     | '/dine-in/$token'
     | '/pick-up/$token'
@@ -118,6 +129,7 @@ export interface FileRouteTypes {
     | '/dine-in'
     | '/menu'
     | '/pick-up'
+    | '/terms'
     | '/book/$token'
     | '/dine-in_/$token'
     | '/pick-up_/$token'
@@ -129,6 +141,7 @@ export interface RootRouteChildren {
   DineInRoute: typeof DineInRoute
   MenuRoute: typeof MenuRoute
   PickUpRoute: typeof PickUpRoute
+  TermsRoute: typeof TermsRoute
   BookTokenRoute: typeof BookTokenRoute
   DineInTokenRoute: typeof DineInTokenRoute
   PickUpTokenRoute: typeof PickUpTokenRoute
@@ -136,6 +149,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/pick-up': {
       id: '/pick-up'
       path: '/pick-up'
@@ -201,6 +221,7 @@ const rootRouteChildren: RootRouteChildren = {
   DineInRoute: DineInRoute,
   MenuRoute: MenuRoute,
   PickUpRoute: PickUpRoute,
+  TermsRoute: TermsRoute,
   BookTokenRoute: BookTokenRoute,
   DineInTokenRoute: DineInTokenRoute,
   PickUpTokenRoute: PickUpTokenRoute,
