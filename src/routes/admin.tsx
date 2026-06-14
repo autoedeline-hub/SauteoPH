@@ -7,7 +7,7 @@ import {
   type SiteRule,
   type SiteContentKey,
 } from "@/integrations/site-content";
-import { format, subDays, subMonths } from "date-fns";
+import { addDays, format, subDays, subMonths } from "date-fns";
 import { inviteLinkPath } from "@/lib/invite";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
 import {
@@ -38,6 +38,8 @@ import {
   Upload,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   Search,
   AlertCircle,
   ArrowRight,
@@ -3606,24 +3608,20 @@ type ContactRow = {
 // requested slot for yet. Can't collide with a real date (YYYY-MM-DD).
 const UNSCHEDULED = "__unscheduled__";
 
+// Sautéo's 4 dine-in time slots, used as the fixed rows in each calendar
+// day cell regardless of whether any guest requested that slot.
+const CALENDAR_TIMES = ["13:00", "15:00", "17:00", "19:00"];
+
 function WaitlistTab() {
   const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Date sections collapse by default so a long waitlist doesn't force one
-  // giant scroll — null means "not yet initialized", at which point we
-  // default-expand just the soonest date.
-  const [expandedDates, setExpandedDates] = useState<Set<string> | null>(null);
-  const toggleDate = (date: string) => {
-    setExpandedDates((prev) => {
-      const next = new Set(prev ?? []);
-      if (next.has(date)) next.delete(date);
-      else next.add(date);
-      return next;
-    });
-  };
+  // Calendar week-strip state. weekOffset 0 = this operating week (Wed–Sun);
+  // selectedDate (YYYY-MM-DD) drives the inline detail panel below the grid.
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   // Open, upcoming slots keyed by `${date}|${HH:MM}` so a guest's requested
   // date+time resolves to the real time_slot a bulk invite locks onto.
@@ -3832,10 +3830,8 @@ function WaitlistTab() {
     };
   }, [allWaitlist, inviteStatusFor]);
 
-  // date → [time, guests][]. Null requested_date/time bucket to UNSCHEDULED.
-  // Pre-sorted: dates ascending (soonest first) with Unscheduled pinned last;
-  // times ascending within a date, "no time" last.
-  const grouped = useMemo(() => {
+  // date → time → guests. Null requested_date/time bucket to UNSCHEDULED.
+  const byDateTime = useMemo(() => {
     const byDate = new Map<string, Map<string, ContactRow[]>>();
     for (const c of searched) {
       const dateKey = c.requested_date ?? UNSCHEDULED;
@@ -3847,23 +3843,46 @@ function WaitlistTab() {
       byTime.set(timeKey, arr);
       byDate.set(dateKey, byTime);
     }
+    return byDate;
+  }, [searched]);
+
+  // Sorted (date, [time, guests][]) pairs — dates ascending with Unscheduled
+  // pinned last, times ascending within a date with "no time" last. Feeds
+  // the search-result flat list and the Unscheduled section.
+  const grouped = useMemo(() => {
     const sortKeys = (a: string, b: string) =>
       a === UNSCHEDULED ? 1 : b === UNSCHEDULED ? -1 : a.localeCompare(b);
-    return [...byDate.entries()]
+    return [...byDateTime.entries()]
       .sort(([a], [b]) => sortKeys(a, b))
       .map(
         ([date, byTime]) =>
           [date, [...byTime.entries()].sort(([a], [b]) => sortKeys(a, b))] as const,
       );
-  }, [searched]);
+  }, [byDateTime]);
 
-  // Default-expand just the soonest date so admins land on something useful
-  // without every section being collapsed on first load.
-  useEffect(() => {
-    if (expandedDates === null && grouped.length > 0) {
-      setExpandedDates(new Set([grouped[0][0]]));
-    }
-  }, [grouped, expandedDates]);
+  // 5 dates (Wed–Sun) for the visible calendar week. weekOffset 0 is "this
+  // operating week" — if today is Mon/Tue (the restaurant's days off), that
+  // resolves to the upcoming Wed–Sun rather than the one that just ended.
+  const weekDates = useMemo(() => {
+    const today = new Date(`${localToday()}T00:00:00`);
+    const isoDow = today.getDay() === 0 ? 7 : today.getDay(); // Mon=1..Sun=7
+    const weekStart = addDays(today, 3 - isoDow + weekOffset * 7);
+    return Array.from({ length: 5 }, (_, i) => addDays(weekStart, i));
+  }, [weekOffset]);
+
+  // Guests requesting `time` (HH:MM) on `dateKey`, ignoring seconds in the
+  // stored requested_time so it matches CALENDAR_TIMES.
+  const guestsAt = useCallback(
+    (dateKey: string, time: string): ContactRow[] => {
+      const byTime = byDateTime.get(dateKey);
+      if (!byTime) return [];
+      for (const [key, arr] of byTime) {
+        if (key !== UNSCHEDULED && hhmm(key) === time) return arr;
+      }
+      return [];
+    },
+    [byDateTime],
+  );
 
   // Bulk-issue slot-locked dine-in invites for everyone in a group who
   // doesn't already have an active invite. One multi-row insert; the n8n
@@ -3934,6 +3953,151 @@ function WaitlistTab() {
     return () => window.clearTimeout(t);
   }, [bulkResult]);
 
+  // One time-group card: header with demand info + bulk "Send invites"
+  // button, plus the guest list. Shared by the calendar detail panel, the
+  // Unscheduled section, and the search-mode flat list.
+  const renderTimeGroup = (date: string, time: string, guests: ContactRow[]) => {
+    const groupKey = `${date}|${time}`;
+    const slot = resolveSlot(date, time);
+    const sending = bulkSending.has(groupKey);
+    const eligibleCount = guests.filter(
+      (c) => inviteStatusFor(c.id).state !== "active",
+    ).length;
+    const requestedSeats = guests.reduce(
+      (n, c) => n + (c.last_party_size ?? guestsFor(c.id) ?? 0),
+      0,
+    );
+    const remaining = slot ? slot.capacity - slot.seats_taken : null;
+    const canSend = !!slot && slot.is_open && eligibleCount > 0 && !sending;
+    const noSlot = date !== UNSCHEDULED && time !== UNSCHEDULED && !slot;
+
+    return (
+      <div key={groupKey} className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+        {/* Group header — time, demand, and the bulk action */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-between px-5 py-3 bg-muted/40 border-b border-border">
+          <div className="flex items-center gap-2.5 flex-wrap text-sm">
+            <span className="font-display font-semibold tabular-nums">
+              {time === UNSCHEDULED ? "No time set" : formatSlotTime12h(time)}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {guests.length} guest{guests.length === 1 ? "" : "s"}
+            </span>
+            {requestedSeats > 0 && (
+              <span className="text-xs text-muted-foreground">
+                · {requestedSeats} seat{requestedSeats === 1 ? "" : "s"} requested
+              </span>
+            )}
+            {remaining != null && (
+              <span className={`text-xs ${requestedSeats > remaining ? "text-destructive font-medium" : "text-muted-foreground"}`}>
+                · {remaining} open in slot
+              </span>
+            )}
+          </div>
+          {date === UNSCHEDULED || time === UNSCHEDULED ? (
+            <span className="text-[11px] text-muted-foreground">Capture a date &amp; time to bulk-invite</span>
+          ) : noSlot ? (
+            <span className="text-[11px] text-muted-foreground" title="No open time slot matches this date and time">
+              No open slot — create one in Slots
+            </span>
+          ) : (
+            <button
+              onClick={() => sendBulkInvites(date, time, guests)}
+              disabled={!canSend}
+              title="Send slot-locked invites to everyone in this group without an active invite"
+              className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3.5 py-2 bg-foreground text-background hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Mail className="h-3.5 w-3.5" />
+              {sending
+                ? "Sending…"
+                : eligibleCount === 0
+                  ? "All invited"
+                  : `Send invites to all (${eligibleCount})`}
+            </button>
+          )}
+        </div>
+
+        {/* Guests in this time-group */}
+        <ul className="divide-y divide-border">
+          {guests.map((c) => {
+            const invStatus = inviteStatusFor(c.id);
+            const party = c.last_party_size ?? guestsFor(c.id);
+            return (
+              <li
+                key={c.id}
+                className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-5 py-3.5 hover:bg-muted/30 transition"
+              >
+                {/* Guest (clickable → opens drawer) */}
+                <button onClick={() => setSelectedId(c.id)} className="text-left min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium truncate">{c.full_name}</span>
+                    {!c.messenger_psid && (
+                      <span
+                        title="No Messenger ID — this invite can't auto-send; copy the link to share it manually"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-destructive/10 text-destructive text-[10px] font-medium"
+                      >
+                        <AlertCircle className="h-3 w-3" /> no auto-send
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-0.5 truncate flex items-center gap-3 flex-wrap">
+                    {c.email && <span className="inline-flex items-center gap-1"><Mail className="h-3 w-3" /> {c.email}</span>}
+                    {c.phone && <span className="inline-flex items-center gap-1"><Phone className="h-3 w-3" /> {c.phone}</span>}
+                    {c.facebook_handle && <span className="inline-flex items-center gap-1"><Facebook className="h-3 w-3" /> {c.facebook_handle.slice(0, 14)}{c.facebook_handle.length > 14 ? "…" : ""}</span>}
+                    {c.instagram_handle && <span className="inline-flex items-center gap-1"><Instagram className="h-3 w-3" /> {c.instagram_handle}</span>}
+                  </div>
+                </button>
+
+                {/* Party · status · per-guest action */}
+                <div className="flex items-center gap-4 sm:gap-5 shrink-0">
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    <span className="uppercase tracking-wider text-[10px] mr-1">Party</span>
+                    {party != null ? (
+                      <span className="text-foreground font-medium">{party}</span>
+                    ) : (
+                      <span className="text-muted-foreground/60">—</span>
+                    )}
+                  </span>
+                  <InviteStatusPill status={invStatus} />
+                  {invStatus.state === "active" ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyInviteLink(
+                          c.id,
+                          invStatus.invite.token,
+                          invStatus.invite.channel as "dine_in" | "pickup",
+                        );
+                      }}
+                      title="Copy this guest's active invite link"
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-1.5 border border-border hover:bg-muted transition"
+                    >
+                      {copiedContactId === c.id ? (
+                        <><CheckCircle2 className="h-3.5 w-3.5" /> Copied!</>
+                      ) : (
+                        <><Mail className="h-3.5 w-3.5" /> Copy link</>
+                      )}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setInviteFor(c);
+                      }}
+                      title="Generate one invite for just this guest"
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-1.5 border border-border hover:bg-muted transition"
+                    >
+                      <Mail className="h-3.5 w-3.5" /> Generate
+                    </button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
       {/* Summary strip */}
@@ -3970,187 +4134,170 @@ function WaitlistTab() {
           bulk "Send invites" button that locks every guest to that slot. */}
       {loading ? (
         <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">Loading waitlist…</div>
-      ) : grouped.length === 0 ? (
+      ) : allWaitlist.length === 0 ? (
         <div className="bg-card border border-border rounded-2xl shadow-sm">
           <EmptyState
-            icon={allWaitlist.length === 0 ? Clock : Search}
-            title={allWaitlist.length === 0 ? "No one on the waitlist" : "No matches"}
-            hint={allWaitlist.length === 0 ? "Waitlist guests appear here as they come in from Messenger." : "Try a different search."}
+            icon={Clock}
+            title="No one on the waitlist"
+            hint="Waitlist guests appear here as they come in from Messenger."
           />
         </div>
-      ) : (
-        <div className="space-y-6">
-          {grouped.map(([date, timeGroups], index) => {
-            const dateTotal = timeGroups.reduce((n, [, g]) => n + g.length, 0);
-            const isExpanded = expandedDates ? expandedDates.has(date) : index === 0;
-            return (
+      ) : query.trim() ? (
+        grouped.length === 0 ? (
+          <div className="bg-card border border-border rounded-2xl shadow-sm">
+            <EmptyState icon={Search} title="No matches" hint="Try a different search." />
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {grouped.map(([date, timeGroups]) => (
               <div key={date} className="space-y-3">
-                {/* Date section header — click to expand/collapse */}
-                <button
-                  type="button"
-                  onClick={() => toggleDate(date)}
-                  className="w-full flex items-center gap-2 px-1 text-left hover:opacity-80 transition"
-                >
+                <div className="flex items-center gap-2 px-1">
                   <CalendarClock className="h-4 w-4 text-muted-foreground" />
                   <h3 className="font-display text-lg font-semibold">
                     {date === UNSCHEDULED
                       ? "Unscheduled"
                       : format(new Date(date + "T00:00:00"), "EEEE, MMMM d")}
                   </h3>
-                  <span className="text-xs text-muted-foreground">
-                    {dateTotal} guest{dateTotal === 1 ? "" : "s"}
-                  </span>
-                  {isExpanded ? (
-                    <ChevronUp className="h-4 w-4 text-muted-foreground ml-auto" />
-                  ) : (
-                    <ChevronDown className="h-4 w-4 text-muted-foreground ml-auto" />
-                  )}
+                </div>
+                {timeGroups.map(([time, guests]) => renderTimeGroup(date, time, guests))}
+              </div>
+            ))}
+          </div>
+        )
+      ) : (
+        <div className="space-y-6">
+          {/* Week navigation */}
+          <div className="flex items-center justify-between px-1">
+            <button
+              type="button"
+              onClick={() => { setWeekOffset((w) => w - 1); setSelectedDate(null); }}
+              className="p-2 rounded-full border border-border hover:bg-muted transition"
+              aria-label="Previous week"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <div className="flex items-center gap-3">
+              <h3 className="font-display text-lg font-semibold">
+                {format(weekDates[0], "MMM d")} – {format(weekDates[4], "MMM d")}
+              </h3>
+              {weekOffset !== 0 && (
+                <button
+                  type="button"
+                  onClick={() => { setWeekOffset(0); setSelectedDate(null); }}
+                  className="text-xs font-semibold rounded-full px-3 py-1 border border-border hover:bg-muted transition"
+                >
+                  Today
                 </button>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => { setWeekOffset((w) => w + 1); setSelectedDate(null); }}
+              className="p-2 rounded-full border border-border hover:bg-muted transition"
+              aria-label="Next week"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
 
-                {isExpanded && timeGroups.map(([time, guests]) => {
-                  const groupKey = `${date}|${time}`;
-                  const slot = resolveSlot(date, time);
-                  const sending = bulkSending.has(groupKey);
-                  const eligibleCount = guests.filter(
-                    (c) => inviteStatusFor(c.id).state !== "active",
-                  ).length;
-                  const requestedSeats = guests.reduce(
-                    (n, c) => n + (c.last_party_size ?? guestsFor(c.id) ?? 0),
-                    0,
-                  );
-                  const remaining = slot ? slot.capacity - slot.seats_taken : null;
-                  const canSend = !!slot && slot.is_open && eligibleCount > 0 && !sending;
-                  const noSlot = date !== UNSCHEDULED && time !== UNSCHEDULED && !slot;
-
-                  return (
-                    <div key={groupKey} className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-                      {/* Group header — time, demand, and the bulk action */}
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-between px-5 py-3 bg-muted/40 border-b border-border">
-                        <div className="flex items-center gap-2.5 flex-wrap text-sm">
-                          <span className="font-display font-semibold tabular-nums">
-                            {time === UNSCHEDULED ? "No time set" : formatSlotTime12h(time)}
+          {/* Week-strip calendar — Wed–Sun, horizontally scrollable on mobile */}
+          <div className="flex sm:grid sm:grid-cols-5 gap-2 sm:gap-3 overflow-x-auto pb-1">
+            {weekDates.map((d) => {
+              const dateKey = format(d, "yyyy-MM-dd");
+              const isToday = dateKey === localToday();
+              const dayTotal = [...(byDateTime.get(dateKey)?.values() ?? [])].reduce(
+                (n, arr) => n + arr.length,
+                0,
+              );
+              return (
+                <button
+                  key={dateKey}
+                  type="button"
+                  onClick={() => setSelectedDate((prev) => (prev === dateKey ? null : dateKey))}
+                  className={`min-w-[150px] shrink-0 sm:min-w-0 text-left bg-card border rounded-2xl p-3 shadow-sm transition hover:border-foreground/40 ${
+                    selectedDate === dateKey ? "border-foreground" : "border-border"
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-display text-sm font-semibold">{format(d, "EEE")}</span>
+                    <span className={`text-xs ${isToday ? "text-primary font-semibold" : "text-muted-foreground"}`}>
+                      {isToday ? "Today" : format(d, "MMM d")}
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {CALENDAR_TIMES.map((t) => {
+                      const guests = guestsAt(dateKey, t);
+                      const slot = resolveSlot(dateKey, t);
+                      const remaining = slot ? slot.capacity - slot.seats_taken : null;
+                      const seats = guests.reduce(
+                        (n, c) => n + (c.last_party_size ?? guestsFor(c.id) ?? 0),
+                        0,
+                      );
+                      let dot = "bg-muted-foreground/20";
+                      if (guests.length > 0) {
+                        if (remaining == null) dot = "bg-mustard";
+                        else if (seats > remaining) dot = "bg-destructive";
+                        else dot = "bg-primary";
+                      }
+                      return (
+                        <div key={t} className="flex items-center justify-between text-xs">
+                          <span className="text-muted-foreground tabular-nums">{formatSlotTime12h(t)}</span>
+                          <span className="flex items-center gap-1.5 tabular-nums">
+                            {guests.length > 0 && guests.length}
+                            <span className={`h-2 w-2 rounded-full ${dot}`} />
                           </span>
-                          <span className="text-xs text-muted-foreground">
-                            {guests.length} guest{guests.length === 1 ? "" : "s"}
-                          </span>
-                          {requestedSeats > 0 && (
-                            <span className="text-xs text-muted-foreground">
-                              · {requestedSeats} seat{requestedSeats === 1 ? "" : "s"} requested
-                            </span>
-                          )}
-                          {remaining != null && (
-                            <span className={`text-xs ${requestedSeats > remaining ? "text-destructive font-medium" : "text-muted-foreground"}`}>
-                              · {remaining} open in slot
-                            </span>
-                          )}
                         </div>
-                        {date === UNSCHEDULED || time === UNSCHEDULED ? (
-                          <span className="text-[11px] text-muted-foreground">Capture a date &amp; time to bulk-invite</span>
-                        ) : noSlot ? (
-                          <span className="text-[11px] text-muted-foreground" title="No open time slot matches this date and time">
-                            No open slot — create one in Slots
-                          </span>
-                        ) : (
-                          <button
-                            onClick={() => sendBulkInvites(date, time, guests)}
-                            disabled={!canSend}
-                            title="Send slot-locked invites to everyone in this group without an active invite"
-                            className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3.5 py-2 bg-foreground text-background hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
-                          >
-                            <Mail className="h-3.5 w-3.5" />
-                            {sending
-                              ? "Sending…"
-                              : eligibleCount === 0
-                                ? "All invited"
-                                : `Send invites to all (${eligibleCount})`}
-                          </button>
-                        )}
-                      </div>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground">
+                    {dayTotal} guest{dayTotal === 1 ? "" : "s"}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
 
-                      {/* Guests in this time-group */}
-                      <ul className="divide-y divide-border">
-                        {guests.map((c) => {
-                          const invStatus = inviteStatusFor(c.id);
-                          const party = c.last_party_size ?? guestsFor(c.id);
-                          return (
-                            <li
-                              key={c.id}
-                              className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-5 py-3.5 hover:bg-muted/30 transition"
-                            >
-                              {/* Guest (clickable → opens drawer) */}
-                              <button onClick={() => setSelectedId(c.id)} className="text-left min-w-0 flex-1">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="font-medium truncate">{c.full_name}</span>
-                                  {!c.messenger_psid && (
-                                    <span
-                                      title="No Messenger ID — this invite can't auto-send; copy the link to share it manually"
-                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-destructive/10 text-destructive text-[10px] font-medium"
-                                    >
-                                      <AlertCircle className="h-3 w-3" /> no auto-send
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-xs text-muted-foreground mt-0.5 truncate flex items-center gap-3 flex-wrap">
-                                  {c.email && <span className="inline-flex items-center gap-1"><Mail className="h-3 w-3" /> {c.email}</span>}
-                                  {c.phone && <span className="inline-flex items-center gap-1"><Phone className="h-3 w-3" /> {c.phone}</span>}
-                                  {c.facebook_handle && <span className="inline-flex items-center gap-1"><Facebook className="h-3 w-3" /> {c.facebook_handle.slice(0, 14)}{c.facebook_handle.length > 14 ? "…" : ""}</span>}
-                                  {c.instagram_handle && <span className="inline-flex items-center gap-1"><Instagram className="h-3 w-3" /> {c.instagram_handle}</span>}
-                                </div>
-                              </button>
-
-                              {/* Party · status · per-guest action */}
-                              <div className="flex items-center gap-4 sm:gap-5 shrink-0">
-                                <span className="text-xs text-muted-foreground tabular-nums">
-                                  <span className="uppercase tracking-wider text-[10px] mr-1">Party</span>
-                                  {party != null ? (
-                                    <span className="text-foreground font-medium">{party}</span>
-                                  ) : (
-                                    <span className="text-muted-foreground/60">—</span>
-                                  )}
-                                </span>
-                                <InviteStatusPill status={invStatus} />
-                                {invStatus.state === "active" ? (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      copyInviteLink(
-                                        c.id,
-                                        invStatus.invite.token,
-                                        invStatus.invite.channel as "dine_in" | "pickup",
-                                      );
-                                    }}
-                                    title="Copy this guest's active invite link"
-                                    className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-1.5 border border-border hover:bg-muted transition"
-                                  >
-                                    {copiedContactId === c.id ? (
-                                      <><CheckCircle2 className="h-3.5 w-3.5" /> Copied!</>
-                                    ) : (
-                                      <><Mail className="h-3.5 w-3.5" /> Copy link</>
-                                    )}
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setInviteFor(c);
-                                    }}
-                                    title="Generate one invite for just this guest"
-                                    className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-1.5 border border-border hover:bg-muted transition"
-                                  >
-                                    <Mail className="h-3.5 w-3.5" /> Generate
-                                  </button>
-                                )}
-                              </div>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  );
-                })}
+          {/* Selected-day detail panel */}
+          {selectedDate && (() => {
+            const entry = grouped.find(([date]) => date === selectedDate);
+            return (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 px-1">
+                  <CalendarClock className="h-4 w-4 text-muted-foreground" />
+                  <h3 className="font-display text-lg font-semibold">
+                    {format(new Date(selectedDate + "T00:00:00"), "EEEE, MMMM d")}
+                  </h3>
+                </div>
+                {!entry ? (
+                  <div className="bg-card border border-border rounded-2xl shadow-sm">
+                    <EmptyState icon={Clock} title="No requests yet" hint="No waitlist guests have requested this date." />
+                  </div>
+                ) : (
+                  entry[1].map(([time, guests]) => renderTimeGroup(selectedDate, time, guests))
+                )}
               </div>
             );
-          })}
+          })()}
+
+          {/* Unscheduled — guests the bot hasn't captured a requested slot for */}
+          {(() => {
+            const entry = grouped.find(([date]) => date === UNSCHEDULED);
+            if (!entry) return null;
+            const total = entry[1].reduce((n, [, g]) => n + g.length, 0);
+            return (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 px-1">
+                  <CalendarClock className="h-4 w-4 text-muted-foreground" />
+                  <h3 className="font-display text-lg font-semibold">Unscheduled</h3>
+                  <span className="text-xs text-muted-foreground">
+                    {total} guest{total === 1 ? "" : "s"}
+                  </span>
+                </div>
+                {entry[1].map(([time, guests]) => renderTimeGroup(UNSCHEDULED, time, guests))}
+              </div>
+            );
+          })()}
         </div>
       )}
 
