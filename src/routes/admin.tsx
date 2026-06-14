@@ -3612,6 +3612,19 @@ function WaitlistTab() {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  // Date sections collapse by default so a long waitlist doesn't force one
+  // giant scroll — null means "not yet initialized", at which point we
+  // default-expand just the soonest date.
+  const [expandedDates, setExpandedDates] = useState<Set<string> | null>(null);
+  const toggleDate = (date: string) => {
+    setExpandedDates((prev) => {
+      const next = new Set(prev ?? []);
+      if (next.has(date)) next.delete(date);
+      else next.add(date);
+      return next;
+    });
+  };
+
   // Open, upcoming slots keyed by `${date}|${HH:MM}` so a guest's requested
   // date+time resolves to the real time_slot a bulk invite locks onto.
   const [slots, setSlots] = useState<TimeSlot[]>([]);
@@ -3844,6 +3857,14 @@ function WaitlistTab() {
       );
   }, [searched]);
 
+  // Default-expand just the soonest date so admins land on something useful
+  // without every section being collapsed on first load.
+  useEffect(() => {
+    if (expandedDates === null && grouped.length > 0) {
+      setExpandedDates(new Set([grouped[0][0]]));
+    }
+  }, [grouped, expandedDates]);
+
   // Bulk-issue slot-locked dine-in invites for everyone in a group who
   // doesn't already have an active invite. One multi-row insert; the n8n
   // sender fires per row off platform_id (Messenger PSID), so this is the
@@ -3959,12 +3980,17 @@ function WaitlistTab() {
         </div>
       ) : (
         <div className="space-y-6">
-          {grouped.map(([date, timeGroups]) => {
+          {grouped.map(([date, timeGroups], index) => {
             const dateTotal = timeGroups.reduce((n, [, g]) => n + g.length, 0);
+            const isExpanded = expandedDates ? expandedDates.has(date) : index === 0;
             return (
               <div key={date} className="space-y-3">
-                {/* Date section header */}
-                <div className="flex items-center gap-2 px-1">
+                {/* Date section header — click to expand/collapse */}
+                <button
+                  type="button"
+                  onClick={() => toggleDate(date)}
+                  className="w-full flex items-center gap-2 px-1 text-left hover:opacity-80 transition"
+                >
                   <CalendarClock className="h-4 w-4 text-muted-foreground" />
                   <h3 className="font-display text-lg font-semibold">
                     {date === UNSCHEDULED
@@ -3974,9 +4000,14 @@ function WaitlistTab() {
                   <span className="text-xs text-muted-foreground">
                     {dateTotal} guest{dateTotal === 1 ? "" : "s"}
                   </span>
-                </div>
+                  {isExpanded ? (
+                    <ChevronUp className="h-4 w-4 text-muted-foreground ml-auto" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4 text-muted-foreground ml-auto" />
+                  )}
+                </button>
 
-                {timeGroups.map(([time, guests]) => {
+                {isExpanded && timeGroups.map(([time, guests]) => {
                   const groupKey = `${date}|${time}`;
                   const slot = resolveSlot(date, time);
                   const sending = bulkSending.has(groupKey);
