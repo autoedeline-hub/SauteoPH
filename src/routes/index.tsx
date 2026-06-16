@@ -3128,7 +3128,7 @@ function DineInReservationView({
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value.slice(0, 500))}
-              placeholder="Allergies, special requests, dietary notes…"
+              placeholder="Any message for the Sautéo team? Leave it here…"
               rows={2}
               className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition resize-none"
             />
