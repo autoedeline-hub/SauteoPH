@@ -2,11 +2,10 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
-  fetchSiteRules,
-  saveSiteRules,
-  type SiteRule,
-  type SiteContentKey,
-} from "@/integrations/site-content";
+  fetchBookingRules,
+  type BookingRule,
+  type RuleSection,
+} from "@/lib/siteContent";
 import { addDays, format, subDays, subMonths } from "date-fns";
 import { inviteLinkPath } from "@/lib/invite";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
@@ -57,7 +56,9 @@ import {
   ShieldCheck,
   ShieldAlert,
   ExternalLink,
-  ScrollText,
+  FileText,
+  RefreshCw,
+  Save,
 } from "lucide-react";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
@@ -100,7 +101,7 @@ const REFUND_LABEL: Record<string, string> = {
   forfeited: "Forfeited",
 };
 
-type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge" | "agreement";
+type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge" | "rules";
 
 // Nav order is the *user-facing journey*, top → bottom: situational
 // awareness (Overview) → core catalog (Menu) → in-flight customer flow
@@ -117,7 +118,7 @@ const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?:
   { key: "seniorids", label: "Senior IDs", icon: ShieldCheck },
   { key: "escalations", label: "Escalation", icon: AlertCircle },
   { key: "knowledge", label: "FAQs", icon: BookOpen },
-  { key: "agreement", label: "Agreement", icon: ScrollText },
+  { key: "rules", label: "Rules", icon: FileText },
 ];
 
 const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
@@ -131,7 +132,7 @@ const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   slots: { title: "Time Slot", subtitle: "Open, close, and adjust capacity for each service." },
   escalations: { title: "Escalation", subtitle: "Messenger questions the chatbot couldn't answer — review and resolve here." },
   knowledge: { title: "FAQs", subtitle: "Answers the chatbot uses when guests message Sautéo." },
-  agreement: { title: "Agreement", subtitle: "Edit the dine-in and pick-up rules guests see before booking." },
+  rules: { title: "Rules", subtitle: "Edit the dine-in and pick-up rules guests see before booking." },
 };
 
 const FAQ_TOPICS = [
@@ -264,7 +265,7 @@ function AdminPage() {
           {tab === "menu" && <MenuTab />}
           {tab === "slots" && <SlotsTab />}
           {tab === "knowledge" && <KnowledgeTab />}
-          {tab === "agreement" && <AgreementTab />}
+          {tab === "rules" && <RulesTab />}
         </div>
       </main>
     </div>
@@ -6866,118 +6867,253 @@ function PipelineCollapsedLane({
   );
 }
 
-const AGREEMENT_SECTIONS: Record<SiteContentKey, { label: string; ids: string[] }[]> = {
-  dinein_rules: [
-    { label: "Reservation Rules", ids: ["available_days", "invite_only", "full_payment", "no_refunds"] },
-    { label: "Dining Guidelines", ids: ["arrive_on_time", "party_size", "intimate_setting"] },
-  ],
-  pickup_rules: [
-    { label: "Pick-Up Rules", ids: ["cutoff", "available_days", "full_payment", "no_refunds", "be_on_time"] },
-  ],
-};
+/* ============ Booking Rules ============ */
+function RulesTab() {
+  type Section = { key: RuleSection; label: string };
+  const SECTIONS: Section[] = [
+    { key: "dinein", label: "Dine-in Rules" },
+    { key: "pickup", label: "Pickup Rules" },
+  ];
 
-function AgreementTab() {
+  const [activeKey, setActiveKey] = useState<RuleSection>("dinein");
+  const [rules, setRules] = useState<BookingRule[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [draftIds, setDraftIds] = useState<string[]>([]);
+
+  const load = useCallback(async (section: RuleSection) => {
+    setLoading(true);
+    const data = await fetchBookingRules(section);
+    setRules(data);
+    setDraftIds([]);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(activeKey); }, [activeKey, load]);
+
+  const activeSection = SECTIONS.find((s) => s.key === activeKey)!;
+  const groupLabels = useMemo(
+    () => [...new Set(rules.map((r) => r.group_label))],
+    [rules],
+  );
+  const nextSortOrder = rules.length > 0 ? Math.max(...rules.map((r) => r.sort_order)) + 1 : 0;
+
   return (
-    <div className="space-y-8">
-      <AgreementEditor pageKey="dinein_rules" heading="Dine-In agreement" />
-      <AgreementEditor pageKey="pickup_rules" heading="Pick-Up agreement" />
+    <div className="space-y-6">
+      {/* Sub-tab switcher */}
+      <div className="flex rounded-lg border border-border overflow-hidden text-sm w-fit">
+        {SECTIONS.map((s) => (
+          <button
+            key={s.key}
+            onClick={() => setActiveKey(s.key)}
+            className={`px-4 py-2 transition ${
+              activeKey === s.key
+                ? "bg-foreground text-background font-medium"
+                : "text-muted-foreground hover:bg-muted/50"
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-muted-foreground text-sm py-12 justify-center">
+          <RefreshCw className="w-4 h-4 animate-spin" />
+          Loading…
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            These rules are shown to guests on the{" "}
+            <span className="text-foreground font-medium">{activeSection.label.toLowerCase()}</span>{" "}
+            booking page. Each rule has its own Save — edits to one don't affect the others.
+          </p>
+
+          {rules.length === 0 && draftIds.length === 0 ? (
+            <EmptyState
+              icon={FileText}
+              title="No rules yet"
+              hint='Click "Add rule" to create the first rule shown on this booking page.'
+            />
+          ) : (
+            rules.map((rule) => (
+              <RuleCard
+                key={rule.id}
+                rule={rule}
+                groupLabels={groupLabels}
+                onSaved={() => load(activeKey)}
+                onDeleted={() => load(activeKey)}
+              />
+            ))
+          )}
+
+          {draftIds.map((id) => (
+            <RuleCard
+              key={id}
+              rule={{
+                id,
+                section: activeKey,
+                group_label: groupLabels[0] ?? "General",
+                title: "",
+                body: "",
+                sort_order: nextSortOrder,
+              }}
+              groupLabels={groupLabels}
+              isNew
+              onSaved={() => load(activeKey)}
+              onDeleted={() => setDraftIds((prev) => prev.filter((d) => d !== id))}
+            />
+          ))}
+
+          <button
+            onClick={() => setDraftIds((prev) => [...prev, `draft-${prev.length}-${Date.now()}`])}
+            className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition"
+          >
+            <Plus className="h-4 w-4" />
+            Add rule
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function AgreementEditor({ pageKey, heading }: { pageKey: SiteContentKey; heading: string }) {
-  const [draft, setDraft] = useState<SiteRule[] | null>(null);
+function RuleCard({
+  rule, groupLabels, isNew, onSaved, onDeleted,
+}: {
+  rule: BookingRule;
+  groupLabels: string[];
+  isNew?: boolean;
+  onSaved: () => void;
+  onDeleted: () => void;
+}) {
+  const [title, setTitle] = useState(rule.title);
+  const [body, setBody] = useState(rule.body);
+  const [groupLabel, setGroupLabel] = useState(rule.group_label);
+  const [sortOrder, setSortOrder] = useState(String(rule.sort_order));
   const [saving, setSaving] = useState(false);
-  const [savedAt, setSavedAt] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+  const datalistId = `rule-group-${rule.id}`;
 
-  useEffect(() => {
-    let alive = true;
-    fetchSiteRules(pageKey).then((r) => {
-      if (alive) setDraft(r);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [pageKey]);
-
-  const update = (id: string, field: "title" | "body", value: string) => {
-    setDraft((prev) =>
-      prev ? prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)) : prev,
-    );
-    setSavedAt(null);
-    setErr(null);
-  };
-
-  const save = async () => {
-    if (!draft) return;
+  async function handleSave() {
+    const t = title.trim();
+    const b = body.trim();
+    if (!t || !b) {
+      setFeedback({ ok: false, msg: "Title and body are required." });
+      return;
+    }
     setSaving(true);
-    setErr(null);
-    const { error } = await saveSiteRules(pageKey, draft);
+    setFeedback(null);
+    const payload = {
+      section: rule.section,
+      group_label: groupLabel.trim() || "General",
+      title: t,
+      body: b,
+      sort_order: Number(sortOrder) || 0,
+    };
+    const { error } = isNew
+      ? await supabase.from("booking_rules" as any).insert(payload)
+      : await supabase.from("booking_rules" as any).update(payload).eq("id", rule.id);
     setSaving(false);
-    if (error) setErr(error);
-    else setSavedAt(new Date().toLocaleString());
-  };
-
-  if (!draft) {
-    return (
-      <div className="bg-card border border-border rounded-2xl py-12 text-center text-muted-foreground text-sm shadow-sm">
-        Loading {heading}…
-      </div>
-    );
+    if (error) {
+      setFeedback({ ok: false, msg: (error as any).message });
+      return;
+    }
+    if (isNew) {
+      onSaved();
+    } else {
+      setFeedback({ ok: true, msg: "Saved." });
+      setTimeout(() => setFeedback(null), 2500);
+      onSaved();
+    }
   }
 
-  const byId = Object.fromEntries(draft.map((r) => [r.id, r]));
+  async function handleDelete() {
+    if (isNew) {
+      onDeleted();
+      return;
+    }
+    if (!confirm(`Delete "${rule.title || "this rule"}"?`)) return;
+    setSaving(true);
+    const { error } = await supabase.from("booking_rules" as any).delete().eq("id", rule.id);
+    setSaving(false);
+    if (error) {
+      setFeedback({ ok: false, msg: (error as any).message });
+      return;
+    }
+    onDeleted();
+  }
 
   return (
-    <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-5">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="font-display text-xl">{heading}</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Text only — icons and order stay fixed. Changes show on the guest page after save.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {savedAt && <span className="text-xs text-muted-foreground">Saved {savedAt}</span>}
-          {err && <span className="text-xs text-red-500">{err}</span>}
-          <button
-            onClick={save}
-            disabled={saving}
-            className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </div>
+    <div className="rounded-2xl border border-border bg-card p-5 space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => { setTitle(e.target.value); setFeedback(null); }}
+          className="w-full bg-transparent text-sm font-semibold text-foreground placeholder-muted-foreground border-b border-border focus:border-foreground focus:outline-none py-0.5 transition-colors"
+          placeholder="Rule title"
+        />
+        <input
+          type="text"
+          list={datalistId}
+          value={groupLabel}
+          onChange={(e) => { setGroupLabel(e.target.value); setFeedback(null); }}
+          className="w-full sm:w-48 bg-muted/40 text-xs text-foreground placeholder-muted-foreground rounded-lg px-2.5 py-1 border border-border focus:border-foreground focus:outline-none transition-colors"
+          placeholder="Section heading"
+        />
+        <datalist id={datalistId}>
+          {groupLabels.map((g) => <option key={g} value={g} />)}
+        </datalist>
       </div>
+      <textarea
+        value={body}
+        onChange={(e) => { setBody(e.target.value); setFeedback(null); }}
+        rows={3}
+        className="w-full bg-muted/40 text-sm text-foreground placeholder-muted-foreground rounded-lg px-3 py-2 border border-border focus:border-foreground focus:outline-none resize-none transition-colors"
+        placeholder="Rule description shown to guests…"
+      />
+      <div className="flex items-center gap-3">
+        <label className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+          Order
+          <input
+            type="number"
+            step="1"
+            value={sortOrder}
+            onChange={(e) => { setSortOrder(e.target.value); setFeedback(null); }}
+            className="w-16 bg-muted/40 text-sm text-foreground tabular-nums rounded-lg px-2 py-1 border border-border focus:border-foreground focus:outline-none transition-colors"
+          />
+        </label>
 
-      {AGREEMENT_SECTIONS[pageKey].map((section) => (
-        <div key={section.label} className="space-y-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/80">
-            {section.label}
-          </p>
-          {section.ids.map((id) => {
-            const rule = byId[id];
-            if (!rule) return null;
-            return (
-              <div key={id} className="space-y-1.5 border border-border rounded-xl p-4">
-                <input
-                  type="text"
-                  value={rule.title}
-                  onChange={(e) => update(id, "title", e.target.value)}
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
-                />
-                <textarea
-                  value={rule.body}
-                  onChange={(e) => update(id, "body", e.target.value)}
-                  rows={3}
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-muted-foreground focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition resize-y"
-                />
-              </div>
-            );
-          })}
-        </div>
-      ))}
+        <div className="flex-1" />
+
+        {feedback && (
+          <span className={`text-sm font-medium ${feedback.ok ? "text-emerald-600" : "text-red-500"}`}>
+            {feedback.ok ? "✓ " : "✗ "}{feedback.msg}
+          </span>
+        )}
+
+        <button
+          onClick={handleDelete}
+          disabled={saving}
+          className="inline-flex items-center gap-1.5 text-destructive hover:bg-destructive/10 rounded-lg px-3 py-2 text-sm disabled:opacity-50"
+        >
+          <Trash2 className="h-4 w-4" /> {isNew ? "Cancel" : "Delete"}
+        </button>
+
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-2 px-5 py-2 rounded-lg bg-foreground hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed text-background text-sm font-semibold transition-opacity"
+        >
+          {saving ? (
+            <RefreshCw className="w-4 h-4 animate-spin" />
+          ) : (
+            <Save className="w-4 h-4" />
+          )}
+          {saving ? "Saving…" : isNew ? "Create" : "Save"}
+        </button>
+      </div>
     </div>
   );
 }
