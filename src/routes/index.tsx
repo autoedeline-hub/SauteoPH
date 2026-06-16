@@ -3348,6 +3348,30 @@ function PickupReservationView({
   // check has a sane minimum on step 1 (cart is built on step 2).
   const numberOfMeals = Math.max(cartUnitCount, 1);
   const [notes, setNotes] = useState("");
+  const [crmHint, setCrmHint] = useState<string | null>(null);
+
+  // When the customer types a valid email on the Info step, look them up
+  // in crm_contacts and pre-fill name + phone if those fields are blank.
+  // Fields stay fully editable — this is convenience, not a lock.
+  const lookupByEmail = useCallback(async (email: string) => {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return;
+    const { data } = await supabase
+      .from("crm_contacts")
+      .select("full_name, phone")
+      .eq("email", email.trim().toLowerCase())
+      .maybeSingle();
+    if (!data) return;
+    if (data.full_name && !customerName.trim()) {
+      setCustomerName(data.full_name);
+    }
+    if (data.phone && !customerPhone.trim()) {
+      setCustomerPhone(data.phone);
+    }
+    if (data.full_name || data.phone) {
+      setCrmHint("We found your details — feel free to edit anything.");
+      setTimeout(() => setCrmHint(null), 5000);
+    }
+  }, [customerName, customerPhone]);
 
   // QR display fallback — flips to true when /maya-qr.png 404s.
   const [qrImgError, setQrImgError] = useState(false);
@@ -3557,6 +3581,7 @@ function PickupReservationView({
                   type="email"
                   value={customerEmail}
                   onChange={(e) => setCustomerEmail(e.target.value)}
+                  onBlur={() => lookupByEmail(customerEmail)}
                   placeholder="juan@example.com"
                   className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
                 />
@@ -3574,6 +3599,9 @@ function PickupReservationView({
                   className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
                 />
               </div>
+              {crmHint && (
+                <p className="sm:col-span-2 text-xs text-primary mt-1">{crmHint}</p>
+              )}
               <div className="sm:col-span-2">
                 <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
                   Notes (optional)
