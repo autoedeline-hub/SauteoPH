@@ -3095,10 +3095,8 @@ function DineInReservationView({
             <input
               type="text"
               value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-              placeholder="Juan Dela Cruz"
-              maxLength={120}
-              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+              readOnly
+              className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm cursor-default select-text"
             />
           </div>
           <div>
@@ -3108,9 +3106,8 @@ function DineInReservationView({
             <input
               type="email"
               value={customerEmail}
-              onChange={(e) => setCustomerEmail(e.target.value)}
-              placeholder="juan@example.com"
-              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+              readOnly
+              className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm cursor-default select-text"
             />
           </div>
           <div>
@@ -3120,10 +3117,8 @@ function DineInReservationView({
             <input
               type="tel"
               value={customerPhone}
-              onChange={(e) => setCustomerPhone(e.target.value)}
-              placeholder="+63 917 000 0000"
-              maxLength={32}
-              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+              readOnly
+              className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm cursor-default select-text"
             />
           </div>
           <div className="sm:col-span-2">
