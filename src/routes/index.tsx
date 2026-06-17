@@ -4145,10 +4145,16 @@ function ClaimantCard({
             )}
           </div>
         )}
+        {autoFill.state === "off" && (
+          <div className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+            <AlertTriangle className="h-3.5 w-3.5" />
+            Auto-scan is not available — please type the details below manually.
+          </div>
+        )}
         {autoFill.state === "failed" && (
           <div className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
             <AlertTriangle className="h-3.5 w-3.5" />
-            Couldn't read the ID automatically — please type the fields manually.
+            Couldn't read the ID — please type the fields manually.
           </div>
         )}
       </div>
