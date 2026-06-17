@@ -3970,14 +3970,72 @@ function ClaimantCard({
     issuedMissing && "Date of issue",
     photoMissing && "ID photo",
   ].filter(Boolean) as string[];
-  // Subtle red ring on inputs whose value is empty. Only kicks in once the
-  // user has interacted (started a photo upload OR typed anywhere), so the
-  // form doesn't look angry the moment it opens.
   // Fields only appear once the AI has finished (filled/off/failed) —
   // before that the card shows only the photo upload section.
   const showFields = autoFill.state !== "idle" && autoFill.state !== "loading";
   const hasInteracted = showFields;
   const errorRing = "border-destructive/60 focus:border-destructive focus:ring-destructive/20";
+
+  // ── Back-side photo ──────────────────────────────────────────────────────
+  // State lives here (not in the parent) because the back photo is only
+  // needed for field-merging; the parent never stores it.
+  const [backPhotoFile, setBackPhotoFile] = useState<File | null>(null);
+  const [backPhotoUrl, setBackPhotoUrl] = useState<string | null>(null);
+  const [backAutoFill, setBackAutoFill] = useState<AutoFillStatus>({ state: "idle" });
+  const backExtractAbort = useRef<AbortController | null>(null);
+  // Always read the latest claimant values when merging — the async AI call
+  // takes ~2 s so `claimant` prop could drift if the user edits a field.
+  const claimantRef = useRef(claimant);
+  useEffect(() => { claimantRef.current = claimant; }, [claimant]);
+  // Abort any in-flight back-side AI call on unmount.
+  useEffect(() => () => { backExtractAbort.current?.abort(); }, []);
+
+  const backFileInputId = `claimant-${index}-back-photo`;
+
+  const onBackPhotoChange = (file: File | null) => {
+    setBackPhotoUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return file ? URL.createObjectURL(file) : null;
+    });
+    setBackPhotoFile(file);
+    backExtractAbort.current?.abort();
+    if (!file) { setBackAutoFill({ state: "idle" }); return; }
+    const ac = new AbortController();
+    backExtractAbort.current = ac;
+    setBackAutoFill({ state: "loading" });
+    (async () => {
+      let result: ExtractIdResult;
+      try {
+        result = await extractIdFromPhoto(file, ac.signal);
+      } catch (e) {
+        if ((e as DOMException)?.name === "AbortError") return;
+        setBackAutoFill({ state: "failed" });
+        return;
+      }
+      if (ac.signal.aborted) return;
+      if (!result.available) { setBackAutoFill({ state: "off" }); return; }
+      // Merge: only fill fields that the front scan left empty.
+      const cur = claimantRef.current;
+      onChange({
+        fullName:    cur.fullName.trim()    ? cur.fullName    : result.full_name,
+        idNumber:    cur.idNumber.trim()    ? cur.idNumber    : result.id_number,
+        address:     cur.address.trim()     ? cur.address     : result.address,
+        dateOfBirth: cur.dateOfBirth.trim() ? cur.dateOfBirth : result.date_of_birth,
+        age:         cur.age.trim()         ? cur.age         : result.age,
+        sex:         cur.sex.trim()         ? cur.sex         : result.sex,
+        dateOfIssue: cur.dateOfIssue.trim() ? cur.dateOfIssue : result.date_of_issue,
+      });
+      setBackAutoFill({ state: "filled", confidence: result.confidence });
+    })();
+  };
+
+  // Only prompt for back side when AI read the front successfully but some
+  // required fields are still empty (data is on the back of the card).
+  const showBackSidePrompt =
+    showFields &&
+    autoFill.state === "filled" &&
+    (nameMissing || ageMissing || dobMissing || issuedMissing) &&
+    backAutoFill.state === "idle";
 
   return (
     <div className="border border-border rounded-xl p-4 bg-background space-y-3">
@@ -4098,6 +4156,7 @@ function ClaimantCard({
       {/* Form fields — only appear after AI finishes (filled / off / failed).
           While AI is loading the card intentionally stays compact. */}
       {showFields && (
+        <>
         <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
           <div className="col-span-2 sm:col-span-4">
             <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
@@ -4195,6 +4254,93 @@ function ClaimantCard({
             />
           </div>
         </div>
+
+        {/* ── Back-side prompt ─────────────────────────────────────────────
+            Appears only when AI read the front but fields are still empty.
+            Stays hidden if everything filled, or if AI wasn't available. */}
+        {showBackSidePrompt && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 space-y-2">
+            <p className="text-xs font-medium text-amber-800">
+              Some details weren't found on the front. Add the back of your ID to fill them in automatically.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <label
+                htmlFor={`${backFileInputId}-camera`}
+                className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold bg-foreground text-background hover:opacity-90 rounded-full px-3 py-2 transition"
+              >
+                <Camera className="h-3.5 w-3.5" />
+                Take back
+              </label>
+              <input
+                id={`${backFileInputId}-camera`}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={(e) => onBackPhotoChange(e.target.files?.[0] ?? null)}
+                className="hidden"
+              />
+              <label
+                htmlFor={backFileInputId}
+                className="inline-flex items-center gap-2 cursor-pointer text-xs font-semibold bg-muted hover:bg-muted/70 rounded-full px-3 py-2 transition"
+              >
+                <Upload className="h-3.5 w-3.5" />
+                Upload back
+              </label>
+              <input
+                id={backFileInputId}
+                type="file"
+                accept="image/*"
+                onChange={(e) => onBackPhotoChange(e.target.files?.[0] ?? null)}
+                className="hidden"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Back-side photo preview + AI status */}
+        {backPhotoFile && (
+          <div className="flex items-start gap-3">
+            {backPhotoUrl && (
+              <div className="relative h-12 w-12 rounded-lg overflow-hidden border border-border shrink-0">
+                <img src={backPhotoUrl} alt="ID back" className="h-full w-full object-cover" />
+              </div>
+            )}
+            <div className="flex-1 min-w-0 space-y-1">
+              <p className="text-xs text-muted-foreground truncate">{backPhotoFile.name}</p>
+              {backAutoFill.state === "loading" && (
+                <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Reading back of ID…
+                </div>
+              )}
+              {backAutoFill.state === "filled" && (
+                <div className="inline-flex items-center gap-2 text-xs text-primary">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Back filled — missing fields updated above.
+                  {backAutoFill.confidence > 0 && (
+                    <span className="text-muted-foreground">
+                      ({Math.round(backAutoFill.confidence * 100)}%)
+                    </span>
+                  )}
+                </div>
+              )}
+              {(backAutoFill.state === "failed" || backAutoFill.state === "off") && (
+                <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Couldn't read back — fill remaining fields manually.
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => onBackPhotoChange(null)}
+                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition"
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        )}
+        </>
       )}
     </div>
   );
