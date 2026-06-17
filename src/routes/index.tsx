@@ -1542,14 +1542,9 @@ function VariantSelectModal({
     return () => window.clearTimeout(t);
   }, [showAdded, addedNonce]);
 
-  // When a new item is opened, default the accordion to its first group
-  // (only relevant for items whose variants build 2+ groups; otherwise
-  // openGroup is unused).
   useEffect(() => {
     if (!item) return;
-    const vs = item.variants ?? [];
-    const gs = buildVariantGroups(vs);
-    setOpenGroup(gs.length >= 2 ? gs[0].name : null);
+    setOpenGroup(null);
   }, [item]);
 
   // Toggle a variant's selection. As a side effect, opens the accordion
@@ -2704,7 +2699,6 @@ function DineInReservationView({
   const [customerEmail, setCustomerEmail] = useState(invite?.customerEmail ?? "");
   const [customerPhone, setCustomerPhone] = useState(invite?.customerPhone ?? "");
   const [groupSize, setGroupSize] = useState<number>(invite?.groupSize ?? 2);
-  const [notes, setNotes] = useState("");
 
   // QR display fallback — flips to true when /maya-qr.png 404s so the
   // payment card still renders gracefully without the image.
@@ -2807,14 +2801,9 @@ function DineInReservationView({
       }
     }
 
-    const userNote = notes.trim();
-    const variantNote = variantDetailLines.length
-      ? `Variants: ${variantDetailLines.join("; ")}`
-      : "";
-    const combinedNotes = [userNote, variantNote]
-      .filter(Boolean)
-      .join(" | ")
-      .slice(0, 500);
+    const combinedNotes = variantDetailLines.length
+      ? `Variants: ${variantDetailLines.join("; ")}`.slice(0, 500)
+      : null;
 
     const payload: Record<string, unknown> = {
       slot_id: selectedSlot.id,
@@ -2822,7 +2811,7 @@ function DineInReservationView({
       customer_email: customerEmail.trim().toLowerCase(),
       customer_phone: customerPhone.trim(),
       group_size: groupSize,
-      notes: combinedNotes || null,
+      notes: combinedNotes,
       pickup_mode: invite?.channel === "pickup" ? "personal_pickup" : "dine_in",
       items: Object.entries(qtyByMenuItemId).map(([menu_item_id, quantity]) => ({
         menu_item_id,
@@ -3197,21 +3186,6 @@ function DineInReservationView({
               className="w-full bg-muted/50 border border-border rounded-lg px-3 py-2 text-sm cursor-default select-text"
             />
           </div>
-          <div className="sm:col-span-2">
-            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              Notes (optional)
-            </label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value.slice(0, 500))}
-              placeholder="Any message for the Sautéo team? Leave it here…"
-              rows={2}
-              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition resize-none"
-            />
-            <div className="mt-1 text-[10px] text-muted-foreground text-right tabular-nums">
-              {notes.length} / 500
-            </div>
-          </div>
         </div>
       </div>
       )}
@@ -3418,7 +3392,6 @@ function PickupReservationView({
   // Falls back to 1 when the cart is empty so the slot picker's capacity
   // check has a sane minimum on step 1 (cart is built on step 2).
   const numberOfMeals = Math.max(cartUnitCount, 1);
-  const [notes, setNotes] = useState("");
   const [agreedToPolicy, setAgreedToPolicy] = useState(false);
   const [crmHint, setCrmHint] = useState<string | null>(null);
 
@@ -3512,14 +3485,9 @@ function PickupReservationView({
           variantDetailLines.push(`${qty}× ${it.name} — ${vName}`);
       }
     }
-    const userNote = notes.trim();
-    const variantNote = variantDetailLines.length
-      ? `Variants: ${variantDetailLines.join("; ")}`
-      : "";
-    const combinedNotes = [userNote, variantNote]
-      .filter(Boolean)
-      .join(" | ")
-      .slice(0, 500);
+    const combinedNotes = variantDetailLines.length
+      ? `Variants: ${variantDetailLines.join("; ")}`.slice(0, 500)
+      : null;
 
     const payload: Record<string, unknown> = {
       slot_id: selectedSlot.id,
@@ -3527,7 +3495,7 @@ function PickupReservationView({
       customer_email: customerEmail.trim().toLowerCase(),
       customer_phone: customerPhone.trim(),
       group_size: numberOfMeals,
-      notes: combinedNotes || null,
+      notes: combinedNotes,
       // Walk-in pickup only — Lalamove/Grab modes were retired with the
       // 5-step pickup flow. Older bookings may still have other values.
       pickup_mode: "personal_pickup",
@@ -3686,21 +3654,6 @@ function PickupReservationView({
               {crmHint && (
                 <p className="sm:col-span-2 text-xs text-primary mt-1">{crmHint}</p>
               )}
-              <div className="sm:col-span-2">
-                <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                  Notes (optional)
-                </label>
-                <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value.slice(0, 500))}
-                  placeholder="Allergies, special requests…"
-                  rows={2}
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition resize-none"
-                />
-                <div className="mt-1 text-[10px] text-muted-foreground text-right tabular-nums">
-                  {notes.length} / 500
-                </div>
-              </div>
             </div>
           </div>
 
