@@ -101,7 +101,7 @@ const REFUND_LABEL: Record<string, string> = {
   forfeited: "Forfeited",
 };
 
-type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "escalations" | "menu" | "slots" | "knowledge" | "rules";
+type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "schedule" | "escalations" | "menu" | "slots" | "knowledge" | "rules";
 
 // Nav order is the *user-facing journey*, top → bottom: situational
 // awareness (Overview) → core catalog (Menu) → in-flight customer flow
@@ -114,6 +114,7 @@ const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?:
   { key: "bookings", label: "Orders", icon: ShoppingBag },
   { key: "invites", label: "Invites", icon: Mail },
   { key: "contacts", label: "Waitlist", icon: Clock },
+  { key: "schedule", label: "Schedule", icon: CalendarRange },
   { key: "slots", label: "Time Slot", icon: CalendarClock },
   { key: "seniorids", label: "Senior IDs", icon: ShieldCheck },
   { key: "escalations", label: "Escalation", icon: AlertCircle },
@@ -128,7 +129,8 @@ const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   bookings: { title: "Orders", subtitle: "Verify payments and manage incoming reservations." },
   seniorids: { title: "Senior IDs", subtitle: "Review and verify Senior Citizen and PWD ID photos submitted with discount claims." },
   invites: { title: "Invites", subtitle: "Generate one-time booking links for waitlisted customers." },
-  contacts: { title: "Waitlist", subtitle: "Guests waiting for a table, grouped by the date and time they want to book." },
+  contacts: { title: "Waitlist", subtitle: "Unscheduled guests waiting for a table — no requested date captured yet." },
+  schedule: { title: "Schedule", subtitle: "Confirmed and pending bookings grouped by service date and time slot." },
   slots: { title: "Time Slot", subtitle: "Open, close, and adjust capacity for each service." },
   escalations: { title: "Escalation", subtitle: "Messenger questions the chatbot couldn't answer — review and resolve here." },
   knowledge: { title: "FAQs", subtitle: "Answers the chatbot uses when guests message Sautéo." },
@@ -268,6 +270,7 @@ function AdminPage() {
           {tab === "seniorids" && <SeniorIdsTab />}
           {tab === "invites" && <InvitesTab />}
           {tab === "contacts" && <WaitlistTab />}
+          {tab === "schedule" && <ScheduleTab />}
           {tab === "escalations" && <EscalationsTab />}
           {tab === "menu" && <MenuTab />}
           {tab === "slots" && <SlotsTab />}
@@ -3626,19 +3629,6 @@ function WaitlistTab() {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Calendar week-strip state. weekOffset 0 = this operating week (Wed–Sun);
-  // selectedDate (YYYY-MM-DD) drives the inline detail panel below the grid.
-  const [weekOffset, setWeekOffset] = useState(0);
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
-
-  // Open, upcoming slots keyed by `${date}|${HH:MM}` so a guest's requested
-  // date+time resolves to the real time_slot a bulk invite locks onto.
-  const [slots, setSlots] = useState<TimeSlot[]>([]);
-  // Group keys (`${date}|${time}`) with a bulk send in flight — disables that
-  // group's button so a double-click can't double-issue.
-  const [bulkSending, setBulkSending] = useState<Set<string>>(new Set());
-  const [bulkResult, setBulkResult] = useState<string | null>(null);
-
   // When set, opens the InviteCreator dialog prefilled with this contact's
   // info. Generating an invite from here links it back to the contact via
   // booking_invites.contact_id so the Invites tab can group/monitor by guest.
@@ -3656,22 +3646,6 @@ function WaitlistTab() {
 
   const load = useCallback(async () => {
     setLoading(true);
-
-    // Open, upcoming dine-in slots — used to resolve a requested date+time
-    // to a real slot for bulk invites. Waitlist invites are always issued
-    // for the dine-in channel (sendBulkInvites below sets channel:"dine_in"),
-    // so we filter to dine-in here to avoid grabbing a pickup slot that
-    // happens to share the same date+time.
-    const today = localToday();
-    const { data: slotData } = await supabase
-      .from("time_slots")
-      .select("id, channel, slot_date, slot_time, capacity, seats_taken, is_open")
-      .eq("channel", "dine_in")
-      .gte("slot_date", today)
-      .eq("is_open", true)
-      .order("slot_date")
-      .order("slot_time");
-    setSlots((slotData ?? []) as TimeSlot[]);
 
     const { data } = await supabase
       .from("crm_contacts_with_stats")
@@ -3784,26 +3758,6 @@ function WaitlistTab() {
     );
   };
 
-  // Time normalized to HH:MM so requested_time ("HH:MM:SS") and slot_time
-  // ("HH:MM:SS") compare cleanly regardless of trailing seconds.
-  const hhmm = (t: string | null) => (t ? t.slice(0, 5) : "");
-
-  const slotByKey = useMemo(() => {
-    const m = new Map<string, TimeSlot>();
-    for (const s of slots) m.set(`${s.slot_date}|${hhmm(s.slot_time)}`, s);
-    return m;
-  }, [slots]);
-
-  // Resolve a group's requested date+time to the open slot a bulk invite
-  // locks onto. Null for the "Unscheduled" bucket or when no slot exists.
-  const resolveSlot = useCallback(
-    (date: string, time: string): TimeSlot | null =>
-      date === UNSCHEDULED || !time || time === UNSCHEDULED
-        ? null
-        : slotByKey.get(`${date}|${hhmm(time)}`) ?? null,
-    [slotByKey],
-  );
-
   // This tab is single-purpose now — only waitlist guests.
   const allWaitlist = useMemo(
     () => contacts.filter((c) => c.tags.includes("waitlist")),
@@ -3868,120 +3822,17 @@ function WaitlistTab() {
       );
   }, [byDateTime]);
 
-  // 5 dates (Wed–Sun) for the visible calendar week. weekOffset 0 is "this
-  // operating week" — if today is Mon/Tue (the restaurant's days off), that
-  // resolves to the upcoming Wed–Sun rather than the one that just ended.
-  const weekDates = useMemo(() => {
-    const today = new Date(`${localToday()}T00:00:00`);
-    const isoDow = today.getDay() === 0 ? 7 : today.getDay(); // Mon=1..Sun=7
-    const weekStart = addDays(today, 3 - isoDow + weekOffset * 7);
-    return Array.from({ length: 5 }, (_, i) => addDays(weekStart, i));
-  }, [weekOffset]);
-
-  // Guests requesting `time` (HH:MM) on `dateKey`, ignoring seconds in the
-  // stored requested_time so it matches CALENDAR_TIMES.
-  const guestsAt = useCallback(
-    (dateKey: string, time: string): ContactRow[] => {
-      const byTime = byDateTime.get(dateKey);
-      if (!byTime) return [];
-      for (const [key, arr] of byTime) {
-        if (key !== UNSCHEDULED && hhmm(key) === time) return arr;
-      }
-      return [];
-    },
-    [byDateTime],
-  );
-
-  // Bulk-issue slot-locked dine-in invites for everyone in a group who
-  // doesn't already have an active invite. One multi-row insert; the n8n
-  // sender fires per row off platform_id (Messenger PSID), so this is the
-  // "bulk send". Guests without a PSID get a row but no auto-delivery.
-  const sendBulkInvites = useCallback(
-    async (date: string, time: string, groupContacts: ContactRow[]) => {
-      const slot = resolveSlot(date, time);
-      const key = `${date}|${time}`;
-      if (!slot || !slot.is_open) {
-        setBulkResult("No matching open slot for this date/time — open one in the Slots tab first.");
-        return;
-      }
-      const eligible = groupContacts.filter(
-        (c) => inviteStatusFor(c.id).state !== "active",
-      );
-      if (eligible.length === 0) {
-        setBulkResult("Everyone in this group already has an active invite.");
-        return;
-      }
-      setBulkSending((prev) => new Set(prev).add(key));
-      const expiresAt = new Date(Date.now() + 72 * 3600_000).toISOString();
-      const payloads = eligible.map((c) => {
-        const p: Record<string, unknown> = {
-          token: generateInviteToken(),
-          channel: "dine_in",
-          customer_name: c.full_name,
-          customer_email: c.email,
-          customer_phone: c.phone,
-          group_size: c.last_party_size ?? guestsFor(c.id) ?? null,
-          source: c.channels.includes("instagram") ? "instagram" : "messenger",
-          expires_at: expiresAt,
-          contact_id: c.id,
-          slot_id: slot.id,
-        };
-        if (c.messenger_psid) p.platform_id = c.messenger_psid;
-        return p;
-      });
-      const { error } = await supabase
-        .from("booking_invites" as any)
-        .insert(payloads);
-      setBulkSending((prev) => {
-        const n = new Set(prev);
-        n.delete(key);
-        return n;
-      });
-      if (error) {
-        setBulkResult(`Could not send invites: ${error.message}`);
-        return;
-      }
-      const skipped = groupContacts.length - eligible.length;
-      const noPsid = eligible.filter((c) => !c.messenger_psid).length;
-      setBulkResult(
-        `Sent ${eligible.length} invite${eligible.length === 1 ? "" : "s"}` +
-          (skipped ? ` · ${skipped} already active` : "") +
-          (noPsid ? ` · ${noPsid} need a manual link (no Messenger ID)` : "") +
-          ".",
-      );
-      load();
-    },
-    [resolveSlot, inviteStatusFor, guestsFor, load],
-  );
-
-  // Auto-dismiss the bulk-send toast.
-  useEffect(() => {
-    if (!bulkResult) return;
-    const t = window.setTimeout(() => setBulkResult(null), 7000);
-    return () => window.clearTimeout(t);
-  }, [bulkResult]);
-
-  // One time-group card: header with demand info + bulk "Send invites"
-  // button, plus the guest list. Shared by the calendar detail panel, the
-  // Unscheduled section, and the search-mode flat list.
+  // One time-group card: header with guest count + invite actions.
   const renderTimeGroup = (date: string, time: string, guests: ContactRow[]) => {
     const groupKey = `${date}|${time}`;
-    const slot = resolveSlot(date, time);
-    const sending = bulkSending.has(groupKey);
-    const eligibleCount = guests.filter(
-      (c) => inviteStatusFor(c.id).state !== "active",
-    ).length;
     const requestedSeats = guests.reduce(
       (n, c) => n + (c.last_party_size ?? guestsFor(c.id) ?? 0),
       0,
     );
-    const remaining = slot ? slot.capacity - slot.seats_taken : null;
-    const canSend = !!slot && slot.is_open && eligibleCount > 0 && !sending;
-    const noSlot = date !== UNSCHEDULED && time !== UNSCHEDULED && !slot;
 
     return (
       <div key={groupKey} className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-        {/* Group header — time, demand, and the bulk action */}
+        {/* Group header */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-between px-5 py-3 bg-muted/40 border-b border-border">
           <div className="flex items-center gap-2.5 flex-wrap text-sm">
             <span className="font-display font-semibold tabular-nums">
@@ -3995,33 +3846,8 @@ function WaitlistTab() {
                 · {requestedSeats} seat{requestedSeats === 1 ? "" : "s"} requested
               </span>
             )}
-            {remaining != null && (
-              <span className={`text-xs ${requestedSeats > remaining ? "text-destructive font-medium" : "text-muted-foreground"}`}>
-                · {remaining} open in slot
-              </span>
-            )}
           </div>
-          {date === UNSCHEDULED || time === UNSCHEDULED ? (
-            <span className="text-[11px] text-muted-foreground">Capture a date &amp; time to bulk-invite</span>
-          ) : noSlot ? (
-            <span className="text-[11px] text-muted-foreground" title="No open time slot matches this date and time">
-              No open slot — create one in Slots
-            </span>
-          ) : (
-            <button
-              onClick={() => sendBulkInvites(date, time, guests)}
-              disabled={!canSend}
-              title="Send slot-locked invites to everyone in this group without an active invite"
-              className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3.5 py-2 bg-foreground text-background hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Mail className="h-3.5 w-3.5" />
-              {sending
-                ? "Sending…"
-                : eligibleCount === 0
-                  ? "All invited"
-                  : `Send invites to all (${eligibleCount})`}
-            </button>
-          )}
+          <span className="text-[11px] text-muted-foreground">Capture a date &amp; time to generate an invite</span>
         </div>
 
         {/* Guests in this time-group */}
@@ -4130,16 +3956,6 @@ function WaitlistTab() {
         </div>
       </div>
 
-      {/* Bulk-send result toast */}
-      {bulkResult && (
-        <div className="bg-mustard/15 border border-mustard/40 text-charcoal rounded-2xl px-4 py-3 text-sm flex items-center gap-2 shadow-sm">
-          <CheckCircle2 className="h-4 w-4 shrink-0" />
-          <span>{bulkResult}</span>
-        </div>
-      )}
-
-      {/* Waitlist grouped by requested date → time. Each time-group has one
-          bulk "Send invites" button that locks every guest to that slot. */}
       {loading ? (
         <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">Loading waitlist…</div>
       ) : allWaitlist.length === 0 ? (
@@ -4150,164 +3966,25 @@ function WaitlistTab() {
             hint="Waitlist guests appear here as they come in from Messenger."
           />
         </div>
-      ) : query.trim() ? (
-        grouped.length === 0 ? (
-          <div className="bg-card border border-border rounded-2xl shadow-sm">
-            <EmptyState icon={Search} title="No matches" hint="Try a different search." />
-          </div>
-        ) : (
-          <div className="space-y-6">
-            {grouped.map(([date, timeGroups]) => (
-              <div key={date} className="space-y-3">
-                <div className="flex items-center gap-2 px-1">
-                  <CalendarClock className="h-4 w-4 text-muted-foreground" />
-                  <h3 className="font-display text-lg font-semibold">
-                    {date === UNSCHEDULED
-                      ? "Unscheduled"
-                      : format(new Date(date + "T00:00:00"), "EEEE, MMMM d")}
-                  </h3>
-                </div>
-                {timeGroups.map(([time, guests]) => renderTimeGroup(date, time, guests))}
-              </div>
-            ))}
-          </div>
-        )
-      ) : (
-        <div className="space-y-6">
-          {/* Week navigation */}
-          <div className="flex items-center justify-between px-1">
-            <button
-              type="button"
-              onClick={() => { setWeekOffset((w) => w - 1); setSelectedDate(null); }}
-              className="p-2 rounded-full border border-border hover:bg-muted transition"
-              aria-label="Previous week"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <div className="flex items-center gap-3">
-              <h3 className="font-display text-lg font-semibold">
-                {format(weekDates[0], "MMM d")} – {format(weekDates[4], "MMM d")}
-              </h3>
-              {weekOffset !== 0 && (
-                <button
-                  type="button"
-                  onClick={() => { setWeekOffset(0); setSelectedDate(null); }}
-                  className="text-xs font-semibold rounded-full px-3 py-1 border border-border hover:bg-muted transition"
-                >
-                  Today
-                </button>
-              )}
+      ) : (() => {
+        const entry = grouped.find(([date]) => date === UNSCHEDULED);
+        if (!entry) {
+          return (
+            <div className="bg-card border border-border rounded-2xl shadow-sm">
+              <EmptyState
+                icon={Clock}
+                title={query.trim() ? "No unscheduled matches" : "No unscheduled guests"}
+                hint={query.trim() ? "Try a different search." : "All waitlist guests have a requested date — use the Schedule tab to manage them."}
+              />
             </div>
-            <button
-              type="button"
-              onClick={() => { setWeekOffset((w) => w + 1); setSelectedDate(null); }}
-              className="p-2 rounded-full border border-border hover:bg-muted transition"
-              aria-label="Next week"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
+          );
+        }
+        return (
+          <div className="space-y-3">
+            {entry[1].map(([time, guests]) => renderTimeGroup(UNSCHEDULED, time, guests))}
           </div>
-
-          {/* Week-strip calendar — Wed–Sun, horizontally scrollable on mobile */}
-          <div className="flex sm:grid sm:grid-cols-5 gap-2 sm:gap-3 overflow-x-auto pb-1">
-            {weekDates.map((d) => {
-              const dateKey = format(d, "yyyy-MM-dd");
-              const isToday = dateKey === localToday();
-              const dayTotal = [...(byDateTime.get(dateKey)?.values() ?? [])].reduce(
-                (n, arr) => n + arr.length,
-                0,
-              );
-              return (
-                <button
-                  key={dateKey}
-                  type="button"
-                  onClick={() => setSelectedDate((prev) => (prev === dateKey ? null : dateKey))}
-                  className={`min-w-[150px] shrink-0 sm:min-w-0 text-left bg-card border rounded-2xl p-3 shadow-sm transition hover:border-foreground/40 ${
-                    selectedDate === dateKey ? "border-foreground" : "border-border"
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-display text-sm font-semibold">{format(d, "EEE")}</span>
-                    <span className={`text-xs ${isToday ? "text-primary font-semibold" : "text-muted-foreground"}`}>
-                      {isToday ? "Today" : format(d, "MMM d")}
-                    </span>
-                  </div>
-                  <div className="space-y-1.5">
-                    {CALENDAR_TIMES.map((t) => {
-                      const guests = guestsAt(dateKey, t);
-                      const slot = resolveSlot(dateKey, t);
-                      const remaining = slot ? slot.capacity - slot.seats_taken : null;
-                      const seats = guests.reduce(
-                        (n, c) => n + (c.last_party_size ?? guestsFor(c.id) ?? 0),
-                        0,
-                      );
-                      let dot = "bg-muted-foreground/20";
-                      if (guests.length > 0) {
-                        if (remaining == null) dot = "bg-mustard";
-                        else if (seats > remaining) dot = "bg-destructive";
-                        else dot = "bg-primary";
-                      }
-                      return (
-                        <div key={t} className="flex items-center justify-between text-xs">
-                          <span className="text-muted-foreground tabular-nums">{formatSlotTime12h(t)}</span>
-                          <span className="flex items-center gap-1.5 tabular-nums">
-                            {guests.length > 0 && guests.length}
-                            <span className={`h-2 w-2 rounded-full ${dot}`} />
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground">
-                    {dayTotal} guest{dayTotal === 1 ? "" : "s"}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Selected-day detail panel */}
-          {selectedDate && (() => {
-            const entry = grouped.find(([date]) => date === selectedDate);
-            return (
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 px-1">
-                  <CalendarClock className="h-4 w-4 text-muted-foreground" />
-                  <h3 className="font-display text-lg font-semibold">
-                    {format(new Date(selectedDate + "T00:00:00"), "EEEE, MMMM d")}
-                  </h3>
-                </div>
-                {!entry ? (
-                  <div className="bg-card border border-border rounded-2xl shadow-sm">
-                    <EmptyState icon={Clock} title="No requests yet" hint="No waitlist guests have requested this date." />
-                  </div>
-                ) : (
-                  entry[1].map(([time, guests]) => renderTimeGroup(selectedDate, time, guests))
-                )}
-              </div>
-            );
-          })()}
-
-          {/* Unscheduled — guests the bot hasn't captured a requested slot for */}
-          {(() => {
-            const entry = grouped.find(([date]) => date === UNSCHEDULED);
-            if (!entry) return null;
-            const total = entry[1].reduce((n, [, g]) => n + g.length, 0);
-            return (
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 px-1">
-                  <CalendarClock className="h-4 w-4 text-muted-foreground" />
-                  <h3 className="font-display text-lg font-semibold">Unscheduled</h3>
-                  <span className="text-xs text-muted-foreground">
-                    {total} guest{total === 1 ? "" : "s"}
-                  </span>
-                </div>
-                {entry[1].map(([time, guests]) => renderTimeGroup(UNSCHEDULED, time, guests))}
-              </div>
-            );
-          })()}
-        </div>
-      )}
+        );
+      })()}
 
       {selectedId && (() => {
         const c = contacts.find((row) => row.id === selectedId);
@@ -4358,6 +4035,262 @@ function WaitlistTab() {
           onClose={() => setInviteFor(null)}
           onCreated={() => { setInviteFor(null); /* invite shows up in Invites tab */ }}
         />
+      )}
+    </div>
+  );
+}
+
+/* ============ Schedule ============
+   Calendar view of all confirmed and pending bookings, grouped by service
+   date → time slot. Wed–Sun operating week, navigable via weekOffset.
+   Booking cards show name / party size / channel / status at a glance. */
+
+type ScheduleBooking = {
+  id: string;
+  reference_code: string;
+  customer_name: string;
+  group_size: number | null;
+  status: string;
+  source: string | null;
+  total_amount: number;
+  time_slots: { slot_date: string; slot_time: string } | null;
+};
+
+function ScheduleTab() {
+  const [bookings, setBookings] = useState<ScheduleBooking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from("bookings")
+      .select("id, reference_code, customer_name, group_size, status, source, total_amount, time_slots(slot_date, slot_time)")
+      .in("status", ["confirmed", "pending"])
+      .not("slot_id", "is", null)
+      .order("created_at", { ascending: false });
+    setBookings((data ?? []) as unknown as ScheduleBooking[]);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // 5 dates (Wed–Sun) for the visible operating week.
+  const weekDates = useMemo(() => {
+    const today = new Date(`${localToday()}T00:00:00`);
+    const isoDow = today.getDay() === 0 ? 7 : today.getDay();
+    const weekStart = addDays(today, 3 - isoDow + weekOffset * 7);
+    return Array.from({ length: 5 }, (_, i) => addDays(weekStart, i));
+  }, [weekOffset]);
+
+  // date → time → bookings
+  const byDateTime = useMemo(() => {
+    const m = new Map<string, Map<string, ScheduleBooking[]>>();
+    for (const b of bookings) {
+      if (!b.time_slots) continue;
+      const dateKey = b.time_slots.slot_date;
+      const timeKey = b.time_slots.slot_time;
+      const byTime = m.get(dateKey) ?? new Map<string, ScheduleBooking[]>();
+      const arr = byTime.get(timeKey) ?? [];
+      arr.push(b);
+      byTime.set(timeKey, arr);
+      m.set(dateKey, byTime);
+    }
+    return m;
+  }, [bookings]);
+
+  // All bookings for a date, sorted by time
+  const bookingsForDate = useCallback(
+    (dateKey: string): [string, ScheduleBooking[]][] => {
+      const byTime = byDateTime.get(dateKey);
+      if (!byTime) return [];
+      return [...byTime.entries()].sort(([a], [b]) => a.localeCompare(b));
+    },
+    [byDateTime],
+  );
+
+  const totalForDate = useCallback(
+    (dateKey: string) =>
+      [...(byDateTime.get(dateKey)?.values() ?? [])].reduce(
+        (n, arr) => n + arr.length,
+        0,
+      ),
+    [byDateTime],
+  );
+
+  const statusColor = (status: string) =>
+    status === "confirmed"
+      ? "bg-green-500/10 text-green-700"
+      : "bg-mustard/20 text-charcoal";
+
+  const channelLabel = (source: string | null) => {
+    if (!source) return null;
+    if (source === "messenger") return "Messenger";
+    if (source === "instagram") return "Instagram";
+    if (source === "web") return "Web";
+    return source;
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Week navigation */}
+      <div className="flex items-center justify-between px-1">
+        <button
+          type="button"
+          onClick={() => { setWeekOffset((w) => w - 1); setSelectedDate(null); }}
+          className="p-2 rounded-full border border-border hover:bg-muted transition"
+          aria-label="Previous week"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </button>
+        <div className="flex items-center gap-3">
+          <h3 className="font-display text-lg font-semibold">
+            {format(weekDates[0], "MMM d")} – {format(weekDates[4], "MMM d, yyyy")}
+          </h3>
+          {weekOffset !== 0 && (
+            <button
+              type="button"
+              onClick={() => { setWeekOffset(0); setSelectedDate(null); }}
+              className="text-xs font-semibold rounded-full px-3 py-1 border border-border hover:bg-muted transition"
+            >
+              This week
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => { setWeekOffset((w) => w + 1); setSelectedDate(null); }}
+          className="p-2 rounded-full border border-border hover:bg-muted transition"
+          aria-label="Next week"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Week-strip — Wed–Sun, horizontally scrollable on mobile */}
+      <div className="flex sm:grid sm:grid-cols-5 gap-2 sm:gap-3 overflow-x-auto pb-1">
+        {weekDates.map((d) => {
+          const dateKey = format(d, "yyyy-MM-dd");
+          const isToday = dateKey === localToday();
+          const total = totalForDate(dateKey);
+          const isSelected = selectedDate === dateKey;
+          return (
+            <button
+              key={dateKey}
+              type="button"
+              onClick={() => setSelectedDate((prev) => (prev === dateKey ? null : dateKey))}
+              className={`min-w-[140px] shrink-0 sm:min-w-0 text-left bg-card border rounded-2xl p-3 shadow-sm transition hover:border-foreground/40 ${
+                isSelected ? "border-foreground" : "border-border"
+              }`}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-display text-sm font-semibold">{format(d, "EEE")}</span>
+                <span className={`text-xs ${isToday ? "text-primary font-semibold" : "text-muted-foreground"}`}>
+                  {isToday ? "Today" : format(d, "MMM d")}
+                </span>
+              </div>
+              {loading ? (
+                <div className="h-4 w-12 bg-muted animate-pulse rounded" />
+              ) : total === 0 ? (
+                <p className="text-xs text-muted-foreground/50">No bookings</p>
+              ) : (
+                <div className="space-y-1">
+                  {bookingsForDate(dateKey).map(([time, bks]) => (
+                    <div key={time} className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground tabular-nums">{formatSlotTime12h(time)}</span>
+                      <span className="font-medium tabular-nums text-foreground">{bks.length}</span>
+                    </div>
+                  ))}
+                  <div className="pt-1.5 border-t border-border text-xs text-muted-foreground">
+                    {total} booking{total === 1 ? "" : "s"}
+                  </div>
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Day detail panel */}
+      {selectedDate && (() => {
+        const slots = bookingsForDate(selectedDate);
+        return (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 px-1">
+              <CalendarRange className="h-4 w-4 text-muted-foreground" />
+              <h3 className="font-display text-lg font-semibold">
+                {format(new Date(selectedDate + "T00:00:00"), "EEEE, MMMM d")}
+              </h3>
+            </div>
+            {slots.length === 0 ? (
+              <div className="bg-card border border-border rounded-2xl shadow-sm">
+                <EmptyState icon={CalendarRange} title="No bookings" hint="No confirmed or pending bookings for this date." />
+              </div>
+            ) : (
+              slots.map(([time, bks]) => (
+                <div key={time} className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+                  {/* Slot header */}
+                  <div className="flex items-center gap-3 px-5 py-3 bg-muted/40 border-b border-border">
+                    <CalendarClock className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <span className="font-display font-semibold tabular-nums">{formatSlotTime12h(time)}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {bks.length} booking{bks.length === 1 ? "" : "s"} · {bks.reduce((n, b) => n + (b.group_size ?? 0), 0)} seat{bks.reduce((n, b) => n + (b.group_size ?? 0), 0) === 1 ? "" : "s"}
+                    </span>
+                    <button
+                      onClick={load}
+                      className="ml-auto text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  {/* Booking cards */}
+                  <ul className="divide-y divide-border">
+                    {bks.map((b) => (
+                      <li key={b.id} className="px-5 py-3.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-medium truncate">{b.customer_name}</span>
+                            <span className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full ${statusColor(b.status)}`}>
+                              {b.status}
+                            </span>
+                          </div>
+                          <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-3 flex-wrap">
+                            <span className="uppercase tracking-wider text-[10px]">Ref</span>
+                            <span className="tabular-nums font-mono">{b.reference_code}</span>
+                            {channelLabel(b.source) && (
+                              <span>{channelLabel(b.source)}</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4 shrink-0 text-sm">
+                          <span className="text-xs text-muted-foreground">
+                            <span className="uppercase tracking-wider text-[10px] mr-1">Party</span>
+                            <span className="text-foreground font-medium">{b.group_size ?? "—"}</span>
+                          </span>
+                          <span className="text-xs text-muted-foreground tabular-nums">
+                            ₱{b.total_amount.toLocaleString()}
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))
+            )}
+          </div>
+        );
+      })()}
+
+      {/* No bookings at all this week */}
+      {!loading && !selectedDate && weekDates.every((d) => totalForDate(format(d, "yyyy-MM-dd")) === 0) && (
+        <div className="bg-card border border-border rounded-2xl shadow-sm">
+          <EmptyState
+            icon={CalendarRange}
+            title="No bookings this week"
+            hint="Confirmed and pending reservations will appear here once guests complete their booking."
+          />
+        </div>
       )}
     </div>
   );
