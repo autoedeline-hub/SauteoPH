@@ -92,13 +92,7 @@ const SOURCE_LABEL: Record<string, string> = {
 const FB_PAGE_ASSET_ID = "1119234891273865";
 
 function messengerConversationUrl(platformId: string): string {
-  const params = new URLSearchParams({
-    nav_ref: "manage_page_ap_plus_inbox_message_button",
-    asset_id: FB_PAGE_ASSET_ID,
-    business_id: "",
-    selected_item_id: platformId,
-  });
-  return `https://business.facebook.com/latest/inbox/all/?${params.toString()}`;
+  return `https://business.facebook.com/latest/inbox/messenger/?asset_id=${FB_PAGE_ASSET_ID}&selected_item_id=${platformId}`;
 }
 
 const PICKUP_LABEL: Record<string, string> = {
