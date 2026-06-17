@@ -44,7 +44,7 @@ import {
   type LoadedInvite,
 } from "@/lib/invite";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
-import { DINEIN_DEFAULTS, PICKUP_DEFAULTS } from "@/integrations/site-content";
+import { PICKUP_DEFAULTS } from "@/integrations/site-content";
 
 // Bare `/` redirects to the read-only /menu page. The booking flows
 // (/dine-in, /pick-up) stay reachable only via the tokenized invite
@@ -2700,8 +2700,6 @@ function DineInReservationView({
   // only has to pick a slot. Fields stay editable (in case the waitlist had
   // typos) BUT we surface a hint that the name/email/phone match what
   // Sautéo collected on Messenger.
-  const [agreedToPolicy, setAgreedToPolicy] = useState(false);
-
   const [customerName, setCustomerName] = useState(invite?.customerName ?? "");
   const [customerEmail, setCustomerEmail] = useState(invite?.customerEmail ?? "");
   const [customerPhone, setCustomerPhone] = useState(invite?.customerPhone ?? "");
@@ -2906,16 +2904,6 @@ function DineInReservationView({
           </a>
         </div>
       </div>
-    );
-  }
-
-  if (!agreedToPolicy) {
-    return (
-      <BookingAgreementScreen
-        customerName={customerName}
-        rules={DINEIN_DEFAULTS}
-        onAgree={() => setAgreedToPolicy(true)}
-      />
     );
   }
 
@@ -3581,10 +3569,12 @@ function PickupReservationView({
     });
   };
 
-  if (!agreedToPolicy) {
+  // Show the agreement screen only on the public /pick-up route (no invite).
+  // Token-based pickup links already passed through BookingRules in book.$token.tsx.
+  if (!invite && !agreedToPolicy) {
     return (
       <BookingAgreementScreen
-        customerName={customerName}
+        customerName=""
         rules={PICKUP_DEFAULTS}
         onAgree={() => setAgreedToPolicy(true)}
       />
