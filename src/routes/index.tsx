@@ -3251,7 +3251,7 @@ function DineInReservationView({
                   </div>
                 ) : (
                   <img
-                    src="/maya-qr.png"
+                    src="/maya-qr.jpg"
                     alt="Scan to pay via Maya or any QR Ph–compatible app"
                     className="w-full h-full object-contain"
                     onError={() => setQrImgError(true)}
@@ -3877,7 +3877,7 @@ function PickupReservationView({
                       </div>
                     ) : (
                       <img
-                        src="/maya-qr.png"
+                        src="/maya-qr.jpg"
                         alt="Scan to pay via Maya or any QR Ph–compatible app"
                         className="w-full h-full object-contain"
                         onError={() => setQrImgError(true)}
