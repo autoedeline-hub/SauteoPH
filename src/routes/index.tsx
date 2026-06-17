@@ -44,7 +44,7 @@ import {
   type LoadedInvite,
 } from "@/lib/invite";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
-import { DINEIN_DEFAULTS } from "@/integrations/site-content";
+import { DINEIN_DEFAULTS, PICKUP_DEFAULTS } from "@/integrations/site-content";
 
 // Bare `/` redirects to the read-only /menu page. The booking flows
 // (/dine-in, /pick-up) stay reachable only via the tokenized invite
@@ -2563,11 +2563,13 @@ type ConfirmArgs = {
   paymentReference?: string | null;
 };
 
-function DineInAgreementScreen({
+function BookingAgreementScreen({
   customerName,
+  rules,
   onAgree,
 }: {
   customerName: string;
+  rules: { id: string; title: string; body: string }[];
   onAgree: () => void;
 }) {
   const [checked, setChecked] = useState(false);
@@ -2589,7 +2591,7 @@ function DineInAgreementScreen({
       </p>
 
       <div className="space-y-3 mb-6">
-        {DINEIN_DEFAULTS.map((rule) => (
+        {rules.map((rule) => (
           <div key={rule.id} className="bg-card border border-border rounded-xl p-4 flex gap-3">
             <CheckCircle2 className="h-5 w-5 text-primary shrink-0 mt-0.5" />
             <div>
@@ -2909,8 +2911,9 @@ function DineInReservationView({
 
   if (!agreedToPolicy) {
     return (
-      <DineInAgreementScreen
+      <BookingAgreementScreen
         customerName={customerName}
+        rules={DINEIN_DEFAULTS}
         onAgree={() => setAgreedToPolicy(true)}
       />
     );
@@ -3428,6 +3431,7 @@ function PickupReservationView({
   // check has a sane minimum on step 1 (cart is built on step 2).
   const numberOfMeals = Math.max(cartUnitCount, 1);
   const [notes, setNotes] = useState("");
+  const [agreedToPolicy, setAgreedToPolicy] = useState(false);
   const [crmHint, setCrmHint] = useState<string | null>(null);
 
   // When the customer types a valid email on the Info step, look them up
@@ -3576,6 +3580,16 @@ function PickupReservationView({
       paymentReference: null,
     });
   };
+
+  if (!agreedToPolicy) {
+    return (
+      <BookingAgreementScreen
+        customerName={customerName}
+        rules={PICKUP_DEFAULTS}
+        onAgree={() => setAgreedToPolicy(true)}
+      />
+    );
+  }
 
   // Pickup is open to the public — no invite gate. Anyone hitting
   // /pick-up can place an order; create_booking() no longer requires
