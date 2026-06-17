@@ -6899,21 +6899,30 @@ function RulesTab() {
 
   return (
     <div className="space-y-6">
-      {/* Sub-tab switcher */}
-      <div className="flex rounded-lg border border-border overflow-hidden text-sm w-fit">
-        {SECTIONS.map((s) => (
-          <button
-            key={s.key}
-            onClick={() => setActiveKey(s.key)}
-            className={`px-4 py-2 transition ${
-              activeKey === s.key
-                ? "bg-foreground text-background font-medium"
-                : "text-muted-foreground hover:bg-muted/50"
-            }`}
-          >
-            {s.label}
-          </button>
-        ))}
+      {/* Sub-tab switcher + Add rule button */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex rounded-lg border border-border overflow-hidden text-sm w-fit">
+          {SECTIONS.map((s) => (
+            <button
+              key={s.key}
+              onClick={() => setActiveKey(s.key)}
+              className={`px-4 py-2 transition ${
+                activeKey === s.key
+                  ? "bg-foreground text-background font-medium"
+                  : "text-muted-foreground hover:bg-muted/50"
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => setDraftIds((prev) => [...prev, `draft-${prev.length}-${Date.now()}`])}
+          className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition"
+        >
+          <Plus className="h-4 w-4" />
+          Add rule
+        </button>
       </div>
 
       {loading ? (
@@ -6965,13 +6974,6 @@ function RulesTab() {
             />
           ))}
 
-          <button
-            onClick={() => setDraftIds((prev) => [...prev, `draft-${prev.length}-${Date.now()}`])}
-            className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition"
-          >
-            <Plus className="h-4 w-4" />
-            Add rule
-          </button>
         </div>
       )}
     </div>
