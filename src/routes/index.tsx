@@ -5,6 +5,7 @@ import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import {
   AlertTriangle,
+  BookOpen,
   CalendarClock,
   Camera,
   Check,
@@ -43,6 +44,7 @@ import {
   type LoadedInvite,
 } from "@/lib/invite";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
+import { DINEIN_DEFAULTS } from "@/integrations/site-content";
 
 // Bare `/` redirects to the read-only /menu page. The booking flows
 // (/dine-in, /pick-up) stay reachable only via the tokenized invite
@@ -2561,6 +2563,78 @@ type ConfirmArgs = {
   paymentReference?: string | null;
 };
 
+function DineInAgreementScreen({
+  customerName,
+  onAgree,
+}: {
+  customerName: string;
+  onAgree: () => void;
+}) {
+  const [checked, setChecked] = useState(false);
+  const firstName = customerName.trim().split(" ")[0];
+
+  return (
+    <div className="max-w-md mx-auto py-8">
+      <div className="flex justify-center mb-6">
+        <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center">
+          <BookOpen className="h-7 w-7 text-primary" />
+        </div>
+      </div>
+
+      <h1 className="font-display text-2xl md:text-3xl text-center mb-2">
+        Before you book{firstName ? `, ${firstName}` : ""}
+      </h1>
+      <p className="text-center text-muted-foreground text-sm mb-6 leading-relaxed">
+        Please read and agree to Sautéo's booking policy<br />before choosing your slot.
+      </p>
+
+      <div className="space-y-3 mb-6">
+        {DINEIN_DEFAULTS.map((rule) => (
+          <div key={rule.id} className="bg-card border border-border rounded-xl p-4 flex gap-3">
+            <CheckCircle2 className="h-5 w-5 text-primary shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold leading-snug">{rule.title}</p>
+              <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{rule.body}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="text-center mb-5">
+        <a
+          href="/terms"
+          className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition"
+        >
+          Read full Terms &amp; Privacy Policy
+        </a>
+      </div>
+
+      <label className="flex items-start gap-3 cursor-pointer mb-6 select-none">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => setChecked(e.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-border accent-primary cursor-pointer shrink-0"
+        />
+        <span className="text-sm text-muted-foreground leading-snug">
+          I have read and agree to Sautéo's booking policy. I understand that{" "}
+          <span className="text-foreground font-semibold">no cash refunds</span> will be given for{" "}
+          <span className="text-foreground font-semibold">cancellations</span> or{" "}
+          <span className="text-foreground font-semibold">no-shows</span>, under any circumstances.
+        </span>
+      </label>
+
+      <button
+        disabled={!checked}
+        onClick={onAgree}
+        className="w-full rounded-full bg-primary text-primary-foreground py-3 text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition"
+      >
+        I agree — proceed to booking
+      </button>
+    </div>
+  );
+}
+
 function DineInReservationView({
   invite,
   cart,
@@ -2624,6 +2698,8 @@ function DineInReservationView({
   // only has to pick a slot. Fields stay editable (in case the waitlist had
   // typos) BUT we surface a hint that the name/email/phone match what
   // Sautéo collected on Messenger.
+  const [agreedToPolicy, setAgreedToPolicy] = useState(false);
+
   const [customerName, setCustomerName] = useState(invite?.customerName ?? "");
   const [customerEmail, setCustomerEmail] = useState(invite?.customerEmail ?? "");
   const [customerPhone, setCustomerPhone] = useState(invite?.customerPhone ?? "");
@@ -2828,6 +2904,15 @@ function DineInReservationView({
           </a>
         </div>
       </div>
+    );
+  }
+
+  if (!agreedToPolicy) {
+    return (
+      <DineInAgreementScreen
+        customerName={customerName}
+        onAgree={() => setAgreedToPolicy(true)}
+      />
     );
   }
 
