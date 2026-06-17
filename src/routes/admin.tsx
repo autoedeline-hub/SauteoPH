@@ -5132,6 +5132,7 @@ function KnowledgeTab() {
       </div>
 
       {/* List */}
+      <div className="max-h-[calc(100vh-440px)] overflow-y-auto pr-1">
       {loading ? (
         <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">Loading FAQ…</div>
       ) : filtered.length === 0 ? (
@@ -5210,6 +5211,7 @@ function KnowledgeTab() {
           ))}
         </ul>
       )}
+      </div>
 
       {editorOpen && (
         <FaqEditor
@@ -6938,7 +6940,7 @@ function RulesTab() {
           Loading…
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className="max-h-[calc(100vh-300px)] overflow-y-auto pr-1 space-y-4">
           <p className="text-sm text-muted-foreground">
             These rules are shown to guests on the{" "}
             <span className="text-foreground font-medium">{activeSection.label.toLowerCase()}</span>{" "}
