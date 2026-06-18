@@ -92,9 +92,7 @@ const SOURCE_LABEL: Record<string, string> = {
 const FB_PAGE_ASSET_ID = "1119234891273865";
 
 function messengerConversationUrl(platformId: string): string {
-  // Business Suite thread keys use the t_{psid} format. Without the prefix
-  // the inbox resolves to the wrong or default conversation.
-  return `https://business.facebook.com/latest/inbox/messenger/?asset_id=${FB_PAGE_ASSET_ID}&selected_item_id=t_${platformId}`;
+  return `https://business.facebook.com/latest/inbox/all?asset_id=${FB_PAGE_ASSET_ID}&selected_item_id=${platformId}&thread_type=FB_MESSAGE&mailbox_id=${FB_PAGE_ASSET_ID}`;
 }
 
 const PICKUP_LABEL: Record<string, string> = {
