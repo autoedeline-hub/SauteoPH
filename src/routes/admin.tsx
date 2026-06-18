@@ -87,12 +87,15 @@ const SOURCE_LABEL: Record<string, string> = {
   manual: "Manual",
 };
 
-// Page ID for the Sautéo Facebook page, used to deep-link into a specific
-// customer's conversation within Meta Business Suite's inbox.
+// Page ID for the Sautéo Facebook page.
 const FB_PAGE_ASSET_ID = "1119234891273865";
 
-function messengerConversationUrl(platformId: string): string {
-  return `https://business.facebook.com/latest/inbox/all?asset_id=${FB_PAGE_ASSET_ID}&selected_item_id=${platformId}&thread_type=FB_MESSAGE&mailbox_id=${FB_PAGE_ASSET_ID}`;
+// Opens the Business Suite Messenger inbox for the page. We can't reliably
+// deep-link to a specific conversation because the stored platform_id (PSID
+// from the Messenger webhook) differs from the Facebook User ID that Business
+// Suite uses in selected_item_id. The admin can search by name from the inbox.
+function messengerInboxUrl(): string {
+  return `https://business.facebook.com/latest/inbox/all?asset_id=${FB_PAGE_ASSET_ID}&mailbox_id=${FB_PAGE_ASSET_ID}`;
 }
 
 const PICKUP_LABEL: Record<string, string> = {
@@ -4437,9 +4440,10 @@ function EscalationsTab() {
                     <span>{new Date(row.created_at).toLocaleString()}</span>
                     <span>·</span>
                     <a
-                      href={messengerConversationUrl(row.platform_id)}
+                      href={messengerInboxUrl()}
                       target="_blank"
                       rel="noopener noreferrer"
+                      title={`Open Business Suite inbox — search for "${row.full_name ?? "this guest"}"`}
                       className="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
                     >
                       <Facebook className="h-3 w-3" />
@@ -5799,9 +5803,10 @@ function InviteRow({
           </div>
           {inv.platform_id && (
             <a
-              href={messengerConversationUrl(inv.platform_id)}
+              href={messengerInboxUrl()}
               target="_blank"
               rel="noopener noreferrer"
+              title={`Open Business Suite inbox — search for "${inv.customer_name}"`}
               className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
             >
               <Facebook className="h-3 w-3" />
