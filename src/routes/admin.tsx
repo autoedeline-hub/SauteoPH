@@ -158,6 +158,7 @@ function AdminPage() {
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabKey>(() => {
+    if (typeof window === "undefined") return "overview";
     const hash = window.location.hash.replace("#", "") as TabKey;
     return NAV.some((n) => n.key === hash) ? hash : "overview";
   });
