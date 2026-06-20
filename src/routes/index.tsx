@@ -45,6 +45,7 @@ import {
 } from "@/lib/invite";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
 import { PICKUP_DEFAULTS } from "@/integrations/site-content";
+import { useBookingRulesDisplay, type DisplayRule } from "@/lib/siteContent";
 
 // Bare `/` redirects to the read-only /menu page. The booking flows
 // (/dine-in, /pick-up) stay reachable only via the tokenized invite
@@ -2558,6 +2559,15 @@ type ConfirmArgs = {
   paymentReference?: string | null;
 };
 
+// Public /pick-up agreement, now backed by the admin-editable booking_rules
+// (pickup). Falls back to the static defaults until they load.
+const PICKUP_FALLBACK: DisplayRule[] = PICKUP_DEFAULTS.map((r) => ({ ...r, group_label: "" }));
+
+function PickupAgreementScreen({ onAgree }: { onAgree: () => void }) {
+  const rules = useBookingRulesDisplay("pickup", PICKUP_FALLBACK);
+  return <BookingAgreementScreen customerName="" rules={rules} onAgree={onAgree} />;
+}
+
 function BookingAgreementScreen({
   customerName,
   rules,
@@ -3541,11 +3551,7 @@ function PickupReservationView({
   // Token-based pickup links already passed through BookingRules in book.$token.tsx.
   if (!invite && !agreedToPolicy) {
     return (
-      <BookingAgreementScreen
-        customerName=""
-        rules={PICKUP_DEFAULTS}
-        onAgree={() => setAgreedToPolicy(true)}
-      />
+      <PickupAgreementScreen onAgree={() => setAgreedToPolicy(true)} />
     );
   }
 
