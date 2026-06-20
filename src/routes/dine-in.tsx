@@ -1,16 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import {
   CalendarClock,
   MessageCircle,
   Users,
-  CalendarDays,
-  CreditCard,
-  AlertTriangle,
-  Clock,
-  Sparkles,
-  ChevronRight,
   CheckCircle2,
+  BookOpen,
 } from "lucide-react";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
@@ -40,11 +35,12 @@ export const Route = createFileRoute("/dine-in")({
 function DineInPage() {
   const [rulesAccepted, setRulesAccepted] = useState(false);
 
+  if (!rulesAccepted) {
+    return <DineInAgreement onAccept={() => setRulesAccepted(true)} />;
+  }
+
   return (
     <div className="min-h-screen flex flex-col">
-      {!rulesAccepted && (
-        <DineInRulesModal onAccept={() => setRulesAccepted(true)} />
-      )}
       <Header />
       <main className="flex-1 w-full max-w-3xl mx-auto px-4 sm:px-6 py-12 md:py-20">
         <div className="text-center mb-10 md:mb-14">
@@ -112,108 +108,76 @@ const DINEIN_FALLBACK: DisplayRule[] = [
   { id: "intimate_setting", group_label: "Dining Guidelines", title: "An intimate setting — smart casual", body: "Sautéo is an intimate venue. Dress smart casual, keep voices low, and please bring no outside food or drinks — be considerate of fellow diners." },
 ];
 
-// Decorative icons applied by display position (the admin controls order via
-// sort_order). Falls back to a neutral check when there are more rules than icons.
-const DINEIN_ICONS: React.ReactNode[] = [
-  <CalendarDays className="h-4 w-4 text-blue-500" />,
-  <MessageCircle className="h-4 w-4 text-primary" />,
-  <CreditCard className="h-4 w-4 text-green-500" />,
-  <AlertTriangle className="h-4 w-4 text-red-500" />,
-  <Clock className="h-4 w-4 text-amber-500" />,
-  <Users className="h-4 w-4 text-primary" />,
-  <Sparkles className="h-4 w-4 text-mustard" />,
-];
-
-// Group rules by their label, preserving first-seen (sort_order) order.
-function groupDineInRules(rules: DisplayRule[]) {
-  const order: string[] = [];
-  const map = new Map<string, { title: string; body: string; icon: React.ReactNode }[]>();
-  rules.forEach((r, i) => {
-    if (!map.has(r.group_label)) {
-      map.set(r.group_label, []);
-      order.push(r.group_label);
-    }
-    map.get(r.group_label)!.push({
-      title: r.title,
-      body: r.body,
-      icon: DINEIN_ICONS[i] ?? <CheckCircle2 className="h-4 w-4 text-primary" />,
-    });
-  });
-  return order.map((label) => ({ label, items: map.get(label)! }));
-}
-
-function DineInRulesModal({ onAccept }: { onAccept: () => void }) {
+// Full-page booking-policy agreement with an explicit consent checkbox, matching
+// the /pick-up agreement. Rules come from the admin-editable booking_rules table.
+function DineInAgreement({ onAccept }: { onAccept: () => void }) {
   const rules = useBookingRulesDisplay("dinein", DINEIN_FALLBACK);
-  const groups = useMemo(() => groupDineInRules(rules), [rules]);
+  const [checked, setChecked] = useState(false);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-      <div className="relative w-full max-w-md bg-background rounded-2xl shadow-2xl overflow-hidden">
-        {/* Header */}
-        <div className="bg-primary px-6 py-5">
-          <div className="flex items-center gap-3">
-            <CalendarClock className="h-5 w-5 text-primary-foreground shrink-0" />
-            <div>
-              <h2 className="font-display text-lg text-primary-foreground leading-tight">
-                Dine-In Reservation Rules
-              </h2>
-              <p className="text-primary-foreground/70 text-xs mt-0.5">
-                Please read before booking your table
-              </p>
+    <div className="min-h-screen flex flex-col">
+      <Header />
+      <main className="flex-1 w-full px-4 sm:px-6 py-8">
+        <div className="max-w-md mx-auto">
+          <div className="flex justify-center mb-6">
+            <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center">
+              <BookOpen className="h-7 w-7 text-primary" />
             </div>
           </div>
-        </div>
 
-        {/* Rules & guidelines */}
-        <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
-          {groups.map((g) => (
-            <div key={g.label} className="space-y-4">
-              <SectionLabel>{g.label}</SectionLabel>
-              {g.items.map((it, j) => (
-                <Rule key={j} icon={it.icon} title={it.title} body={it.body} />
-              ))}
-            </div>
-          ))}
-        </div>
+          <h1 className="font-display text-2xl md:text-3xl text-center mb-2">
+            Before you book
+          </h1>
+          <p className="text-center text-muted-foreground text-sm mb-6 leading-relaxed">
+            Please read and agree to Sautéo's booking policy<br />before choosing your slot.
+          </p>
 
-        {/* CTA */}
-        <div className="px-6 py-4 border-t border-border bg-muted/30">
+          <div className="space-y-3 mb-6">
+            {rules.map((rule) => (
+              <div key={rule.id} className="bg-card border border-border rounded-xl p-4 flex gap-3">
+                <CheckCircle2 className="h-5 w-5 text-primary shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-semibold leading-snug">{rule.title}</p>
+                  <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{rule.body}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="text-center mb-5">
+            <a
+              href="/terms"
+              className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition"
+            >
+              Read full Terms &amp; Privacy Policy
+            </a>
+          </div>
+
+          <label className="flex items-start gap-3 cursor-pointer mb-6 select-none">
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={(e) => setChecked(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-border accent-primary cursor-pointer shrink-0"
+            />
+            <span className="text-sm text-muted-foreground leading-snug">
+              I have read and agree to Sautéo's booking policy. I understand that{" "}
+              <span className="text-foreground font-semibold">no cash refunds</span> will be given for{" "}
+              <span className="text-foreground font-semibold">cancellations</span> or{" "}
+              <span className="text-foreground font-semibold">no-shows</span>, under any circumstances.
+            </span>
+          </label>
+
           <button
+            disabled={!checked}
             onClick={onAccept}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-3 text-sm font-semibold hover:opacity-90 transition"
+            className="w-full rounded-full bg-primary text-primary-foreground py-3 text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition"
           >
-            I understand, proceed to booking <ChevronRight className="h-4 w-4" />
+            I agree — proceed to booking
           </button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/80">
-      {children}
-    </p>
-  );
-}
-
-function Rule({
-  icon,
-  title,
-  body,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  body: string;
-}) {
-  return (
-    <div className="flex gap-3">
-      <div className="mt-0.5 shrink-0">{icon}</div>
-      <div>
-        <p className="text-sm font-semibold text-foreground leading-snug">{title}</p>
-        <p className="text-sm text-muted-foreground mt-0.5 leading-relaxed">{body}</p>
-      </div>
+      </main>
+      <Footer />
     </div>
   );
 }
