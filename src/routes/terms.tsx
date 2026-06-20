@@ -249,7 +249,7 @@ function TermsPage() {
             <p>
               If you have any concerns or questions, please reach out to us via Messenger at{" "}
               <a
-                href="https://www.facebook.com/messages/t/1119234891273865"
+                href="https://www.facebook.com/messages/t/61564591092158"
                 target="_blank"
                 rel="noreferrer"
                 className="underline underline-offset-2"
@@ -311,7 +311,7 @@ function TermsPage() {
               access, correct, and request the deletion of your personal data. To exercise these
               rights, please contact us via Messenger at{" "}
               <a
-                href="https://www.facebook.com/messages/t/1119234891273865"
+                href="https://www.facebook.com/messages/t/61564591092158"
                 target="_blank"
                 rel="noreferrer"
                 className="underline underline-offset-2"
@@ -346,7 +346,7 @@ function TermsPage() {
             <p>
               Questions about this Privacy Policy? Message us on Messenger at{" "}
               <a
-                href="https://www.facebook.com/messages/t/1119234891273865"
+                href="https://www.facebook.com/messages/t/61564591092158"
                 target="_blank"
                 rel="noreferrer"
                 className="underline underline-offset-2"

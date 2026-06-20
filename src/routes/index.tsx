@@ -89,7 +89,7 @@ type WizardStep = 1 | 2 | 3 | 4;
 
 // Sautéo's public Messenger conversation. Used by the pre-invite gate, the
 // /dine-in marketing page, and the receipt's "send payment screenshot" CTA.
-const MESSENGER_URL = "https://www.facebook.com/messages/t/1119234891273865";
+const MESSENGER_URL = "https://www.facebook.com/messages/t/61564591092158";
 
 // Cart key shape:
 //   - `<itemId>`                                          — no variant, no claim
