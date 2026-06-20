@@ -5811,7 +5811,7 @@ function InviteRow({
               className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
             >
               <Facebook className="h-3 w-3" />
-              Message on Messenger
+              Messenger Link
             </a>
           )}
           <div className="text-[11px]">
