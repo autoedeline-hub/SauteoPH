@@ -170,6 +170,7 @@ function AdminPage() {
   const [session, setSession] = useState<any>(null);
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isRecovery, setIsRecovery] = useState(false);
   const [tab, setTab] = useState<TabKey>(() => {
     if (typeof window === "undefined") return "overview";
     const hash = window.location.hash.replace("#", "") as TabKey;
@@ -203,7 +204,10 @@ function AdminPage() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      if (event === "PASSWORD_RECOVERY") setIsRecovery(true);
+      setSession(s);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -218,6 +222,7 @@ function AdminPage() {
   }, [session]);
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading…</div>;
+  if (isRecovery && session) return <ResetPassword onDone={() => setIsRecovery(false)} />;
   if (!session) return <AdminLogin />;
   if (!isAdmin) return <NotAuthorized email={session.user.email} />;
 
@@ -1040,6 +1045,80 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 /* ============ Login / Not authorized ============ */
+// Shown after a user follows a password-reset email link (PASSWORD_RECOVERY
+// auth event). Lets them set a new password, then returns to the login screen.
+function ResetPassword({ onDone }: { onDone: () => void }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    if (pw !== pw2) { setErr("Passwords don't match."); return; }
+    if (pw.length < 8) { setErr("Password must be at least 8 characters."); return; }
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pw });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await supabase.auth.signOut();
+    setDone(true);
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-6 bg-background">
+      <div className="w-full max-w-sm bg-card border border-border rounded-2xl p-8 shadow-sm">
+        <div className="font-display text-2xl mb-1">
+          Sautéo<span className="text-primary">.</span>
+        </div>
+        <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mb-6">
+          Set new password
+        </div>
+        {done ? (
+          <div className="space-y-4 text-center">
+            <div className="mx-auto w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center">
+              <CheckCircle2 className="h-6 w-6 text-emerald-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-sm">Password updated</p>
+              <p className="text-sm text-muted-foreground mt-1">You can now sign in with your new password.</p>
+            </div>
+            <button
+              onClick={onDone}
+              className="w-full rounded-full bg-foreground text-background py-2.5 font-medium text-sm hover:opacity-90 transition"
+            >
+              Back to sign in
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={submit} className="space-y-3">
+            <p className="text-sm text-muted-foreground mb-2">Choose a new password for your account.</p>
+            <input
+              type="password" required minLength={8} placeholder="New password (min. 8 characters)"
+              value={pw} onChange={e => setPw(e.target.value)}
+              className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+            />
+            <input
+              type="password" required minLength={8} placeholder="Confirm new password"
+              value={pw2} onChange={e => setPw2(e.target.value)}
+              className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+            />
+            {err && <div className="text-sm text-destructive">{err}</div>}
+            <button
+              disabled={busy}
+              className="w-full rounded-full bg-foreground text-background py-2.5 font-medium text-sm hover:opacity-90 disabled:opacity-50 transition"
+            >
+              {busy ? "Saving…" : "Set new password"}
+            </button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Sign-in only. Public signup was removed from this form — new admins are
 // invited from inside the console by an existing admin (see the "Admins"
 // section). The Supabase auth API still accepts password sign-ups in theory,
@@ -1050,6 +1129,9 @@ function AdminLogin() {
   const [pw, setPw] = useState("");
   const [err, setErr] = useState<string|null>(null);
   const [busy, setBusy] = useState(false);
+  const [forgot, setForgot] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true); setErr(null);
@@ -1057,27 +1139,67 @@ function AdminLogin() {
     if (error) setErr(error.message);
     setBusy(false);
   };
-  return (
+
+  const sendReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setErr(null);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/admin`,
+    });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    setResetSent(true);
+  };
+
+  const CardShell = ({ children }: { children: React.ReactNode }) => (
     <div className="min-h-screen flex items-center justify-center px-6 bg-background">
-      <form onSubmit={submit} className="w-full max-w-sm bg-card border border-border rounded-2xl p-8 shadow-sm">
+      <div className="w-full max-w-sm bg-card border border-border rounded-2xl p-8 shadow-sm">
         <div className="font-display text-2xl mb-1">
           Sautéo<span className="text-primary">.</span>
         </div>
         <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mb-6">
           Admin sign in
         </div>
+        {children}
+      </div>
+    </div>
+  );
+
+  if (resetSent) {
+    return (
+      <CardShell>
+        <div className="space-y-4 text-center">
+          <div className="mx-auto w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center">
+            <Mail className="h-6 w-6 text-emerald-600" />
+          </div>
+          <div>
+            <p className="font-semibold text-sm">Check your inbox</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              A password reset link was sent to <span className="font-medium text-foreground">{email}</span>.
+              Click the link to set a new password.
+            </p>
+          </div>
+          <button
+            onClick={() => { setForgot(false); setResetSent(false); setErr(null); }}
+            className="text-sm text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+          >
+            Back to sign in
+          </button>
+        </div>
+      </CardShell>
+    );
+  }
+
+  if (forgot) {
+    return (
+      <CardShell>
         <p className="text-sm text-muted-foreground mb-6">
-          Welcome back. Sign in to manage Sautéo.
+          Enter your email and we'll send you a link to reset your password.
         </p>
-        <div className="space-y-3">
+        <form onSubmit={sendReset} className="space-y-3">
           <input
             type="email" required placeholder="Email"
-            value={email} onChange={e=>setEmail(e.target.value)}
-            className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
-          />
-          <input
-            type="password" required minLength={6} placeholder="Password"
-            value={pw} onChange={e=>setPw(e.target.value)}
+            value={email} onChange={e => setEmail(e.target.value)}
             className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
           />
           {err && <div className="text-sm text-destructive">{err}</div>}
@@ -1085,14 +1207,59 @@ function AdminLogin() {
             disabled={busy}
             className="w-full rounded-full bg-foreground text-background py-2.5 font-medium text-sm hover:opacity-90 disabled:opacity-50 transition"
           >
-            {busy ? "…" : "Sign in"}
+            {busy ? "Sending…" : "Send reset link"}
           </button>
-          <p className="pt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
-            Admin access is invite-only. Ask an existing admin to add your account from inside the console.
-          </p>
+          <button
+            type="button"
+            onClick={() => { setForgot(false); setErr(null); }}
+            className="w-full text-sm text-muted-foreground hover:text-foreground text-center pt-1 transition-colors"
+          >
+            Back to sign in
+          </button>
+        </form>
+      </CardShell>
+    );
+  }
+
+  return (
+    <CardShell>
+      <p className="text-sm text-muted-foreground mb-6">
+        Welcome back. Sign in to manage Sautéo.
+      </p>
+      <form onSubmit={submit} className="space-y-3">
+        <input
+          type="email" required placeholder="Email"
+          value={email} onChange={e=>setEmail(e.target.value)}
+          className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+        />
+        <div className="space-y-1">
+          <input
+            type="password" required minLength={6} placeholder="Password"
+            value={pw} onChange={e=>setPw(e.target.value)}
+            className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+          />
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => { setForgot(true); setErr(null); }}
+              className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+            >
+              Forgot password?
+            </button>
+          </div>
         </div>
+        {err && <div className="text-sm text-destructive">{err}</div>}
+        <button
+          disabled={busy}
+          className="w-full rounded-full bg-foreground text-background py-2.5 font-medium text-sm hover:opacity-90 disabled:opacity-50 transition"
+        >
+          {busy ? "…" : "Sign in"}
+        </button>
+        <p className="pt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
+          Admin access is invite-only. Ask an existing admin to add your account from inside the console.
+        </p>
       </form>
-    </div>
+    </CardShell>
   );
 }
 
