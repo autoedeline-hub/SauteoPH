@@ -59,7 +59,18 @@ import {
   FileText,
   RefreshCw,
   Save,
+  Users,
+  UserPlus,
+  KeyRound,
 } from "lucide-react";
+import {
+  listTeamMembers,
+  createTeamMember,
+  updateTeamMember,
+  deleteTeamMember,
+  type TeamMember,
+  type ConsoleRole,
+} from "@/lib/adminTeam";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
 
@@ -112,7 +123,7 @@ const REFUND_LABEL: Record<string, string> = {
   forfeited: "Forfeited",
 };
 
-type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "schedule" | "escalations" | "menu" | "slots" | "knowledge" | "rules";
+type TabKey = "overview" | "pipeline" | "bookings" | "seniorids" | "invites" | "contacts" | "schedule" | "escalations" | "menu" | "slots" | "knowledge" | "rules" | "team";
 
 // Nav order is the *user-facing journey*, top → bottom: situational
 // awareness (Overview) → core catalog (Menu) → in-flight customer flow
@@ -131,6 +142,7 @@ const NAV: { key: TabKey; label: string; icon: React.ComponentType<{ className?:
   { key: "escalations", label: "Escalation", icon: AlertCircle },
   { key: "knowledge", label: "FAQs", icon: BookOpen },
   { key: "rules", label: "Rules", icon: FileText },
+  { key: "team", label: "Team", icon: Users },
 ];
 
 const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
@@ -146,6 +158,7 @@ const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   escalations: { title: "Escalation", subtitle: "Messenger questions the chatbot couldn't answer — review and resolve here." },
   knowledge: { title: "FAQs", subtitle: "Answers the chatbot uses when guests message Sautéo." },
   rules: { title: "Rules", subtitle: "Edit the dine-in and pick-up rules guests see before booking." },
+  team: { title: "Team", subtitle: "Manage admin console logins — add, edit, or remove team members." },
 };
 
 const FAQ_TOPICS = [
@@ -288,6 +301,7 @@ function AdminPage() {
           {tab === "slots" && <SlotsTab />}
           {tab === "knowledge" && <KnowledgeTab />}
           {tab === "rules" && <RulesTab />}
+          {tab === "team" && <TeamTab currentUserId={session.user.id} />}
         </div>
       </main>
     </div>
@@ -7071,6 +7085,400 @@ function RuleCard({
           )}
           {saving ? "Saving…" : isNew ? "Create" : "Save"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============ Team tab ============ */
+
+const ASSIGNABLE_TABS: { key: string; label: string }[] = NAV.filter(
+  (n) => n.key !== "overview" && n.key !== "team",
+).map((n) => ({ key: n.key, label: n.label }));
+
+type TeamEditorState = {
+  mode: "create" | "edit";
+  member?: TeamMember;
+};
+
+function TeamTab({ currentUserId }: { currentUserId: string }) {
+  const [members, setMembers] = useState<TeamMember[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [editor, setEditor] = useState<TeamEditorState | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      setMembers(await listTeamMembers());
+    } catch (e: any) {
+      setErrorMsg((e as Error).message ?? "Failed to load team members.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const openCreate = () => setEditor({ mode: "create" });
+  const openEdit = (m: TeamMember) => setEditor({ mode: "edit", member: m });
+  const closeEditor = () => setEditor(null);
+  const handleSaved = () => { closeEditor(); load(); };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          {members.length} team member{members.length === 1 ? "" : "s"}
+        </p>
+        <button
+          onClick={openCreate}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-foreground text-background text-sm font-semibold hover:opacity-80 transition-opacity"
+        >
+          <UserPlus className="h-4 w-4" />
+          Add member
+        </button>
+      </div>
+
+      {errorMsg && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-5 py-4 text-sm text-destructive">
+          {errorMsg}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="text-center text-sm text-muted-foreground py-16">Loading team…</div>
+      ) : members.length === 0 ? (
+        <EmptyState icon={Users} title="No team members yet" hint="Add the first admin console login." />
+      ) : (
+        <div className="space-y-3">
+          {members.map((m) => (
+            <TeamMemberRow
+              key={m.id}
+              member={m}
+              isSelf={m.id === currentUserId}
+              onEdit={() => openEdit(m)}
+              onDeleted={load}
+            />
+          ))}
+        </div>
+      )}
+
+      {editor && (
+        <TeamMemberEditor
+          mode={editor.mode}
+          member={editor.member}
+          onSaved={handleSaved}
+          onClose={closeEditor}
+        />
+      )}
+    </div>
+  );
+}
+
+function TeamMemberRow({
+  member, isSelf, onEdit, onDeleted,
+}: {
+  member: TeamMember;
+  isSelf: boolean;
+  onEdit: () => void;
+  onDeleted: () => void;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const handleDelete = async () => {
+    if (!confirm(`Remove ${member.full_name ?? member.email} from the admin console? This cannot be undone.`)) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteTeamMember(member.id);
+      onDeleted();
+    } catch (e: any) {
+      const msg = (e as Error).message ?? "";
+      if (msg === "last_admin") {
+        setDeleteError("Cannot remove the last admin account.");
+      } else if (msg === "cannot_delete_self") {
+        setDeleteError("You cannot delete your own account.");
+      } else {
+        setDeleteError(msg || "Delete failed.");
+      }
+      setDeleting(false);
+    }
+  };
+
+  const tabLabels = member.tabs
+    .map((k) => ASSIGNABLE_TABS.find((t) => t.key === k)?.label)
+    .filter(Boolean)
+    .join(", ");
+
+  const lastSeen = member.last_sign_in_at
+    ? new Date(member.last_sign_in_at).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })
+    : "Never signed in";
+
+  return (
+    <div className="bg-card border border-border rounded-2xl px-5 py-4 space-y-2">
+      <div className="flex flex-wrap items-start gap-3 justify-between">
+        <div className="space-y-0.5 min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-sm">{member.full_name ?? "—"}</span>
+            {isSelf && (
+              <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                You
+              </span>
+            )}
+            {member.console_role === "admin" ? (
+              <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+                Full access
+              </span>
+            ) : (
+              <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+                Limited
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">{member.email}</p>
+          {member.console_role === "member" && (
+            <p className="text-xs text-muted-foreground">
+              {tabLabels ? `Sections: ${tabLabels}` : "No sections assigned yet"}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <p className="text-xs text-muted-foreground hidden sm:block">Last seen: {lastSeen}</p>
+          <button
+            onClick={onEdit}
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground border border-border rounded-lg px-2.5 py-1.5 transition-colors"
+          >
+            <Pencil className="h-3 w-3" /> Edit
+          </button>
+          {!isSelf && (
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="inline-flex items-center gap-1 text-xs text-destructive hover:bg-destructive/10 border border-destructive/30 rounded-lg px-2.5 py-1.5 transition-colors disabled:opacity-50"
+            >
+              <Trash2 className="h-3 w-3" /> {deleting ? "Removing…" : "Remove"}
+            </button>
+          )}
+        </div>
+      </div>
+      {deleteError && <p className="text-xs text-destructive">{deleteError}</p>}
+    </div>
+  );
+}
+
+function TeamMemberEditor({
+  mode, member, onSaved, onClose,
+}: {
+  mode: "create" | "edit";
+  member?: TeamMember;
+  onSaved: () => void;
+  onClose: () => void;
+}) {
+  const [fullName, setFullName] = useState(member?.full_name ?? "");
+  const [email, setEmail] = useState(member?.email ?? "");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [consoleRole, setConsoleRole] = useState<ConsoleRole>(member?.console_role ?? "admin");
+  const [selectedTabs, setSelectedTabs] = useState<Set<string>>(new Set(member?.tabs ?? []));
+  const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const toggleTab = (key: string) => {
+    setSelectedTabs((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const handleSubmit = async () => {
+    setErrorMsg(null);
+    setSaving(true);
+    try {
+      if (mode === "create") {
+        await createTeamMember({
+          email,
+          password,
+          full_name: fullName,
+          console_role: consoleRole,
+          tabs: consoleRole === "member" ? Array.from(selectedTabs) : [],
+        });
+      } else if (member) {
+        const payload: Parameters<typeof updateTeamMember>[0] = { user_id: member.id };
+        if (fullName !== (member.full_name ?? "")) payload.full_name = fullName;
+        if (email !== member.email) payload.email = email;
+        if (password) payload.password = password;
+        if (consoleRole !== member.console_role) payload.console_role = consoleRole;
+        const newTabs = consoleRole === "member" ? Array.from(selectedTabs).sort() : [];
+        const oldTabs = member.tabs.slice().sort();
+        if (consoleRole !== member.console_role || newTabs.join(",") !== oldTabs.join(",")) {
+          payload.tabs = Array.from(selectedTabs);
+        }
+        await updateTeamMember(payload);
+      }
+      onSaved();
+    } catch (e: any) {
+      const msg = (e as Error).message ?? "";
+      if (msg === "last_full_admin") {
+        setErrorMsg("At least one team member must keep full admin access.");
+      } else if (msg === "invalid_email") {
+        setErrorMsg("Please enter a valid email address.");
+      } else if (msg === "weak_password") {
+        setErrorMsg("Password must be at least 8 characters.");
+      } else if (msg === "invalid_full_name") {
+        setErrorMsg("Full name is required (max 80 characters).");
+      } else {
+        setErrorMsg(msg || "Save failed. Please try again.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-charcoal/50 backdrop-blur-sm">
+      <div className="bg-card border border-border rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-border">
+          <h2 className="font-display text-lg font-semibold">
+            {mode === "create" ? "Add team member" : "Edit team member"}
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          >
+            <XIcon className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-5">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Full name</label>
+            <input
+              type="text"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              placeholder="e.g. Maria Santos"
+              className="w-full bg-muted/40 text-sm text-foreground placeholder-muted-foreground rounded-lg px-3 py-2.5 border border-border focus:border-foreground focus:outline-none transition-colors"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="admin@example.com"
+              className="w-full bg-muted/40 text-sm text-foreground placeholder-muted-foreground rounded-lg px-3 py-2.5 border border-border focus:border-foreground focus:outline-none transition-colors"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              {mode === "create" ? "Password" : "New password"}
+              {mode === "edit" && (
+                <span className="ml-1 normal-case font-normal text-muted-foreground">(leave blank to keep current)</span>
+              )}
+            </label>
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={mode === "create" ? "Min. 8 characters" : "Leave blank to keep current"}
+                className="w-full bg-muted/40 text-sm text-foreground placeholder-muted-foreground rounded-lg px-3 py-2.5 pr-10 border border-border focus:border-foreground focus:outline-none transition-colors"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <KeyRound className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Console access</label>
+            <div className="grid grid-cols-2 gap-2">
+              {(["admin", "member"] as ConsoleRole[]).map((role) => (
+                <button
+                  key={role}
+                  type="button"
+                  onClick={() => setConsoleRole(role)}
+                  className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                    consoleRole === role
+                      ? "border-foreground bg-foreground/5"
+                      : "border-border hover:border-foreground/40"
+                  }`}
+                >
+                  <p className="text-sm font-semibold">
+                    {role === "admin" ? "Full admin" : "Limited member"}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {role === "admin" ? "All sections + Team management" : "Only selected sections below"}
+                  </p>
+                </button>
+              ))}
+            </div>
+
+            {consoleRole === "member" && (
+              <div className="rounded-xl border border-border p-4">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Allowed sections</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {ASSIGNABLE_TABS.map(({ key, label }) => {
+                    const checked = selectedTabs.has(key);
+                    return (
+                      <label
+                        key={key}
+                        className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
+                          checked ? "border-foreground bg-foreground/5" : "border-border hover:border-foreground/30"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleTab(key)}
+                          className="accent-foreground"
+                        />
+                        <span className="text-sm">{label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {selectedTabs.size === 0 && (
+                  <p className="text-xs text-muted-foreground mt-2">No sections selected — this member will only see Overview.</p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {errorMsg && (
+            <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              {errorMsg}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 rounded-lg border border-border text-sm hover:bg-muted/50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={saving}
+              className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-foreground text-background text-sm font-semibold hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+            >
+              {saving && <RefreshCw className="h-4 w-4 animate-spin" />}
+              {saving ? "Saving…" : mode === "create" ? "Add member" : "Save changes"}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
