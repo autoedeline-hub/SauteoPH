@@ -88,7 +88,7 @@ const SOURCE_LABEL: Record<string, string> = {
 };
 
 // Page ID for the Sautéo Facebook page.
-const FB_PAGE_ASSET_ID = "61564591092158";
+const FB_PAGE_ASSET_ID = "1119234891273865";
 
 // Opens the Business Suite Messenger inbox for the page. We can't reliably
 // deep-link to a specific conversation because the stored platform_id (PSID
