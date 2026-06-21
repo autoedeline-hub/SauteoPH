@@ -170,7 +170,13 @@ function AdminPage() {
   const [session, setSession] = useState<any>(null);
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
-  const [isRecovery, setIsRecovery] = useState(false);
+  // Detect password-recovery session from URL immediately (before async effects).
+  // Implicit flow: #type=recovery in hash. PKCE flow: onAuthStateChange handles it.
+  const [isRecovery, setIsRecovery] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const hash = new URLSearchParams(window.location.hash.slice(1));
+    return hash.get("type") === "recovery";
+  });
   const [tab, setTab] = useState<TabKey>(() => {
     if (typeof window === "undefined") return "overview";
     const hash = window.location.hash.replace("#", "") as TabKey;
@@ -203,11 +209,18 @@ function AdminPage() {
   }, [tab, isAdmin]);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    // Register onAuthStateChange FIRST — before any other supabase call.
+    // The Supabase client initializes lazily; if getSession() runs first it
+    // processes the recovery URL and fires PASSWORD_RECOVERY before the
+    // listener exists, causing the event to be silently dropped.
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       if (event === "PASSWORD_RECOVERY") setIsRecovery(true);
       setSession(s);
     });
+    // getSession() after the listener is registered — handles the initial
+    // session for normal sign-in (onAuthStateChange INITIAL_SESSION covers
+    // this too, but calling getSession is an extra safety net).
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
     return () => sub.subscription.unsubscribe();
   }, []);
 
