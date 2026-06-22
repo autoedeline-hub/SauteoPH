@@ -5606,26 +5606,19 @@ type BookingInvite = {
   created_at: string;
 };
 
-// Generates a URL-safe random token. 24 bytes → 32 base64url chars ≈ 192
-// bits — well past guess-resistant, and within the 16..128 length window
-// the lookup_invite RPC accepts. Uses Web Crypto where available and a
-// graceful fallback for legacy WebViews.
+// Generates a short, human-readable 6-character invite token using uppercase
+// A-Z and digits 0-9 (base36). 36^6 ≈ 2.1 billion combinations — more than
+// sufficient for a restaurant's invite volume. URLs look like /dine-in/AB3K9F.
 function generateInviteToken(): string {
-  const bytes = new Uint8Array(24);
+  const CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const LENGTH = 6;
+  const bytes = new Uint8Array(LENGTH);
   if (typeof crypto !== "undefined" && crypto.getRandomValues) {
     crypto.getRandomValues(bytes);
   } else {
-    for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    for (let i = 0; i < LENGTH; i++) bytes[i] = Math.floor(Math.random() * 256);
   }
-  let b64: string;
-  if (typeof btoa === "function") {
-    let bin = "";
-    for (const b of bytes) bin += String.fromCharCode(b);
-    b64 = btoa(bin);
-  } else {
-    b64 = Buffer.from(bytes).toString("base64");
-  }
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return Array.from(bytes, (b) => CHARS[b % CHARS.length]).join("");
 }
 
 function inviteStatus(inv: BookingInvite): "used" | "expired" | "unused" {
