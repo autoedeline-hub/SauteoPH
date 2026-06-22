@@ -1132,11 +1132,28 @@ function ResetPassword({ onDone }: { onDone: () => void }) {
   );
 }
 
+// Module-level so React never sees a new component type on re-render,
+// which would unmount/remount children and steal input focus.
+function LoginCardShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center px-6 bg-background">
+      <div className="w-full max-w-sm bg-card border border-border rounded-2xl p-8 shadow-sm">
+        <div className="font-display text-2xl mb-1">
+          Sautéo<span className="text-primary">.</span>
+        </div>
+        <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mb-6">
+          Admin sign in
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 // Sign-in only. Public signup was removed from this form — new admins are
-// invited from inside the console by an existing admin (see the "Admins"
-// section). The Supabase auth API still accepts password sign-ups in theory,
-// but the user_roles gate below denies access regardless, and the project's
-// auth dashboard should keep signups locked to "invite only" as well.
+// invited from inside the console by an existing admin (see the Team section).
+// The Supabase auth API still accepts password sign-ups in theory, but the
+// user_roles gate denies access regardless.
 function AdminLogin() {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -1164,23 +1181,9 @@ function AdminLogin() {
     setResetSent(true);
   };
 
-  const CardShell = ({ children }: { children: React.ReactNode }) => (
-    <div className="min-h-screen flex items-center justify-center px-6 bg-background">
-      <div className="w-full max-w-sm bg-card border border-border rounded-2xl p-8 shadow-sm">
-        <div className="font-display text-2xl mb-1">
-          Sautéo<span className="text-primary">.</span>
-        </div>
-        <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mb-6">
-          Admin sign in
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-
   if (resetSent) {
     return (
-      <CardShell>
+      <LoginCardShell>
         <div className="space-y-4 text-center">
           <div className="mx-auto w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center">
             <Mail className="h-6 w-6 text-emerald-600" />
@@ -1199,13 +1202,13 @@ function AdminLogin() {
             Back to sign in
           </button>
         </div>
-      </CardShell>
+      </LoginCardShell>
     );
   }
 
   if (forgot) {
     return (
-      <CardShell>
+      <LoginCardShell>
         <p className="text-sm text-muted-foreground mb-6">
           Enter your email and we'll send you a link to reset your password.
         </p>
@@ -1230,12 +1233,12 @@ function AdminLogin() {
             Back to sign in
           </button>
         </form>
-      </CardShell>
+      </LoginCardShell>
     );
   }
 
   return (
-    <CardShell>
+    <LoginCardShell>
       <p className="text-sm text-muted-foreground mb-6">
         Welcome back. Sign in to manage Sautéo.
       </p>
@@ -1272,7 +1275,7 @@ function AdminLogin() {
           Admin access is invite-only. Ask an existing admin to add your account from inside the console.
         </p>
       </form>
-    </CardShell>
+    </LoginCardShell>
   );
 }
 
