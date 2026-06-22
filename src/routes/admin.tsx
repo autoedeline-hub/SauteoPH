@@ -1320,6 +1320,7 @@ type SeniorClaim = {
   item_name: string;
   discount_amount: number;
   id_photo_path: string | null;
+  id_back_photo_path: string | null;
   verified: boolean;
   verified_at: string | null;
   created_at: string;
@@ -1371,19 +1372,20 @@ function SeniorIdsTab() {
     setVerifyingId(null);
   };
 
-  // Mint a signed URL for an ID photo. Cached for the session since each
-  // URL is valid for 1 hour and photos don't change after upload.
-  const getPhotoUrl = async (claim: SeniorClaim) => {
-    if (!claim.id_photo_path) return;
-    if (photoUrls[claim.id]) {
-      setLightbox(photoUrls[claim.id]);
+  // Signed URL cache: keyed by "<claimId>:front" and "<claimId>:back"
+  const getPhotoUrl = async (claim: SeniorClaim, side: "front" | "back") => {
+    const path = side === "front" ? claim.id_photo_path : claim.id_back_photo_path;
+    if (!path) return;
+    const cacheKey = `${claim.id}:${side}`;
+    if (photoUrls[cacheKey]) {
+      setLightbox(photoUrls[cacheKey]);
       return;
     }
     const { data } = await supabase.storage
       .from("senior-pwd-ids")
-      .createSignedUrl(claim.id_photo_path, 3600);
+      .createSignedUrl(path, 3600);
     if (data?.signedUrl) {
-      setPhotoUrls(prev => ({ ...prev, [claim.id]: data.signedUrl }));
+      setPhotoUrls(prev => ({ ...prev, [cacheKey]: data.signedUrl }));
       setLightbox(data.signedUrl);
     }
   };
@@ -1450,25 +1452,34 @@ function SeniorIdsTab() {
                 claim.verified ? "border-border opacity-70" : "border-amber-200"
               }`}
             >
-              {/* Photo thumbnail */}
-              <div
-                className="shrink-0 w-16 h-20 rounded-lg bg-muted flex items-center justify-center cursor-pointer overflow-hidden border border-border hover:opacity-80 transition"
-                onClick={() => getPhotoUrl(claim)}
-                title="Click to view full-size ID"
-              >
-                {photoUrls[claim.id] ? (
-                  <img src={photoUrls[claim.id]} alt="ID" className="w-full h-full object-cover" />
-                ) : claim.id_photo_path ? (
-                  <div className="flex flex-col items-center gap-1 text-muted-foreground p-1">
-                    <ExternalLink className="h-5 w-5" />
-                    <span className="text-[10px] text-center leading-tight">View ID</span>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-1 text-muted-foreground/50 p-1">
-                    <ShieldAlert className="h-5 w-5" />
-                    <span className="text-[10px] text-center leading-tight">No photo</span>
-                  </div>
-                )}
+              {/* Photo thumbnails — front + back */}
+              <div className="shrink-0 flex flex-col gap-1.5">
+                {(["front", "back"] as const).map((side) => {
+                  const path = side === "front" ? claim.id_photo_path : claim.id_back_photo_path;
+                  const cacheKey = `${claim.id}:${side}`;
+                  return (
+                    <div
+                      key={side}
+                      className={`w-16 h-[3.75rem] rounded-lg bg-muted flex items-center justify-center overflow-hidden border border-border transition ${path ? "cursor-pointer hover:opacity-80" : "opacity-40 cursor-default"}`}
+                      onClick={() => path && getPhotoUrl(claim, side)}
+                      title={path ? `Click to view ${side} of ID` : `No ${side} photo`}
+                    >
+                      {photoUrls[cacheKey] ? (
+                        <img src={photoUrls[cacheKey]} alt={`ID ${side}`} className="w-full h-full object-cover" />
+                      ) : path ? (
+                        <div className="flex flex-col items-center gap-0.5 text-muted-foreground p-1">
+                          <ExternalLink className="h-4 w-4" />
+                          <span className="text-[9px] text-center leading-tight capitalize">{side}</span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center gap-0.5 text-muted-foreground/40 p-1">
+                          <ShieldAlert className="h-4 w-4" />
+                          <span className="text-[9px] text-center leading-tight capitalize">{side}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               {/* Claim details */}

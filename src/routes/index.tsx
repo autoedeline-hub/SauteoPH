@@ -725,29 +725,28 @@ export function MenuPage({
             (u) => u.unit.cartKey === cartKey,
           );
 
-          // Upload the photo first so we can store its path on the claim row.
-          let photoPath: string | null = null;
-          if (claim.idPhotoFile) {
-            const ext = claim.idPhotoFile.type.includes("png")
-              ? "png"
-              : claim.idPhotoFile.type.includes("webp")
-              ? "webp"
-              : "jpg";
-            // Use a short hash of the cartKey to keep filenames URL-safe.
+          // Upload front and back ID photos, storing their paths on the claim row.
+          const uploadPhoto = async (file: File, suffix: string): Promise<string | null> => {
+            const ext = file.type.includes("png") ? "png" : file.type.includes("webp") ? "webp" : "jpg";
             const safeName = cartKey.replace(/[^a-z0-9]/gi, "_").slice(0, 40);
-            const path = `bookings/${args.referenceCode}/${safeName}.${ext}`;
-            const { error: uploadErr } = await supabase.storage
+            const path = `bookings/${args.referenceCode}/${safeName}_${suffix}.${ext}`;
+            const { error } = await supabase.storage
               .from("senior-pwd-ids")
-              .upload(path, claim.idPhotoFile, {
-                contentType: claim.idPhotoFile.type,
-                upsert: false,
-              });
-            if (!uploadErr) photoPath = path;
-            else console.warn("[senior-id] photo upload failed:", uploadErr.message);
-          }
+              .upload(path, file, { contentType: file.type, upsert: false });
+            if (error) {
+              console.warn(`[senior-id] ${suffix} photo upload failed:`, error.message);
+              return null;
+            }
+            return path;
+          };
 
-          const { error: insertErr } = await supabase
-            .from("senior_pwd_claims")
+          const [photoPath, backPhotoPath] = await Promise.all([
+            claim.idPhotoFile     ? uploadPhoto(claim.idPhotoFile,     "front") : Promise.resolve(null),
+            claim.idBackPhotoFile ? uploadPhoto(claim.idBackPhotoFile, "back")  : Promise.resolve(null),
+          ]);
+
+          const { error: insertErr } = await (supabase
+            .from("senior_pwd_claims") as any)
             .insert({
               booking_id: args.bookingId,
               reference_code: args.referenceCode,
@@ -762,6 +761,7 @@ export function MenuPage({
               item_name: du?.unit.displayName ?? "",
               discount_amount: du?.discountAmount ?? 0,
               id_photo_path: photoPath,
+              id_back_photo_path: backPhotoPath,
             });
           if (insertErr) console.warn("[senior-id] claim insert failed:", insertErr.message);
         }),
@@ -4004,6 +4004,8 @@ function ClaimantCard({
       return file ? URL.createObjectURL(file) : null;
     });
     setBackPhotoFile(file);
+    // Bubble the File reference to the parent so the submit code can upload it.
+    onChange({ idBackPhotoFile: file });
     backExtractAbort.current?.abort();
     if (!file) { setBackAutoFill({ state: "idle" }); return; }
     const ac = new AbortController();
