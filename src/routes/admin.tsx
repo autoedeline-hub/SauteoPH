@@ -152,7 +152,7 @@ const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   bookings: { title: "Orders", subtitle: "Verify payments and manage incoming reservations." },
   seniorids: { title: "Senior IDs", subtitle: "Review and verify Senior Citizen and PWD ID photos submitted with discount claims." },
   invites: { title: "Invites", subtitle: "Generate one-time booking links for waitlisted customers." },
-  contacts: { title: "Waitlist", subtitle: "Unscheduled guests waiting for a table — no requested date captured yet." },
+  contacts: { title: "Waitlist", subtitle: "All guests waiting for a dine-in invite — grouped by their requested date." },
   schedule: { title: "Schedule", subtitle: "Confirmed and pending bookings grouped by service date and time slot." },
   slots: { title: "Time Slot", subtitle: "Open, close, and adjust capacity for each service." },
   escalations: { title: "Escalation", subtitle: "Messenger questions the chatbot couldn't answer — review and resolve here." },
@@ -4067,7 +4067,9 @@ function WaitlistTab() {
               </span>
             )}
           </div>
-          <span className="text-[11px] text-muted-foreground">Capture a date &amp; time to generate an invite</span>
+          {date === UNSCHEDULED && (
+            <span className="text-[11px] text-muted-foreground">No requested date captured yet</span>
+          )}
         </div>
 
         {/* Guests in this time-group */}
@@ -4186,25 +4188,31 @@ function WaitlistTab() {
             hint="Waitlist guests appear here as they come in from Messenger."
           />
         </div>
-      ) : (() => {
-        const entry = grouped.find(([date]) => date === UNSCHEDULED);
-        if (!entry) {
-          return (
-            <div className="bg-card border border-border rounded-2xl shadow-sm">
-              <EmptyState
-                icon={Clock}
-                title={query.trim() ? "No unscheduled matches" : "No unscheduled guests"}
-                hint={query.trim() ? "Try a different search." : "All waitlist guests have a requested date — use the Schedule tab to manage them."}
-              />
+      ) : grouped.length === 0 ? (
+        <div className="bg-card border border-border rounded-2xl shadow-sm">
+          <EmptyState
+            icon={Clock}
+            title="No matches"
+            hint="Try a different search term."
+          />
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {grouped.map(([date, timeGroups]) => (
+            <div key={date} className="space-y-3">
+              {date !== UNSCHEDULED && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-foreground">
+                    {new Date(date + "T00:00:00").toLocaleDateString("en-PH", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+                  </span>
+                  <div className="flex-1 h-px bg-border" />
+                </div>
+              )}
+              {timeGroups.map(([time, guests]) => renderTimeGroup(date, time, guests))}
             </div>
-          );
-        }
-        return (
-          <div className="space-y-3">
-            {entry[1].map(([time, guests]) => renderTimeGroup(UNSCHEDULED, time, guests))}
-          </div>
-        );
-      })()}
+          ))}
+        </div>
+      )}
 
       {selectedId && (() => {
         const c = contacts.find((row) => row.id === selectedId);
