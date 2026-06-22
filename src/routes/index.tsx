@@ -745,24 +745,29 @@ export function MenuPage({
             claim.idBackPhotoFile ? uploadPhoto(claim.idBackPhotoFile, "back")  : Promise.resolve(null),
           ]);
 
-          const { error: insertErr } = await (supabase
-            .from("senior_pwd_claims") as any)
-            .insert({
-              booking_id: args.bookingId,
-              reference_code: args.referenceCode,
-              kind: claim.kind,
-              full_name: claim.fullName,
-              id_number: claim.idNumber,
-              date_of_birth: claim.dateOfBirth,
-              age: claim.age,
-              sex: claim.sex,
-              date_of_issue: claim.dateOfIssue,
-              address: claim.address,
-              item_name: du?.unit.displayName ?? "",
-              discount_amount: du?.discountAmount ?? 0,
-              id_photo_path: photoPath,
-              id_back_photo_path: backPhotoPath,
-            });
+          const claimRow: Record<string, unknown> = {
+            booking_id: args.bookingId,
+            reference_code: args.referenceCode,
+            kind: claim.kind,
+            full_name: claim.fullName,
+            id_number: claim.idNumber,
+            date_of_birth: claim.dateOfBirth,
+            age: claim.age,
+            sex: claim.sex,
+            date_of_issue: claim.dateOfIssue,
+            address: claim.address,
+            item_name: du?.unit.displayName ?? "",
+            discount_amount: du?.discountAmount ?? 0,
+            id_photo_path: photoPath,
+            id_back_photo_path: backPhotoPath,
+          };
+          let { error: insertErr } = await (supabase.from("senior_pwd_claims") as any).insert(claimRow);
+          // Fallback: if the migration hasn't been applied yet, retry without
+          // the back-photo column so the front-photo claim still saves.
+          if (insertErr?.message?.includes("id_back_photo_path")) {
+            const { id_back_photo_path: _dropped, ...rowWithoutBack } = claimRow;
+            ({ error: insertErr } = await (supabase.from("senior_pwd_claims") as any).insert(rowWithoutBack));
+          }
           if (insertErr) console.warn("[senior-id] claim insert failed:", insertErr.message);
         }),
       );
