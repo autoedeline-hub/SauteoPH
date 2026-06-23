@@ -7,10 +7,13 @@
 -- responsible for booking their own courier to the restaurant.
 
 -- ---------------------------------------------------------------------------
--- 1. Drop old zero-arg function so CREATE OR REPLACE doesn't create an
---    ambiguous overload (PostgreSQL treats different signatures as separate
---    functions, which breaks the ALTER TABLE DEFAULT binding below).
+-- 1. Remove the column DEFAULT first, then drop the function.
+--    PostgreSQL won't let you drop a function while a table DEFAULT
+--    expression depends on it — unbinding first avoids the 2BP01 error.
 -- ---------------------------------------------------------------------------
+ALTER TABLE public.bookings
+  ALTER COLUMN reference_code DROP DEFAULT;
+
 DROP FUNCTION IF EXISTS public.generate_booking_reference();
 
 -- ---------------------------------------------------------------------------
