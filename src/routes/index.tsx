@@ -24,7 +24,6 @@ import {
   ShoppingBag,
   Sparkles,
   Trash2,
-  Truck,
   Upload,
   User as UserIcon,
   X,
@@ -3670,39 +3669,20 @@ function PickupReservationView({
           </div>
 
           {/* Pickup method */}
-          <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
-            <div className="flex items-center gap-2 mb-3">
-              <Truck className="h-4 w-4 text-primary" />
-              <h3 className="font-display text-base font-semibold">Pickup method</h3>
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setPickupMode("personal")}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-medium transition ${
-                  pickupMode === "personal"
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border hover:border-foreground/40 text-foreground"
-                }`}
-              >
-                <UserIcon className="h-3.5 w-3.5" />
-                I'll pick up myself
-              </button>
-              <button
-                type="button"
-                onClick={() => setPickupMode("courier")}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-medium transition ${
-                  pickupMode === "courier"
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-border hover:border-foreground/40 text-foreground"
-                }`}
-              >
-                <Truck className="h-3.5 w-3.5" />
-                Send a courier
-              </button>
-            </div>
+          <div className="mb-6">
+            <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+              Pickup method
+            </label>
+            <select
+              value={pickupMode}
+              onChange={(e) => setPickupMode(e.target.value as "personal" | "courier")}
+              className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+            >
+              <option value="personal">Personal pick-up</option>
+              <option value="courier">Courier pick-up</option>
+            </select>
             {pickupMode === "courier" && (
-              <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl p-3">
+              <div className="mt-2 bg-amber-50 border border-amber-200 rounded-xl p-3">
                 <p className="text-xs text-amber-800 leading-relaxed">
                   <span className="font-semibold">Please note:</span> You are responsible for booking and paying for your own courier. Sautéo will have your order ready at the scheduled pickup window — your courier must collect it at that time.
                 </p>
