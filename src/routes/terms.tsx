@@ -26,7 +26,7 @@ function TermsPage() {
       <Header />
       <main className="flex-1 w-full max-w-2xl mx-auto px-4 sm:px-6 py-10 md:py-16">
         <h1 className="font-display text-3xl md:text-4xl mb-2">Terms &amp; Privacy</h1>
-        <p className="text-muted-foreground text-sm mb-8">Last updated April 10, 2024</p>
+        <p className="text-muted-foreground text-sm mb-8">Last updated June 23, 2026</p>
 
         {/* In-page nav */}
         <nav className="flex flex-wrap gap-2 mb-10">
