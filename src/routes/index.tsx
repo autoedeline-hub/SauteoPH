@@ -24,6 +24,7 @@ import {
   ShoppingBag,
   Sparkles,
   Trash2,
+  Truck,
   Upload,
   User as UserIcon,
   X,
@@ -3374,6 +3375,9 @@ function PickupReservationView({
   const payable = discountSummary.net;
   const hasDiscount = discountSummary.discount > 0;
 
+  const [pickupMode, setPickupMode] = useState<"personal" | "courier">("personal");
+  const [courierAddress, setCourierAddress] = useState("");
+
   // Pickup windows are restricted to 3 fixed times per day; admin opens
   // them in the Slots tab. Anything else gets filtered out of the picker.
   const PICKUP_SLOT_TIMES = ["16:00:00", "18:00:00", "20:00:00"] as const;
@@ -3472,7 +3476,8 @@ function PickupReservationView({
   const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
   const step1Valid = !!selectedSlot && slotCapacityOk;
   const step2Valid = cartCount > 0 && mealsValid;
-  const step3Valid = nameValid && emailValid && phoneValid;
+  const step3Valid = nameValid && emailValid && phoneValid &&
+    (pickupMode === "personal" || courierAddress.trim().length >= 5);
 
   const canSubmit =
     !submitting &&
@@ -3511,9 +3516,10 @@ function PickupReservationView({
       customer_phone: customerPhone.trim(),
       group_size: numberOfMeals,
       notes: combinedNotes,
-      // Walk-in pickup only — Lalamove/Grab modes were retired with the
-      // 5-step pickup flow. Older bookings may still have other values.
-      pickup_mode: "personal_pickup",
+      pickup_mode: pickupMode === "personal" ? "personal_pickup" : "lalamove",
+      ...(pickupMode === "courier" && courierAddress.trim()
+        ? { courier_address: courierAddress.trim() }
+        : {}),
       items: Object.entries(qtyByMenuItemId).map(
         ([menu_item_id, quantity]) => ({ menu_item_id, quantity }),
       ),
@@ -3546,8 +3552,8 @@ function PickupReservationView({
       slot: selectedSlot,
       customerName: customerName.trim(),
       groupSize: numberOfMeals,
-      pickupMode: "personal_pickup",
-      courierAddress: null,
+      pickupMode: pickupMode === "personal" ? "personal_pickup" : "lalamove",
+      courierAddress: pickupMode === "courier" ? courierAddress.trim() || null : null,
       paymentReference: null,
     });
   };
@@ -3666,6 +3672,63 @@ function PickupReservationView({
                 <p className="sm:col-span-2 text-xs text-primary mt-1">{crmHint}</p>
               )}
             </div>
+          </div>
+
+          {/* Pickup method */}
+          <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
+            <div className="flex items-center gap-2 mb-4">
+              <Truck className="h-4 w-4 text-primary" />
+              <h3 className="font-display text-lg font-semibold">Pickup method</h3>
+            </div>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <button
+                type="button"
+                onClick={() => setPickupMode("personal")}
+                className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 text-sm font-medium transition ${
+                  pickupMode === "personal"
+                    ? "border-foreground bg-foreground/5"
+                    : "border-border hover:border-foreground/30"
+                }`}
+              >
+                <UserIcon className="h-5 w-5" />
+                I'll pick up myself
+              </button>
+              <button
+                type="button"
+                onClick={() => setPickupMode("courier")}
+                className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 text-sm font-medium transition ${
+                  pickupMode === "courier"
+                    ? "border-foreground bg-foreground/5"
+                    : "border-border hover:border-foreground/30"
+                }`}
+              >
+                <Truck className="h-5 w-5" />
+                Send a courier
+              </button>
+            </div>
+
+            {pickupMode === "courier" && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                    Delivery address
+                  </label>
+                  <textarea
+                    value={courierAddress}
+                    onChange={(e) => setCourierAddress(e.target.value)}
+                    placeholder="Enter the full delivery address for your courier…"
+                    rows={3}
+                    maxLength={300}
+                    className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition resize-none"
+                  />
+                </div>
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5">
+                  <p className="text-xs text-amber-800 leading-relaxed">
+                    <span className="font-semibold">Please note:</span> You are responsible for booking and paying for your own courier. Sautéo will have your order ready at the scheduled pickup window — your courier must collect it at that time.
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3">

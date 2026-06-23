@@ -4197,7 +4197,7 @@ function WaitlistTab() {
           />
         </div>
       ) : (
-        <div className="space-y-6">
+        <div className="max-h-[70vh] overflow-y-auto pr-1 space-y-6">
           {grouped.map(([date, timeGroups]) => (
             <div key={date} className="space-y-3">
               {date !== UNSCHEDULED && (
