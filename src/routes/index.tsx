@@ -24,6 +24,7 @@ import {
   ShoppingBag,
   Sparkles,
   Trash2,
+  Truck,
   Upload,
   User as UserIcon,
   X,
@@ -45,6 +46,7 @@ import {
 } from "@/lib/invite";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
 import { PICKUP_DEFAULTS } from "@/integrations/site-content";
+import { useBookingRulesDisplay, type DisplayRule } from "@/lib/siteContent";
 
 // Bare `/` redirects to the read-only /menu page. The booking flows
 // (/dine-in, /pick-up) stay reachable only via the tokenized invite
@@ -724,44 +726,49 @@ export function MenuPage({
             (u) => u.unit.cartKey === cartKey,
           );
 
-          // Upload the photo first so we can store its path on the claim row.
-          let photoPath: string | null = null;
-          if (claim.idPhotoFile) {
-            const ext = claim.idPhotoFile.type.includes("png")
-              ? "png"
-              : claim.idPhotoFile.type.includes("webp")
-              ? "webp"
-              : "jpg";
-            // Use a short hash of the cartKey to keep filenames URL-safe.
+          // Upload front and back ID photos, storing their paths on the claim row.
+          const uploadPhoto = async (file: File, suffix: string): Promise<string | null> => {
+            const ext = file.type.includes("png") ? "png" : file.type.includes("webp") ? "webp" : "jpg";
             const safeName = cartKey.replace(/[^a-z0-9]/gi, "_").slice(0, 40);
-            const path = `bookings/${args.referenceCode}/${safeName}.${ext}`;
-            const { error: uploadErr } = await supabase.storage
+            const path = `bookings/${args.referenceCode}/${safeName}_${suffix}.${ext}`;
+            const { error } = await supabase.storage
               .from("senior-pwd-ids")
-              .upload(path, claim.idPhotoFile, {
-                contentType: claim.idPhotoFile.type,
-                upsert: false,
-              });
-            if (!uploadErr) photoPath = path;
-            else console.warn("[senior-id] photo upload failed:", uploadErr.message);
-          }
+              .upload(path, file, { contentType: file.type, upsert: false });
+            if (error) {
+              console.warn(`[senior-id] ${suffix} photo upload failed:`, error.message);
+              return null;
+            }
+            return path;
+          };
 
-          const { error: insertErr } = await supabase
-            .from("senior_pwd_claims")
-            .insert({
-              booking_id: args.bookingId,
-              reference_code: args.referenceCode,
-              kind: claim.kind,
-              full_name: claim.fullName,
-              id_number: claim.idNumber,
-              date_of_birth: claim.dateOfBirth,
-              age: claim.age,
-              sex: claim.sex,
-              date_of_issue: claim.dateOfIssue,
-              address: claim.address,
-              item_name: du?.unit.displayName ?? "",
-              discount_amount: du?.discountAmount ?? 0,
-              id_photo_path: photoPath,
-            });
+          const [photoPath, backPhotoPath] = await Promise.all([
+            claim.idPhotoFile     ? uploadPhoto(claim.idPhotoFile,     "front") : Promise.resolve(null),
+            claim.idBackPhotoFile ? uploadPhoto(claim.idBackPhotoFile, "back")  : Promise.resolve(null),
+          ]);
+
+          const claimRow: Record<string, unknown> = {
+            booking_id: args.bookingId,
+            reference_code: args.referenceCode,
+            kind: claim.kind,
+            full_name: claim.fullName,
+            id_number: claim.idNumber,
+            date_of_birth: claim.dateOfBirth,
+            age: claim.age,
+            sex: claim.sex,
+            date_of_issue: claim.dateOfIssue,
+            address: claim.address,
+            item_name: du?.unit.displayName ?? "",
+            discount_amount: du?.discountAmount ?? 0,
+            id_photo_path: photoPath,
+            id_back_photo_path: backPhotoPath,
+          };
+          let { error: insertErr } = await (supabase.from("senior_pwd_claims") as any).insert(claimRow);
+          // Fallback: if the migration hasn't been applied yet, retry without
+          // the back-photo column so the front-photo claim still saves.
+          if (insertErr?.message?.includes("id_back_photo_path")) {
+            const { id_back_photo_path: _dropped, ...rowWithoutBack } = claimRow;
+            ({ error: insertErr } = await (supabase.from("senior_pwd_claims") as any).insert(rowWithoutBack));
+          }
           if (insertErr) console.warn("[senior-id] claim insert failed:", insertErr.message);
         }),
       );
@@ -2558,6 +2565,15 @@ type ConfirmArgs = {
   paymentReference?: string | null;
 };
 
+// Public /pick-up agreement, now backed by the admin-editable booking_rules
+// (pickup). Falls back to the static defaults until they load.
+const PICKUP_FALLBACK: DisplayRule[] = PICKUP_DEFAULTS.map((r) => ({ ...r, group_label: "" }));
+
+function PickupAgreementScreen({ onAgree }: { onAgree: () => void }) {
+  const rules = useBookingRulesDisplay("pickup", PICKUP_FALLBACK);
+  return <BookingAgreementScreen customerName="" rules={rules} onAgree={onAgree} />;
+}
+
 function BookingAgreementScreen({
   customerName,
   rules,
@@ -3359,6 +3375,8 @@ function PickupReservationView({
   const payable = discountSummary.net;
   const hasDiscount = discountSummary.discount > 0;
 
+  const [pickupMode, setPickupMode] = useState<"personal" | "courier">("personal");
+
   // Pickup windows are restricted to 3 fixed times per day; admin opens
   // them in the Slots tab. Anything else gets filtered out of the picker.
   const PICKUP_SLOT_TIMES = ["16:00:00", "18:00:00", "20:00:00"] as const;
@@ -3496,9 +3514,7 @@ function PickupReservationView({
       customer_phone: customerPhone.trim(),
       group_size: numberOfMeals,
       notes: combinedNotes,
-      // Walk-in pickup only — Lalamove/Grab modes were retired with the
-      // 5-step pickup flow. Older bookings may still have other values.
-      pickup_mode: "personal_pickup",
+      pickup_mode: pickupMode === "personal" ? "personal_pickup" : "lalamove",
       items: Object.entries(qtyByMenuItemId).map(
         ([menu_item_id, quantity]) => ({ menu_item_id, quantity }),
       ),
@@ -3531,7 +3547,7 @@ function PickupReservationView({
       slot: selectedSlot,
       customerName: customerName.trim(),
       groupSize: numberOfMeals,
-      pickupMode: "personal_pickup",
+      pickupMode: pickupMode === "personal" ? "personal_pickup" : "lalamove",
       courierAddress: null,
       paymentReference: null,
     });
@@ -3541,11 +3557,7 @@ function PickupReservationView({
   // Token-based pickup links already passed through BookingRules in book.$token.tsx.
   if (!invite && !agreedToPolicy) {
     return (
-      <BookingAgreementScreen
-        customerName=""
-        rules={PICKUP_DEFAULTS}
-        onAgree={() => setAgreedToPolicy(true)}
-      />
+      <PickupAgreementScreen onAgree={() => setAgreedToPolicy(true)} />
     );
   }
 
@@ -3655,6 +3667,47 @@ function PickupReservationView({
                 <p className="sm:col-span-2 text-xs text-primary mt-1">{crmHint}</p>
               )}
             </div>
+          </div>
+
+          {/* Pickup method */}
+          <div className="bg-card border border-border rounded-2xl p-5 mb-6 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <Truck className="h-4 w-4 text-primary" />
+              <h3 className="font-display text-base font-semibold">Pickup method</h3>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setPickupMode("personal")}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-medium transition ${
+                  pickupMode === "personal"
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border hover:border-foreground/40 text-foreground"
+                }`}
+              >
+                <UserIcon className="h-3.5 w-3.5" />
+                I'll pick up myself
+              </button>
+              <button
+                type="button"
+                onClick={() => setPickupMode("courier")}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-medium transition ${
+                  pickupMode === "courier"
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border hover:border-foreground/40 text-foreground"
+                }`}
+              >
+                <Truck className="h-3.5 w-3.5" />
+                Send a courier
+              </button>
+            </div>
+            {pickupMode === "courier" && (
+              <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                <p className="text-xs text-amber-800 leading-relaxed">
+                  <span className="font-semibold">Please note:</span> You are responsible for booking and paying for your own courier. Sautéo will have your order ready at the scheduled pickup window — your courier must collect it at that time.
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -3998,6 +4051,8 @@ function ClaimantCard({
       return file ? URL.createObjectURL(file) : null;
     });
     setBackPhotoFile(file);
+    // Bubble the File reference to the parent so the submit code can upload it.
+    onChange({ idBackPhotoFile: file });
     backExtractAbort.current?.abort();
     if (!file) { setBackAutoFill({ state: "idle" }); return; }
     const ac = new AbortController();

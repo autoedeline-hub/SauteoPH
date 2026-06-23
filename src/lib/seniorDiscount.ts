@@ -32,9 +32,9 @@ export type Claimant = {
   // Object URL of the uploaded photo. The File itself is held alongside in
   // PaymentView state — this string is only for previewing.
   idPhotoUrl: string | null;
-  // Original File reference, kept so we can upload it server-side once the
-  // booking persistence flow is wired.
+  // Original File references for front and back of the ID card.
   idPhotoFile: File | null;
+  idBackPhotoFile: File | null;
 };
 
 export function makeBlankClaimant(kind: ClaimantKind = "senior"): Claimant {
@@ -49,6 +49,7 @@ export function makeBlankClaimant(kind: ClaimantKind = "senior"): Claimant {
     dateOfIssue: "",
     idPhotoUrl: null,
     idPhotoFile: null,
+    idBackPhotoFile: null,
   };
 }
 

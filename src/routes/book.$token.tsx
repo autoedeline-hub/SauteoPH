@@ -5,6 +5,7 @@ import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import { AlertTriangle, CheckCircle2, Loader2, MessageCircle, ScrollText } from "lucide-react";
 import { InviteContext, type LoadedInvite } from "@/lib/invite";
+import { useBookingRulesDisplay, type DisplayRule } from "@/lib/siteContent";
 import { MenuPage } from "./index";
 
 export const Route = createFileRoute("/book/$token")({
@@ -184,6 +185,22 @@ const PICKUP_RULES = [
   },
 ];
 
+// Hardcoded dine-in rules mapped into the booking_rules display shape — the
+// offline/first-paint fallback before the live admin rules load.
+const DINE_IN_FALLBACK: DisplayRule[] = DINE_IN_RULES.map((r, i) => ({
+  id: String(i),
+  group_label: "",
+  title: r.heading,
+  body: r.body,
+}));
+
+const PICKUP_FALLBACK: DisplayRule[] = PICKUP_RULES.map((r, i) => ({
+  id: String(i),
+  group_label: "",
+  title: r.heading,
+  body: r.body,
+}));
+
 function BookingRules({
   invite,
   onAgree,
@@ -193,7 +210,13 @@ function BookingRules({
 }) {
   const [checked, setChecked] = useState(false);
   const isPickup = invite.channel === "pickup";
-  const rules = isPickup ? PICKUP_RULES : DINE_IN_RULES;
+  // Both invite agreements read the admin-editable booking_rules so /admin#rules
+  // edits show on the live invite links; the hardcoded sets are the fallback.
+  const liveRules = useBookingRulesDisplay(
+    isPickup ? "pickup" : "dinein",
+    isPickup ? PICKUP_FALLBACK : DINE_IN_FALLBACK,
+  );
+  const rules = liveRules.map((r) => ({ heading: r.title, body: r.body }));
 
   return (
     <div className="min-h-screen flex flex-col">

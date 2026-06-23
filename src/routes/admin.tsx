@@ -152,7 +152,7 @@ const PAGE_META: Record<TabKey, { title: string; subtitle: string }> = {
   bookings: { title: "Orders", subtitle: "Verify payments and manage incoming reservations." },
   seniorids: { title: "Senior IDs", subtitle: "Review and verify Senior Citizen and PWD ID photos submitted with discount claims." },
   invites: { title: "Invites", subtitle: "Generate one-time booking links for waitlisted customers." },
-  contacts: { title: "Waitlist", subtitle: "Unscheduled guests waiting for a table — no requested date captured yet." },
+  contacts: { title: "Waitlist", subtitle: "All guests waiting for a dine-in invite — grouped by their requested date." },
   schedule: { title: "Schedule", subtitle: "Confirmed and pending bookings grouped by service date and time slot." },
   slots: { title: "Time Slot", subtitle: "Open, close, and adjust capacity for each service." },
   escalations: { title: "Escalation", subtitle: "Messenger questions the chatbot couldn't answer — review and resolve here." },
@@ -170,6 +170,13 @@ function AdminPage() {
   const [session, setSession] = useState<any>(null);
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
+  // Detect password-recovery session from URL immediately (before async effects).
+  // Implicit flow: #type=recovery in hash. PKCE flow: onAuthStateChange handles it.
+  const [isRecovery, setIsRecovery] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const hash = new URLSearchParams(window.location.hash.slice(1));
+    return hash.get("type") === "recovery";
+  });
   const [tab, setTab] = useState<TabKey>(() => {
     if (typeof window === "undefined") return "overview";
     const hash = window.location.hash.replace("#", "") as TabKey;
@@ -202,8 +209,18 @@ function AdminPage() {
   }, [tab, isAdmin]);
 
   useEffect(() => {
+    // Register onAuthStateChange FIRST — before any other supabase call.
+    // The Supabase client initializes lazily; if getSession() runs first it
+    // processes the recovery URL and fires PASSWORD_RECOVERY before the
+    // listener exists, causing the event to be silently dropped.
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      if (event === "PASSWORD_RECOVERY") setIsRecovery(true);
+      setSession(s);
+    });
+    // getSession() after the listener is registered — handles the initial
+    // session for normal sign-in (onAuthStateChange INITIAL_SESSION covers
+    // this too, but calling getSession is an extra safety net).
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -218,6 +235,7 @@ function AdminPage() {
   }, [session]);
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading…</div>;
+  if (isRecovery && session) return <ResetPassword onDone={() => setIsRecovery(false)} />;
   if (!session) return <AdminLogin />;
   if (!isAdmin) return <NotAuthorized email={session.user.email} />;
 
@@ -1040,16 +1058,110 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 /* ============ Login / Not authorized ============ */
+// Shown after a user follows a password-reset email link (PASSWORD_RECOVERY
+// auth event). Lets them set a new password, then returns to the login screen.
+function ResetPassword({ onDone }: { onDone: () => void }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    if (pw !== pw2) { setErr("Passwords don't match."); return; }
+    if (pw.length < 8) { setErr("Password must be at least 8 characters."); return; }
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pw });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await supabase.auth.signOut();
+    setDone(true);
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-6 bg-background">
+      <div className="w-full max-w-sm bg-card border border-border rounded-2xl p-8 shadow-sm">
+        <div className="font-display text-2xl mb-1">
+          Sautéo<span className="text-primary">.</span>
+        </div>
+        <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mb-6">
+          Set new password
+        </div>
+        {done ? (
+          <div className="space-y-4 text-center">
+            <div className="mx-auto w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center">
+              <CheckCircle2 className="h-6 w-6 text-emerald-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-sm">Password updated</p>
+              <p className="text-sm text-muted-foreground mt-1">You can now sign in with your new password.</p>
+            </div>
+            <button
+              onClick={onDone}
+              className="w-full rounded-full bg-foreground text-background py-2.5 font-medium text-sm hover:opacity-90 transition"
+            >
+              Back to sign in
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={submit} className="space-y-3">
+            <p className="text-sm text-muted-foreground mb-2">Choose a new password for your account.</p>
+            <input
+              type="password" required minLength={8} placeholder="New password (min. 8 characters)"
+              value={pw} onChange={e => setPw(e.target.value)}
+              className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+            />
+            <input
+              type="password" required minLength={8} placeholder="Confirm new password"
+              value={pw2} onChange={e => setPw2(e.target.value)}
+              className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+            />
+            {err && <div className="text-sm text-destructive">{err}</div>}
+            <button
+              disabled={busy}
+              className="w-full rounded-full bg-foreground text-background py-2.5 font-medium text-sm hover:opacity-90 disabled:opacity-50 transition"
+            >
+              {busy ? "Saving…" : "Set new password"}
+            </button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Module-level so React never sees a new component type on re-render,
+// which would unmount/remount children and steal input focus.
+function LoginCardShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center px-6 bg-background">
+      <div className="w-full max-w-sm bg-card border border-border rounded-2xl p-8 shadow-sm">
+        <div className="font-display text-2xl mb-1">
+          Sautéo<span className="text-primary">.</span>
+        </div>
+        <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mb-6">
+          Admin sign in
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 // Sign-in only. Public signup was removed from this form — new admins are
-// invited from inside the console by an existing admin (see the "Admins"
-// section). The Supabase auth API still accepts password sign-ups in theory,
-// but the user_roles gate below denies access regardless, and the project's
-// auth dashboard should keep signups locked to "invite only" as well.
+// invited from inside the console by an existing admin (see the Team section).
+// The Supabase auth API still accepts password sign-ups in theory, but the
+// user_roles gate denies access regardless.
 function AdminLogin() {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [err, setErr] = useState<string|null>(null);
   const [busy, setBusy] = useState(false);
+  const [forgot, setForgot] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true); setErr(null);
@@ -1057,27 +1169,53 @@ function AdminLogin() {
     if (error) setErr(error.message);
     setBusy(false);
   };
-  return (
-    <div className="min-h-screen flex items-center justify-center px-6 bg-background">
-      <form onSubmit={submit} className="w-full max-w-sm bg-card border border-border rounded-2xl p-8 shadow-sm">
-        <div className="font-display text-2xl mb-1">
-          Sautéo<span className="text-primary">.</span>
+
+  const sendReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setErr(null);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/admin`,
+    });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    setResetSent(true);
+  };
+
+  if (resetSent) {
+    return (
+      <LoginCardShell>
+        <div className="space-y-4 text-center">
+          <div className="mx-auto w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center">
+            <Mail className="h-6 w-6 text-emerald-600" />
+          </div>
+          <div>
+            <p className="font-semibold text-sm">Check your inbox</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              A password reset link was sent to <span className="font-medium text-foreground">{email}</span>.
+              Click the link to set a new password.
+            </p>
+          </div>
+          <button
+            onClick={() => { setForgot(false); setResetSent(false); setErr(null); }}
+            className="text-sm text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+          >
+            Back to sign in
+          </button>
         </div>
-        <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mb-6">
-          Admin sign in
-        </div>
+      </LoginCardShell>
+    );
+  }
+
+  if (forgot) {
+    return (
+      <LoginCardShell>
         <p className="text-sm text-muted-foreground mb-6">
-          Welcome back. Sign in to manage Sautéo.
+          Enter your email and we'll send you a link to reset your password.
         </p>
-        <div className="space-y-3">
+        <form onSubmit={sendReset} className="space-y-3">
           <input
             type="email" required placeholder="Email"
-            value={email} onChange={e=>setEmail(e.target.value)}
-            className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
-          />
-          <input
-            type="password" required minLength={6} placeholder="Password"
-            value={pw} onChange={e=>setPw(e.target.value)}
+            value={email} onChange={e => setEmail(e.target.value)}
             className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
           />
           {err && <div className="text-sm text-destructive">{err}</div>}
@@ -1085,14 +1223,59 @@ function AdminLogin() {
             disabled={busy}
             className="w-full rounded-full bg-foreground text-background py-2.5 font-medium text-sm hover:opacity-90 disabled:opacity-50 transition"
           >
-            {busy ? "…" : "Sign in"}
+            {busy ? "Sending…" : "Send reset link"}
           </button>
-          <p className="pt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
-            Admin access is invite-only. Ask an existing admin to add your account from inside the console.
-          </p>
+          <button
+            type="button"
+            onClick={() => { setForgot(false); setErr(null); }}
+            className="w-full text-sm text-muted-foreground hover:text-foreground text-center pt-1 transition-colors"
+          >
+            Back to sign in
+          </button>
+        </form>
+      </LoginCardShell>
+    );
+  }
+
+  return (
+    <LoginCardShell>
+      <p className="text-sm text-muted-foreground mb-6">
+        Welcome back. Sign in to manage Sautéo.
+      </p>
+      <form onSubmit={submit} className="space-y-3">
+        <input
+          type="email" required placeholder="Email"
+          value={email} onChange={e=>setEmail(e.target.value)}
+          className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+        />
+        <div className="space-y-1">
+          <input
+            type="password" required minLength={6} placeholder="Password"
+            value={pw} onChange={e=>setPw(e.target.value)}
+            className="w-full bg-background border border-border rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
+          />
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => { setForgot(true); setErr(null); }}
+              className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+            >
+              Forgot password?
+            </button>
+          </div>
         </div>
+        {err && <div className="text-sm text-destructive">{err}</div>}
+        <button
+          disabled={busy}
+          className="w-full rounded-full bg-foreground text-background py-2.5 font-medium text-sm hover:opacity-90 disabled:opacity-50 transition"
+        >
+          {busy ? "…" : "Sign in"}
+        </button>
+        <p className="pt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
+          Admin access is invite-only. Ask an existing admin to add your account from inside the console.
+        </p>
       </form>
-    </div>
+    </LoginCardShell>
   );
 }
 
@@ -1137,6 +1320,7 @@ type SeniorClaim = {
   item_name: string;
   discount_amount: number;
   id_photo_path: string | null;
+  id_back_photo_path: string | null;
   verified: boolean;
   verified_at: string | null;
   created_at: string;
@@ -1188,19 +1372,20 @@ function SeniorIdsTab() {
     setVerifyingId(null);
   };
 
-  // Mint a signed URL for an ID photo. Cached for the session since each
-  // URL is valid for 1 hour and photos don't change after upload.
-  const getPhotoUrl = async (claim: SeniorClaim) => {
-    if (!claim.id_photo_path) return;
-    if (photoUrls[claim.id]) {
-      setLightbox(photoUrls[claim.id]);
+  // Signed URL cache: keyed by "<claimId>:front" and "<claimId>:back"
+  const getPhotoUrl = async (claim: SeniorClaim, side: "front" | "back") => {
+    const path = side === "front" ? claim.id_photo_path : claim.id_back_photo_path;
+    if (!path) return;
+    const cacheKey = `${claim.id}:${side}`;
+    if (photoUrls[cacheKey]) {
+      setLightbox(photoUrls[cacheKey]);
       return;
     }
     const { data } = await supabase.storage
       .from("senior-pwd-ids")
-      .createSignedUrl(claim.id_photo_path, 3600);
+      .createSignedUrl(path, 3600);
     if (data?.signedUrl) {
-      setPhotoUrls(prev => ({ ...prev, [claim.id]: data.signedUrl }));
+      setPhotoUrls(prev => ({ ...prev, [cacheKey]: data.signedUrl }));
       setLightbox(data.signedUrl);
     }
   };
@@ -1267,25 +1452,34 @@ function SeniorIdsTab() {
                 claim.verified ? "border-border opacity-70" : "border-amber-200"
               }`}
             >
-              {/* Photo thumbnail */}
-              <div
-                className="shrink-0 w-16 h-20 rounded-lg bg-muted flex items-center justify-center cursor-pointer overflow-hidden border border-border hover:opacity-80 transition"
-                onClick={() => getPhotoUrl(claim)}
-                title="Click to view full-size ID"
-              >
-                {photoUrls[claim.id] ? (
-                  <img src={photoUrls[claim.id]} alt="ID" className="w-full h-full object-cover" />
-                ) : claim.id_photo_path ? (
-                  <div className="flex flex-col items-center gap-1 text-muted-foreground p-1">
-                    <ExternalLink className="h-5 w-5" />
-                    <span className="text-[10px] text-center leading-tight">View ID</span>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-1 text-muted-foreground/50 p-1">
-                    <ShieldAlert className="h-5 w-5" />
-                    <span className="text-[10px] text-center leading-tight">No photo</span>
-                  </div>
-                )}
+              {/* Photo thumbnails — front + back */}
+              <div className="shrink-0 flex flex-col gap-1.5">
+                {(["front", "back"] as const).map((side) => {
+                  const path = side === "front" ? claim.id_photo_path : claim.id_back_photo_path;
+                  const cacheKey = `${claim.id}:${side}`;
+                  return (
+                    <div
+                      key={side}
+                      className={`w-16 h-[3.75rem] rounded-lg bg-muted flex items-center justify-center overflow-hidden border border-border transition ${path ? "cursor-pointer hover:opacity-80" : "opacity-40 cursor-default"}`}
+                      onClick={() => path && getPhotoUrl(claim, side)}
+                      title={path ? `Click to view ${side} of ID` : `No ${side} photo`}
+                    >
+                      {photoUrls[cacheKey] ? (
+                        <img src={photoUrls[cacheKey]} alt={`ID ${side}`} className="w-full h-full object-cover" />
+                      ) : path ? (
+                        <div className="flex flex-col items-center gap-0.5 text-muted-foreground p-1">
+                          <ExternalLink className="h-4 w-4" />
+                          <span className="text-[9px] text-center leading-tight capitalize">{side}</span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center gap-0.5 text-muted-foreground/40 p-1">
+                          <ShieldAlert className="h-4 w-4" />
+                          <span className="text-[9px] text-center leading-tight capitalize">{side}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               {/* Claim details */}
@@ -3873,7 +4067,9 @@ function WaitlistTab() {
               </span>
             )}
           </div>
-          <span className="text-[11px] text-muted-foreground">Capture a date &amp; time to generate an invite</span>
+          {date === UNSCHEDULED && (
+            <span className="text-[11px] text-muted-foreground">No requested date captured yet</span>
+          )}
         </div>
 
         {/* Guests in this time-group */}
@@ -3992,25 +4188,31 @@ function WaitlistTab() {
             hint="Waitlist guests appear here as they come in from Messenger."
           />
         </div>
-      ) : (() => {
-        const entry = grouped.find(([date]) => date === UNSCHEDULED);
-        if (!entry) {
-          return (
-            <div className="bg-card border border-border rounded-2xl shadow-sm">
-              <EmptyState
-                icon={Clock}
-                title={query.trim() ? "No unscheduled matches" : "No unscheduled guests"}
-                hint={query.trim() ? "Try a different search." : "All waitlist guests have a requested date — use the Schedule tab to manage them."}
-              />
+      ) : grouped.length === 0 ? (
+        <div className="bg-card border border-border rounded-2xl shadow-sm">
+          <EmptyState
+            icon={Clock}
+            title="No matches"
+            hint="Try a different search term."
+          />
+        </div>
+      ) : (
+        <div className="max-h-[70vh] overflow-y-auto pr-1 space-y-6">
+          {grouped.map(([date, timeGroups]) => (
+            <div key={date} className="space-y-3">
+              {date !== UNSCHEDULED && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-foreground">
+                    {new Date(date + "T00:00:00").toLocaleDateString("en-PH", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+                  </span>
+                  <div className="flex-1 h-px bg-border" />
+                </div>
+              )}
+              {timeGroups.map(([time, guests]) => renderTimeGroup(date, time, guests))}
             </div>
-          );
-        }
-        return (
-          <div className="space-y-3">
-            {entry[1].map(([time, guests]) => renderTimeGroup(UNSCHEDULED, time, guests))}
-          </div>
-        );
-      })()}
+          ))}
+        </div>
+      )}
 
       {selectedId && (() => {
         const c = contacts.find((row) => row.id === selectedId);
@@ -5412,26 +5614,19 @@ type BookingInvite = {
   created_at: string;
 };
 
-// Generates a URL-safe random token. 24 bytes → 32 base64url chars ≈ 192
-// bits — well past guess-resistant, and within the 16..128 length window
-// the lookup_invite RPC accepts. Uses Web Crypto where available and a
-// graceful fallback for legacy WebViews.
+// Generates a short, human-readable 6-character invite token using uppercase
+// A-Z and digits 0-9 (base36). 36^6 ≈ 2.1 billion combinations — more than
+// sufficient for a restaurant's invite volume. URLs look like /dine-in/AB3K9F.
 function generateInviteToken(): string {
-  const bytes = new Uint8Array(24);
+  const CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const LENGTH = 6;
+  const bytes = new Uint8Array(LENGTH);
   if (typeof crypto !== "undefined" && crypto.getRandomValues) {
     crypto.getRandomValues(bytes);
   } else {
-    for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    for (let i = 0; i < LENGTH; i++) bytes[i] = Math.floor(Math.random() * 256);
   }
-  let b64: string;
-  if (typeof btoa === "function") {
-    let bin = "";
-    for (const b of bytes) bin += String.fromCharCode(b);
-    b64 = btoa(bin);
-  } else {
-    b64 = Buffer.from(bytes).toString("base64");
-  }
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return Array.from(bytes, (b) => CHARS[b % CHARS.length]).join("");
 }
 
 function inviteStatus(inv: BookingInvite): "used" | "expired" | "unused" {
@@ -5825,7 +6020,7 @@ function InviteRow({
               className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
             >
               <Facebook className="h-3 w-3" />
-              Message on Messenger
+              Messenger Link
             </a>
           )}
           <div className="text-[11px]">
