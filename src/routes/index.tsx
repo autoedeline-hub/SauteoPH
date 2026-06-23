@@ -815,7 +815,7 @@ export function MenuPage({
             cartCount={cartCount}
             discountSummary={discountSummary}
             onCheckout={() => setView("wizard")}
-            allowDiscount={effectiveChannel === "dine_in"}
+            allowDiscount={true}
           />
         )}
         {view === "wizard" &&
@@ -841,7 +841,7 @@ export function MenuPage({
                   cartCount={cartCount}
                   discountSummary={discountSummary}
                   onCheckout={() => setWizardStep(3)}
-                  allowDiscount={false}
+                  allowDiscount={true}
                 />
               )}
               onBack={() => setView("menu")}
