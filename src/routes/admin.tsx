@@ -111,8 +111,8 @@ function messengerInboxUrl(): string {
 
 const PICKUP_LABEL: Record<string, string> = {
   dine_in: "Dine-in",
-  personal_pickup: "Personal pick-up",
-  courier: "Courier pick-up",
+  personal_pickup: "Personal Pickup",
+  courier: "Courier Pickup",
 };
 
 const REFUND_LABEL: Record<string, string> = {

@@ -3678,8 +3678,8 @@ function PickupReservationView({
               onChange={(e) => setPickupMode(e.target.value as "personal" | "courier")}
               className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-foreground/10 focus:border-foreground transition"
             >
-              <option value="personal">Personal pick-up</option>
-              <option value="courier">Courier pick-up</option>
+              <option value="personal">Personal Pickup</option>
+              <option value="courier">Courier Pickup</option>
             </select>
             {pickupMode === "courier" && (
               <div className="mt-2 bg-amber-50 border border-amber-200 rounded-xl p-3">
@@ -4475,8 +4475,8 @@ function ReceiptView({
             <div>
               <div className="uppercase tracking-wider text-muted-foreground">Mode</div>
               <div className="text-foreground font-medium mt-0.5">
-                {receipt.pickupMode === "personal_pickup" && "Personal pick-up"}
-                {receipt.pickupMode === "courier" && "Courier pick-up"}
+                {receipt.pickupMode === "personal_pickup" && "Personal Pickup"}
+                {receipt.pickupMode === "courier" && "Courier Pickup"}
               </div>
             </div>
             <div>
