@@ -223,7 +223,7 @@ type ReceiptShape = {
   customerName: string;
   groupSize: number;
   // Pickup-specific. For dine-in bookings these stay null.
-  pickupMode: "dine_in" | "personal_pickup" | "lalamove" | "grab";
+  pickupMode: "dine_in" | "personal_pickup" | "courier";
   courierAddress: string | null;
   paymentReference: string | null;
 };
@@ -662,7 +662,7 @@ export function MenuPage({
     slot: AvailableSlot;
     customerName: string;
     groupSize: number;
-    pickupMode?: "dine_in" | "personal_pickup" | "lalamove" | "grab";
+    pickupMode?: "dine_in" | "personal_pickup" | "courier";
     courierAddress?: string | null;
     paymentReference?: string | null;
   }) => {
@@ -2559,7 +2559,7 @@ type ConfirmArgs = {
   slot: AvailableSlot;
   customerName: string;
   groupSize: number;
-  pickupMode?: "dine_in" | "personal_pickup" | "lalamove" | "grab";
+  pickupMode?: "dine_in" | "personal_pickup" | "courier";
   courierAddress?: string | null;
   paymentReference?: string | null;
 };
@@ -3513,7 +3513,7 @@ function PickupReservationView({
       customer_phone: customerPhone.trim(),
       group_size: numberOfMeals,
       notes: combinedNotes,
-      pickup_mode: pickupMode === "personal" ? "personal_pickup" : "lalamove",
+      pickup_mode: pickupMode === "personal" ? "personal_pickup" : "courier",
       items: Object.entries(qtyByMenuItemId).map(
         ([menu_item_id, quantity]) => ({ menu_item_id, quantity }),
       ),
@@ -3546,7 +3546,7 @@ function PickupReservationView({
       slot: selectedSlot,
       customerName: customerName.trim(),
       groupSize: numberOfMeals,
-      pickupMode: pickupMode === "personal" ? "personal_pickup" : "lalamove",
+      pickupMode: pickupMode === "personal" ? "personal_pickup" : "courier",
       courierAddress: null,
       paymentReference: null,
     });
@@ -4475,9 +4475,8 @@ function ReceiptView({
             <div>
               <div className="uppercase tracking-wider text-muted-foreground">Mode</div>
               <div className="text-foreground font-medium mt-0.5">
-                {receipt.pickupMode === "personal_pickup" && "Personal pickup"}
-                {receipt.pickupMode === "lalamove" && "Lalamove"}
-                {receipt.pickupMode === "grab" && "Grab"}
+                {receipt.pickupMode === "personal_pickup" && "Personal pick-up"}
+                {receipt.pickupMode === "courier" && "Courier pick-up"}
               </div>
             </div>
             <div>
