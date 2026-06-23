@@ -80,16 +80,22 @@ function MenuViewerPage() {
     load();
   }, [load]);
 
-  const visibleItems = useMemo(() => {
+  // Items matching the current search, ignoring the category filter. This is
+  // the base set for the category chips so their counts reflect what the
+  // search actually returns (faceted behaviour) instead of the static total.
+  const searchMatched = useMemo(() => {
     const needle = search.trim().toLowerCase();
+    if (!needle) return items;
+    return items.filter((item) => item.name.toLowerCase().includes(needle));
+  }, [items, search]);
+
+  const visibleItems = useMemo(() => {
     const catOrder = new Map(cats.map((c) => [c.id, c.sort_order]));
-    return items
-      .filter((item) => {
-        if (categoryFilter !== "all" && item.category_id !== categoryFilter)
-          return false;
-        if (needle && !item.name.toLowerCase().includes(needle)) return false;
-        return true;
-      })
+    return searchMatched
+      .filter(
+        (item) =>
+          categoryFilter === "all" || item.category_id === categoryFilter,
+      )
       .sort((a, b) => {
         const ca = catOrder.get(a.category_id) ?? Number.MAX_SAFE_INTEGER;
         const cb = catOrder.get(b.category_id) ?? Number.MAX_SAFE_INTEGER;
@@ -97,14 +103,16 @@ function MenuViewerPage() {
         if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
         return a.name.localeCompare(b.name);
       });
-  }, [items, cats, categoryFilter, search]);
+  }, [searchMatched, cats, categoryFilter]);
 
+  // Counts shown on the filter chips track the active search so a customer
+  // can see how many items each category contributes to the current results.
   const itemCountsByCat = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const it of items)
+    for (const it of searchMatched)
       counts[it.category_id] = (counts[it.category_id] ?? 0) + 1;
     return counts;
-  }, [items]);
+  }, [searchMatched]);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -201,7 +209,7 @@ function MenuViewerPage() {
                   <div className="p-3 flex-1 flex flex-col">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="text-sm font-medium truncate">
+                        <div className="text-sm font-medium leading-snug line-clamp-2">
                           {item.name}
                         </div>
                         <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
