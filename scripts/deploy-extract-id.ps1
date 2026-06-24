@@ -12,7 +12,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$projectRef = "abpxielbycwpgzmocven"
+$projectRef = "lejwrpnuqpmfndzntsch"
 
 Write-Host ""
 Write-Host "=== Sauteo: deploy extract-id Edge Function ===" -ForegroundColor Cyan
