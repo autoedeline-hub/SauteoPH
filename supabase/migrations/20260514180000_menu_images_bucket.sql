@@ -69,7 +69,7 @@ RETURNS text
 LANGUAGE sql
 IMMUTABLE
 AS $$
-  SELECT 'https://abpxielbycwpgzmocven.supabase.co/storage/v1/object/public/menu-images/'
+  SELECT 'https://lejwrpnuqpmfndzntsch.supabase.co/storage/v1/object/public/menu-images/'
     || _filename;
 $$;
 
