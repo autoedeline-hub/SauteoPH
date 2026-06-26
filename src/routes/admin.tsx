@@ -3446,7 +3446,7 @@ function ChannelSlotsSection({
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-display text-lg lg:text-xl">{format(new Date(date), "EEEE, MMM d")}</h3>
                 <span className="text-xs text-muted-foreground">
-                  {takenSeats}/{totalSeats} seats · {ss.length} slot{ss.length === 1 ? "" : "s"}
+                  {takenSeats}/{totalSeats} {ss[0]?.channel === "dine_in" ? "tables" : "seats"} · {ss.length} slot{ss.length === 1 ? "" : "s"}
                 </span>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
@@ -3505,7 +3505,7 @@ function SlotCard({
         {formatSlotTime12h(slot.slot_time)}
       </div>
       <div className="text-[10px] text-muted-foreground mt-1">
-        {slot.seats_taken}/{slot.capacity}
+        {slot.seats_taken}/{slot.capacity} {slot.channel === "dine_in" ? "tables" : "seats"}
         {full && slot.is_open && <span className="ml-1 font-medium text-charcoal">· full</span>}
       </div>
       {offSchedulePickup && (
@@ -3559,7 +3559,7 @@ function SlotCreator({
   const [startTime, setStartTime] = useState(isPickup ? "16:00" : "18:00");
   const [endTime, setEndTime] = useState(isPickup ? "20:00" : "20:00");
   const [interval, setInterval] = useState(isPickup ? "120" : "30");
-  const [capacity, setCapacity] = useState("10");
+  const [capacity, setCapacity] = useState(isPickup ? "10" : "7");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -3740,8 +3740,10 @@ function SlotCreator({
               <input type="number" min={5} step={5} value={interval} onChange={e => setInterval(e.target.value)} className={`${cls} tabular-nums`} />
             </div>
             <div>
-              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Capacity per slot</label>
-              <input type="number" min={1} value={capacity} onChange={e => setCapacity(e.target.value)} className={`${cls} tabular-nums`} />
+              <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                {isPickup ? "Capacity per slot" : "Tables per slot (max 7)"}
+              </label>
+              <input type="number" min={1} max={isPickup ? undefined : 7} value={capacity} onChange={e => setCapacity(e.target.value)} className={`${cls} tabular-nums`} />
             </div>
           </div>
 

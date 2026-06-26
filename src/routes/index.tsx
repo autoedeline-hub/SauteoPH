@@ -26,6 +26,7 @@ import {
   Trash2,
   Upload,
   User as UserIcon,
+  Users,
   X,
 } from "lucide-react";
 import {
@@ -2713,7 +2714,7 @@ function DineInReservationView({
   const [customerName, setCustomerName] = useState(invite?.customerName ?? "");
   const [customerEmail, setCustomerEmail] = useState(invite?.customerEmail ?? "");
   const [customerPhone, setCustomerPhone] = useState(invite?.customerPhone ?? "");
-  const [groupSize, setGroupSize] = useState<number>(invite?.groupSize ?? 2);
+  const groupSize = 2; // table-based: 1 table = 2 chairs, fixed
 
   // QR display fallback — flips to true when /maya-qr.png 404s so the
   // payment card still renders gracefully without the image.
@@ -2746,10 +2747,9 @@ function DineInReservationView({
     customerName.trim().length >= 1 && customerName.trim().length <= 120;
   const phoneTrimmed = customerPhone.trim();
   const phoneValid = phoneTrimmed.length >= 7 && phoneTrimmed.length <= 32;
-  const groupSizeValid = groupSize >= 1 && groupSize <= 50;
   const slotCapacityOk =
     !selectedSlot ||
-    selectedSlot.seats_taken + groupSize <= selectedSlot.capacity;
+    selectedSlot.seats_taken < selectedSlot.capacity;
 
   // Required-field set, in priority order per Sautéo:
   //   1. Full name
@@ -2762,14 +2762,13 @@ function DineInReservationView({
   // Per-step validity gates. Continue is enabled only when the current
   // step's required fields are all valid. Final submit gate (`canSubmit`)
   // re-checks everything as a defense in depth.
-  //   1 — Slot picked + capacity ok + valid group size
+  //   1 — Slot picked + table available
   //   2 — Cart has at least one item
   //   3a — Customer details valid
   //   3b — Always valid here. Senior/PWD claims now live on the cart line
   //         (collected in the variant modal at item-add time), so there is
   //         no per-step gate left to evaluate.
-  const step1Valid =
-    !!selectedSlot && slotCapacityOk && groupSizeValid;
+  const step1Valid = !!selectedSlot && slotCapacityOk;
   const cartCount = Object.values(cart).reduce((a, b) => a + b, 0);
   const step2Valid = cartCount > 0;
   const step3aValid = nameValid && emailValid && phoneValid;
@@ -2825,7 +2824,7 @@ function DineInReservationView({
       customer_name: customerName.trim(),
       customer_email: customerEmail.trim().toLowerCase(),
       customer_phone: customerPhone.trim(),
-      group_size: groupSize,
+      group_size: 2,
       notes: combinedNotes,
       pickup_mode: invite?.channel === "pickup" ? "personal_pickup" : "dine_in",
       items: Object.entries(qtyByMenuItemId).map(([menu_item_id, quantity]) => ({
@@ -2989,39 +2988,14 @@ function DineInReservationView({
             : "Only the dates and times Sautéo has opened are shown."}
         </p>
 
-        {/* Party size — compact stepper. Drives the slot capacity check
-            below so unavailable slots get correctly disabled. */}
-        <div className="mb-4 flex items-center justify-between bg-muted/40 border border-border rounded-xl px-4 py-2.5">
-          <div className="min-w-0">
+        {/* Fixed table indicator — 1 booking = 1 table = 2 chairs */}
+        <div className="mb-4 flex items-center gap-3 bg-muted/40 border border-border rounded-xl px-4 py-3">
+          <Users className="h-4 w-4 text-muted-foreground shrink-0" />
+          <div>
             <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Guests
+              Reservation
             </div>
-            <div className="text-[11px] text-muted-foreground">
-              How many in your party (1–50)?
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              aria-label="Decrease guests"
-              onClick={() => setGroupSize((g) => Math.max(1, g - 1))}
-              disabled={groupSize <= 1}
-              className="h-9 w-9 rounded-full bg-background border border-border text-foreground hover:bg-muted transition disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              −
-            </button>
-            <span className="font-display text-lg font-semibold tabular-nums w-8 text-center">
-              {groupSize}
-            </span>
-            <button
-              type="button"
-              aria-label="Increase guests"
-              onClick={() => setGroupSize((g) => Math.min(50, g + 1))}
-              disabled={groupSize >= 50}
-              className="h-9 w-9 rounded-full bg-background border border-border text-foreground hover:bg-muted transition disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              +
-            </button>
+            <div className="text-sm font-medium text-foreground">1 table · 2 guests</div>
           </div>
         </div>
 
@@ -3071,7 +3045,7 @@ function DineInReservationView({
                   <div className="flex flex-wrap gap-2">
                     {daySlots.map((s) => {
                       const remaining = s.capacity - s.seats_taken;
-                      const tooSmall = remaining < groupSize;
+                      const tooSmall = remaining < 1;
                       const selected = s.id === selectedSlotId;
                       const t = formatSlotTime12h(s.slot_time);
                       return (
@@ -3091,7 +3065,7 @@ function DineInReservationView({
                         >
                           <span className="tabular-nums">{t}</span>
                           <span className={`text-[10px] font-normal ${selected ? "text-background/70" : "text-muted-foreground"}`}>
-                            {remaining} seat{remaining === 1 ? "" : "s"} left
+                            {tooSmall ? "fully booked" : `${remaining} table${remaining === 1 ? "" : "s"} left`}
                           </span>
                         </button>
                       );
@@ -3105,8 +3079,7 @@ function DineInReservationView({
 
         {selectedSlot && !slotCapacityOk && (
           <div className="mt-3 text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-lg p-2.5">
-            That slot only has {selectedSlot.capacity - selectedSlot.seats_taken} seat
-            {selectedSlot.capacity - selectedSlot.seats_taken === 1 ? "" : "s"} left — pick a smaller group or another slot.
+            That slot is fully booked — please choose another time.
           </div>
         )}
       </div>
