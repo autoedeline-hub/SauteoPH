@@ -294,10 +294,12 @@ function useReservationSlots({
         console.warn("[slots] load failed:", error);
         setSlots([]);
       } else {
+        const now = new Date();
         setSlots(
-          ((data ?? []) as AvailableSlot[]).filter(
-            (s) => s.seats_taken < s.capacity,
-          ),
+          ((data ?? []) as AvailableSlot[]).filter((s) => {
+            const slotDateTime = new Date(`${s.slot_date}T${s.slot_time}`);
+            return slotDateTime > now && s.seats_taken < s.capacity;
+          }),
         );
       }
       setSlotsLoading(false);
