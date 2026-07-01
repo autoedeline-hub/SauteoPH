@@ -3871,7 +3871,7 @@ function WaitlistTab() {
     const { data } = await supabase
       .from("crm_contacts_with_stats")
       .select("*")
-      .order("updated_at", { ascending: false });
+      .order("created_at", { ascending: true });
     const rows = (data ?? []) as ContactRow[];
     setContacts(rows);
 
