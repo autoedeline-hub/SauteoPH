@@ -1569,7 +1569,7 @@ function BookingsTab() {
 
   const load = async () => {
     setLoading(true);
-    let q = supabase.from("bookings").select("*, time_slots(slot_date, slot_time), booking_items(item_name, quantity), payments(id, status, reference_number, screenshot_url)").order("created_at", { ascending: false });
+    let q = supabase.from("bookings").select("*, time_slots(slot_date, slot_time), booking_items(item_name, quantity), payments(id, status, reference_number, screenshot_url)").order("created_at", { ascending: true });
     if (statusFilter !== "all") q = q.eq("status", statusFilter);
     const { data } = await q;
     let rows = (data ?? []) as any as Booking[];
