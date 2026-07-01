@@ -6491,7 +6491,7 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
         supabase
           .from("crm_contacts_with_stats")
           .select("*")
-          .order("updated_at", { ascending: false }),
+          .order("created_at", { ascending: true }),
         supabase
           .from("booking_invites" as any)
           .select(
