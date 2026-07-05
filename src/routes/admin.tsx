@@ -109,6 +109,44 @@ function messengerInboxUrl(): string {
   return `https://business.facebook.com/latest/inbox/all?asset_id=${FB_PAGE_ASSET_ID}&mailbox_id=${FB_PAGE_ASSET_ID}`;
 }
 
+// Turn a guest-provided Facebook handle/profile (crm_contacts.facebook_handle,
+// captured by the WF-DM-01 waitlist bot at signup) into a clickable profile URL.
+// Staff message the guest as a normal person-to-person Facebook message, which
+// has NO Messenger 24h/7-day window — so a waitlist reply can go out weeks later
+// when a slot opens. Accepts a full URL, a facebook.com/… path, profile.php?id=…,
+// or a bare username. Returns null when empty.
+function facebookProfileUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const s = raw.trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/^(www\.)?(facebook\.com|fb\.com|m\.me)\//i.test(s)) return `https://${s.replace(/^www\./i, "")}`;
+  return `https://www.facebook.com/${s.replace(/^@/, "")}`;
+}
+
+// Maps a guest PSID -> their crm_contacts.facebook_handle, so an invite card
+// (which only carries platform_id) can offer a direct "Message on Facebook"
+// link. Absent handle -> the card falls back to the inbox search link.
+function useHandleMap() {
+  const [map, setMap] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { data } = await (supabase.from("crm_contacts") as any)
+        .select("messenger_psid, facebook_handle")
+        .not("facebook_handle", "is", null);
+      if (!alive || !data) return;
+      const m = new Map<string, string>();
+      for (const r of data as { messenger_psid: string | null; facebook_handle: string | null }[]) {
+        if (r.messenger_psid && r.facebook_handle) m.set(r.messenger_psid, r.facebook_handle);
+      }
+      setMap(m);
+    })();
+    return () => { alive = false; };
+  }, []);
+  return map;
+}
+
 const PICKUP_LABEL: Record<string, string> = {
   dine_in: "Dine-in",
   personal_pickup: "Personal Pickup",
@@ -5642,6 +5680,7 @@ function InvitesTab() {
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<"all" | "unused" | "used" | "expired">("all");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const handleMap = useHandleMap();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -5832,6 +5871,7 @@ function InvitesTab() {
               <InviteRow
                 key={inv.id}
                 inv={inv}
+                fbHandle={inv.platform_id ? handleMap.get(inv.platform_id) ?? null : null}
                 copied={copiedId === inv.id}
                 onCopy={() => copyLink(inv)}
                 onRevoke={() => revokeInvite(inv)}
@@ -5919,11 +5959,13 @@ const EMPTY_COPY: Record<
 // links. Delete only shows on hover so Copy link gets the spotlight.
 function InviteRow({
   inv,
+  fbHandle,
   copied,
   onCopy,
   onRevoke,
 }: {
   inv: BookingInvite;
+  fbHandle: string | null;
   copied: boolean;
   onCopy: () => void;
   onRevoke: () => void;
@@ -6012,7 +6054,18 @@ function InviteRow({
               .filter(Boolean)
               .join(" · ")}
           </div>
-          {inv.platform_id && (
+          {facebookProfileUrl(fbHandle) ? (
+            <a
+              href={facebookProfileUrl(fbHandle)!}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Message this guest on Facebook (person-to-person — works any time, no Messenger window)"
+              className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
+            >
+              <Facebook className="h-3 w-3" />
+              Message on Facebook
+            </a>
+          ) : inv.platform_id && (
             <a
               href={messengerInboxUrl()}
               target="_blank"
