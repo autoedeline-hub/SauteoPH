@@ -2716,7 +2716,12 @@ function DineInReservationView({
   const [customerName, setCustomerName] = useState(invite?.customerName ?? "");
   const [customerEmail, setCustomerEmail] = useState(invite?.customerEmail ?? "");
   const [customerPhone, setCustomerPhone] = useState(invite?.customerPhone ?? "");
-  const groupSize = 2; // table-based: 1 table = 2 chairs, fixed
+  // Party size comes from the invite (Sautéo captured it on the Messenger
+  // waitlist). Tables seat 2, so an odd party still books a whole extra table
+  // — a party of 3 takes 2 tables. Falls back to 2 on the no-invite preview
+  // path, which returns the invite-only card before this value is ever used.
+  const groupSize = invite?.groupSize ?? 2;
+  const tablesNeeded = Math.max(1, Math.ceil(groupSize / 2));
 
   // QR display fallback — flips to true when /maya-qr.png 404s so the
   // payment card still renders gracefully without the image.
@@ -2751,7 +2756,7 @@ function DineInReservationView({
   const phoneValid = phoneTrimmed.length >= 7 && phoneTrimmed.length <= 32;
   const slotCapacityOk =
     !selectedSlot ||
-    selectedSlot.seats_taken < selectedSlot.capacity;
+    selectedSlot.seats_taken + tablesNeeded <= selectedSlot.capacity;
 
   // Required-field set, in priority order per Sautéo:
   //   1. Full name
@@ -2826,7 +2831,7 @@ function DineInReservationView({
       customer_name: customerName.trim(),
       customer_email: customerEmail.trim().toLowerCase(),
       customer_phone: customerPhone.trim(),
-      group_size: 2,
+      group_size: groupSize,
       notes: combinedNotes,
       pickup_mode: invite?.channel === "pickup" ? "personal_pickup" : "dine_in",
       items: Object.entries(qtyByMenuItemId).map(([menu_item_id, quantity]) => ({
@@ -2990,14 +2995,16 @@ function DineInReservationView({
             : "Only the dates and times Sautéo has opened are shown."}
         </p>
 
-        {/* Fixed table indicator — 1 booking = 1 table = 2 chairs */}
+        {/* Party size comes from the invite; tables = ceil(party / 2), 2 chairs each. */}
         <div className="mb-4 flex items-center gap-3 bg-muted/40 border border-border rounded-xl px-4 py-3">
           <Users className="h-4 w-4 text-muted-foreground shrink-0" />
           <div>
             <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               Reservation
             </div>
-            <div className="text-sm font-medium text-foreground">1 table · 2 guests</div>
+            <div className="text-sm font-medium text-foreground">
+              {tablesNeeded} table{tablesNeeded === 1 ? "" : "s"} · {groupSize} guest{groupSize === 1 ? "" : "s"}
+            </div>
           </div>
         </div>
 
@@ -3047,7 +3054,7 @@ function DineInReservationView({
                   <div className="flex flex-wrap gap-2">
                     {daySlots.map((s) => {
                       const remaining = s.capacity - s.seats_taken;
-                      const tooSmall = remaining < 1;
+                      const tooSmall = remaining < tablesNeeded;
                       const selected = s.id === selectedSlotId;
                       const t = formatSlotTime12h(s.slot_time);
                       return (
@@ -3067,7 +3074,11 @@ function DineInReservationView({
                         >
                           <span className="tabular-nums">{t}</span>
                           <span className={`text-[10px] font-normal ${selected ? "text-background/70" : "text-muted-foreground"}`}>
-                            {tooSmall ? "fully booked" : `${remaining} table${remaining === 1 ? "" : "s"} left`}
+                            {remaining < 1
+                              ? "fully booked"
+                              : remaining < tablesNeeded
+                              ? `only ${remaining} left`
+                              : `${remaining} table${remaining === 1 ? "" : "s"} left`}
                           </span>
                         </button>
                       );
