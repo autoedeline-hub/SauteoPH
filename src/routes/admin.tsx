@@ -5698,8 +5698,17 @@ function InvitesTab() {
   useEffect(() => { load(); }, [load]);
 
   const filtered = useMemo(() => {
-    if (statusFilter === "all") return invites;
-    return invites.filter(i => inviteStatus(i) === statusFilter);
+    const base =
+      statusFilter === "all"
+        ? invites
+        : invites.filter((i) => inviteStatus(i) === statusFilter);
+    // Always FIFO: oldest-issued invite on top, matching the Waitlist queue.
+    // The DB fetch stays newest-first + limit 200 so a growing table never
+    // hides recent invites; we sort the loaded window ascending for display.
+    return [...base].sort(
+      (a, b) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    );
   }, [invites, statusFilter]);
 
   const counts = useMemo(() => {
