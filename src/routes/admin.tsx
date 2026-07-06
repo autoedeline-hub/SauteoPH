@@ -4121,8 +4121,10 @@ function WaitlistTab() {
                 key={c.id}
                 className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-5 py-3.5 hover:bg-muted/30 transition"
               >
+                {/* Identity + Facebook action, wrapped so the FB link is a sibling of the drawer button (no interactive nesting) */}
+                <div className="min-w-0 flex-1 space-y-0.5">
                 {/* Guest (clickable → opens drawer) */}
-                <button onClick={() => setSelectedId(c.id)} className="text-left min-w-0 flex-1">
+                <button onClick={() => setSelectedId(c.id)} className="block w-full text-left min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium truncate">{c.full_name}</span>
                     {!c.messenger_psid && (
@@ -4141,6 +4143,33 @@ function WaitlistTab() {
                     {c.instagram_handle && <span className="inline-flex items-center gap-1"><Instagram className="h-3 w-3" /> {c.instagram_handle}</span>}
                   </div>
                 </button>
+                {/* Message on Facebook — person-to-person message, no Messenger 24h/7-day window (mirrors the invite card) */}
+                {facebookProfileUrl(c.facebook_handle) ? (
+                  <a
+                    href={facebookProfileUrl(c.facebook_handle)!}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    title="Message this guest on Facebook (person-to-person — works any time, no Messenger window)"
+                    className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
+                  >
+                    <Facebook className="h-3 w-3" />
+                    Message on Facebook
+                  </a>
+                ) : c.messenger_psid ? (
+                  <a
+                    href={messengerInboxUrl()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    title={`Open Business Suite inbox — search for "${c.full_name}"`}
+                    className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
+                  >
+                    <Facebook className="h-3 w-3" />
+                    Messenger Link
+                  </a>
+                ) : null}
+                </div>
 
                 {/* Party · status · per-guest action */}
                 <div className="flex items-center gap-4 sm:gap-5 shrink-0">
