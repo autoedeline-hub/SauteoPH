@@ -4336,7 +4336,8 @@ function ScheduleTab() {
       .select("id, reference_code, customer_name, group_size, status, source, total_amount, time_slots(slot_date, slot_time)")
       .in("status", ["confirmed", "pending"])
       .not("slot_id", "is", null)
-      .order("created_at", { ascending: false });
+      // FIFO: within each service slot, list whoever booked first on top.
+      .order("created_at", { ascending: true });
     setBookings((data ?? []) as unknown as ScheduleBooking[]);
     setLoading(false);
   }, []);
