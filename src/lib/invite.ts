@@ -44,6 +44,39 @@ export function inviteLinkPath(
   return `/${segment}/${token}`;
 }
 
+// Builds the same guest-facing message the bot sends via Messenger
+// (WL-INVITE-SEND-01's "Build Invite Data" node) so a staff member messaging
+// a guest manually — e.g. after the guest fell outside the 24h Messenger
+// window and the DM leg failed over to email — can paste the identical
+// wording instead of just the bare link. Keep this in sync with that node's
+// dineMsg/pickupMsg templates if either one changes.
+export function buildInviteMessage(
+  customerName: string | null | undefined,
+  channel: "dine_in" | "pickup",
+  token: string,
+  expiresAt: string,
+): string {
+  const origin =
+    typeof window !== "undefined" ? window.location.origin : "https://sauteo-ph.vercel.app";
+  const bookingUrl = `${origin}${inviteLinkPath(channel, token)}`;
+
+  const titleCase = (s: string | null | undefined) =>
+    String(s ?? "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .toLowerCase()
+      .replace(/(^|[\s'-])(\p{L})/gu, (_m, sep, ch) => sep + ch.toUpperCase());
+  const name = titleCase(customerName) || "there";
+
+  const hoursLeft = Math.max(1, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 3600000));
+  const expiryLabel = `${hoursLeft} hour${hoursLeft === 1 ? "" : "s"}`;
+
+  if (channel === "pickup") {
+    return `Hi ${name}! 🍔\n\nYour Sautéo pick-up invitation is ready. Tap the link below to place your order and pay:\n\n${bookingUrl}\n\n⏰ This link expires in ${expiryLabel}.\n\n— Sautéo`;
+  }
+  return `Hi ${name}! 🍔\n\nIt's your turn to dine at Sautéo. Tap the link below to choose your date, place your order, and pay to secure your table:\n\n${bookingUrl}\n\n⏰ Your invitation expires in ${expiryLabel}.\n\n— Sautéo`;
+}
+
 // Maps SQLSTATE / message from create_booking RPC errors into a friendly
 // sentence for the customer. RPC raises these via RAISE EXCEPTION:
 //   'invite_required'         P0001

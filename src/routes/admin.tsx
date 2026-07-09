@@ -7,7 +7,7 @@ import {
   type RuleSection,
 } from "@/lib/siteContent";
 import { addDays, format, subDays, subMonths } from "date-fns";
-import { inviteLinkPath } from "@/lib/invite";
+import { inviteLinkPath, buildInviteMessage } from "@/lib/invite";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
 import {
   Area,
@@ -4017,6 +4017,35 @@ function WaitlistTab() {
     );
   };
 
+  // Copies the full guest-facing message (same wording the bot would have
+  // sent via Messenger) instead of just the bare link — for pasting into a
+  // manual "Message on Facebook" DM when the guest is outside the 24h
+  // Messenger window and the automated send fell back to email.
+  const copyInviteMessage = async (
+    contactId: string,
+    customerName: string | null | undefined,
+    token: string,
+    channel: "dine_in" | "pickup",
+    expiresAt: string,
+  ) => {
+    const text = buildInviteMessage(customerName, channel, token, expiresAt);
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setCopiedContactId(contactId);
+    window.setTimeout(
+      () => setCopiedContactId((p) => (p === contactId ? null : p)),
+      1500,
+    );
+  };
+
   // This tab is single-purpose now — only waitlist guests. Once a guest has
   // a confirmed booking they've already been seated (visible in Orders /
   // Pipelines instead), so drop them out here even though bookings_sync_contact
@@ -4189,19 +4218,21 @@ function WaitlistTab() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        copyInviteLink(
+                        copyInviteMessage(
                           c.id,
+                          c.full_name,
                           invStatus.invite.token,
                           invStatus.invite.channel as "dine_in" | "pickup",
+                          invStatus.invite.expires_at,
                         );
                       }}
-                      title="Copy this guest's active invite link"
+                      title="Copy the ready-to-paste invite message (same wording the bot sends) — for pasting into a manual Facebook message"
                       className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-full px-3 py-1.5 border border-border hover:bg-muted transition"
                     >
                       {copiedContactId === c.id ? (
                         <><CheckCircle2 className="h-3.5 w-3.5" /> Copied!</>
                       ) : (
-                        <><Mail className="h-3.5 w-3.5" /> Copy link</>
+                        <><Mail className="h-3.5 w-3.5" /> Copy message</>
                       )}
                     </button>
                   ) : (
