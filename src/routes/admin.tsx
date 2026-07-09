@@ -4121,6 +4121,15 @@ function WaitlistTab() {
       0,
     );
 
+    // Expired invites sink to the bottom — they need attention (re-invite or
+    // remove) but shouldn't push active/none-status guests down the list.
+    // Stable sort keeps everything else in its existing (created_at) order.
+    const sortedGuests = [...guests].sort((a, b) => {
+      const aExpired = inviteStatusFor(a.id).state === "expired" ? 1 : 0;
+      const bExpired = inviteStatusFor(b.id).state === "expired" ? 1 : 0;
+      return aExpired - bExpired;
+    });
+
     return (
       <div key={groupKey} className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
         {/* Group header */}
@@ -4145,7 +4154,7 @@ function WaitlistTab() {
 
         {/* Guests in this time-group */}
         <ul className="divide-y divide-border">
-          {guests.map((c) => {
+          {sortedGuests.map((c) => {
             const invStatus = inviteStatusFor(c.id);
             const party = c.last_party_size ?? guestsFor(c.id);
             // How many invite links have ever been generated for this guest.
