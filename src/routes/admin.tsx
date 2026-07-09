@@ -4017,9 +4017,12 @@ function WaitlistTab() {
     );
   };
 
-  // This tab is single-purpose now — only waitlist guests.
+  // This tab is single-purpose now — only waitlist guests. Once a guest has
+  // a confirmed booking they've already been seated (visible in Orders /
+  // Pipelines instead), so drop them out here even though bookings_sync_contact
+  // keeps stamping the 'waitlist' tag on every dine-in-channel booking row.
   const allWaitlist = useMemo(
-    () => contacts.filter((c) => c.tags.includes("waitlist")),
+    () => contacts.filter((c) => c.tags.includes("waitlist") && c.confirmed_bookings === 0),
     [contacts],
   );
 
