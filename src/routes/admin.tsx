@@ -8,6 +8,7 @@ import {
 } from "@/lib/siteContent";
 import { addDays, format, subDays, subMonths } from "date-fns";
 import { inviteLinkPath, buildInviteMessage } from "@/lib/invite";
+import { buildReminderMessage } from "@/lib/reminder";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
 import {
   Area,
@@ -45,6 +46,7 @@ import {
   Tag,
   Pencil,
   Facebook,
+  Copy,
   Inbox,
   MessageSquareWarning,
   CalendarPlus,
@@ -6622,6 +6624,9 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
   const [loading, setLoading] = useState(true);
   const [inviteFor, setInviteFor] = useState<ContactRow | null>(null);
   const [copiedContactId, setCopiedContactId] = useState<string | null>(null);
+  // Separate from copiedContactId (invite-link copy) so the two "Copied!"
+  // confirmations on a card — invite link vs reminder text — never cross-fire.
+  const [copiedReminderId, setCopiedReminderId] = useState<string | null>(null);
   // Per-card busy flag for the "Mark complete" action so the button can
   // show a spinner without blocking the rest of the board.
   const [completingId, setCompletingId] = useState<string | null>(null);
@@ -6741,6 +6746,35 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
     );
   };
 
+  // Copies a ready-to-paste day-before reminder for a confirmed dine-in
+  // booking, so staff can send it via a manual "Message on Facebook" DM —
+  // WF03/WF10's automated Messenger reminders were deactivated 2026-07-09
+  // (dead email nodes + a permanently deprecated DM tag meant guests were
+  // never actually reminded; see docs/2026-07-09-manual-guest-reminders-design.md).
+  const copyReminderMessage = async (
+    contactId: string,
+    customerName: string | null | undefined,
+    slotDate: string,
+    slotTime: string | null | undefined,
+  ) => {
+    const text = buildReminderMessage(customerName, slotDate, slotTime, localToday());
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setCopiedReminderId(contactId);
+    window.setTimeout(
+      () => setCopiedReminderId((p) => (p === contactId ? null : p)),
+      1500,
+    );
+  };
+
   // Verifies a pending booking directly from the pipeline card. Same
   // two writes the Orders tab's Verify button performs:
   //   1. payments.status → 'verified' (if a shell exists)
@@ -6854,6 +6888,7 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
                   card={card}
                   channel={channel}
                   copied={copiedContactId === card.contact.id}
+                  copiedReminder={copiedReminderId === card.contact.id}
                   completing={
                     card.latestBooking
                       ? completingId === card.latestBooking.id
@@ -6873,6 +6908,14 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
                     verifyBooking(bookingId, paymentId)
                   }
                   onMarkComplete={(bookingId) => markCompleted(bookingId)}
+                  onCopyReminder={(slotDate, slotTime) =>
+                    copyReminderMessage(
+                      card.contact.id,
+                      card.contact.full_name,
+                      slotDate,
+                      slotTime,
+                    )
+                  }
                 />
               )}
             />
@@ -6960,6 +7003,7 @@ function PipelineCardView({
   card,
   channel,
   copied,
+  copiedReminder,
   completing,
   verifying,
   onGenerateInvite,
@@ -6967,10 +7011,12 @@ function PipelineCardView({
   onJumpToOrders,
   onVerify,
   onMarkComplete,
+  onCopyReminder,
 }: {
   card: PipelineCard;
   channel: PipelineChannel;
   copied: boolean;
+  copiedReminder: boolean;
   completing: boolean;
   verifying: boolean;
   onGenerateInvite: () => void;
@@ -6978,8 +7024,28 @@ function PipelineCardView({
   onJumpToOrders: () => void;
   onVerify: (bookingId: string, paymentId: string | null) => void;
   onMarkComplete: (bookingId: string) => void;
+  onCopyReminder: (slotDate: string, slotTime: string | null) => void;
 }) {
   const { contact, stage, activeInvite, latestBooking } = card;
+
+  // Day-before reminder eligibility: confirmed dine-in booking whose slot
+  // is today or tomorrow. WF03/WF10's automated reminders are deactivated
+  // (dead email nodes + a permanently-deprecated Messenger tag meant guests
+  // were never actually reminded) — this replaces them with a manual,
+  // no-time-window Facebook message. See
+  // docs/2026-07-09-manual-guest-reminders-design.md.
+  const today = localToday();
+  const tomorrow = format(addDays(new Date(`${today}T00:00:00`), 1), "yyyy-MM-dd");
+  const slotDate = latestBooking?.time_slots?.slot_date;
+  const showReminder =
+    channel === "dine_in" &&
+    stage === "confirmed" &&
+    !!latestBooking &&
+    !!slotDate &&
+    (slotDate === today || slotDate === tomorrow);
+  const reminderFbUrl = showReminder
+    ? facebookProfileUrl(latestBooking!.facebook_handle)
+    : null;
   return (
     <div className="bg-card border border-border rounded-xl p-3 shadow-sm space-y-2">
       <div className="min-w-0">
@@ -7078,6 +7144,45 @@ function PipelineCardView({
             ? "Mark picked up"
             : "Mark visited"}
         </button>
+      )}
+      {/* Manual day-before reminder — replaces WF03/WF10's deactivated
+          automated Messenger reminder (see docs/2026-07-09-manual-guest-reminders-design.md).
+          Only for confirmed dine-in bookings today/tomorrow, and only when
+          the guest has a Facebook handle on file to message. */}
+      {showReminder && reminderFbUrl && latestBooking && (
+        <div className="flex items-center gap-2 pt-0.5">
+          <a
+            href={reminderFbUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            title="Message this guest on Facebook to remind them of their reservation (person-to-person — no Messenger time window)"
+            className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
+          >
+            <Facebook className="h-3 w-3" />
+            Message on Facebook
+          </a>
+          <button
+            onClick={() =>
+              onCopyReminder(
+                latestBooking.time_slots!.slot_date,
+                latestBooking.time_slots!.slot_time,
+              )
+            }
+            title="Copy a ready-to-paste reminder message"
+            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition"
+          >
+            {copiedReminder ? (
+              <>
+                <CheckCircle2 className="h-3 w-3" /> Copied!
+              </>
+            ) : (
+              <>
+                <Copy className="h-3 w-3" /> Copy text
+              </>
+            )}
+          </button>
+        </div>
       )}
       {stage === "completed" && latestBooking?.completed_at && (
         <div className="text-[10px] text-primary inline-flex items-center gap-1">
