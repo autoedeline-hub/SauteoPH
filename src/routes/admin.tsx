@@ -4148,6 +4148,10 @@ function WaitlistTab() {
           {guests.map((c) => {
             const invStatus = inviteStatusFor(c.id);
             const party = c.last_party_size ?? guestsFor(c.id);
+            // How many invite links have ever been generated for this guest.
+            // Staff manually stop re-inviting after ~3 tries, so flag it once
+            // it hits that so it's easy to spot who's due for removal.
+            const inviteCount = invitesByContact.get(c.id)?.length ?? 0;
             return (
               <li
                 key={c.id}
@@ -4212,6 +4216,15 @@ function WaitlistTab() {
                     ) : (
                       <span className="text-muted-foreground/60">—</span>
                     )}
+                  </span>
+                  <span
+                    className="text-xs text-muted-foreground tabular-nums"
+                    title={`${inviteCount} invite link${inviteCount === 1 ? "" : "s"} generated for this guest`}
+                  >
+                    <span className="uppercase tracking-wider text-[10px] mr-1">Invites</span>
+                    <span className={inviteCount >= 3 ? "text-destructive font-semibold" : "text-foreground font-medium"}>
+                      {inviteCount}
+                    </span>
                   </span>
                   <InviteStatusPill status={invStatus} />
                   {invStatus.state === "active" ? (
