@@ -6650,6 +6650,15 @@ function deriveStage(
   invites: BookingInvite[],
   bookings: PipelineBooking[],
 ): PipelineStage {
+  // A plain "Waiting" invite (no token, not used) means this guest is back in
+  // the active queue RIGHT NOW - via WF08's payment-timeout requeue or WL-04's
+  // expiry requeue - even if their most recent booking says otherwise (e.g.
+  // "payment_timeout" or "cancelled"). Check this before booking status, or a
+  // requeued guest gets stuck showing as Cancelled instead of back on the
+  // Waitlist, same bug already fixed in the Waitlist tab's inviteStatusFor().
+  const waitingInvite = invites.find((i) => !i.used_at && !i.token);
+  if (waitingInvite) return "request";
+
   const latestBooking = bookings[0] ?? null;
   if (latestBooking) {
     // payment_timeout (WF08, 2026-07-10) is a specific reason for cancellation,
