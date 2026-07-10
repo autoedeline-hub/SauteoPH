@@ -5506,7 +5506,7 @@ function KnowledgeTab() {
       {/* List */}
       <div
         className="bg-muted/50 rounded-2xl overflow-y-auto p-3"
-        style={{ minHeight: "calc(100vh - 368px)", maxHeight: "calc(100vh - 368px)" }}
+        style={{ minHeight: "calc(100vh - 400px)", maxHeight: "calc(100vh - 400px)" }}
       >
       {loading ? (
         <div className="py-16 text-center text-muted-foreground text-sm">Loading FAQ…</div>
@@ -7491,7 +7491,7 @@ function RulesTab() {
       ) : (
         <div
           className="bg-muted/50 rounded-2xl overflow-y-auto p-3 space-y-4"
-          style={{ minHeight: "calc(100vh - 228px)", maxHeight: "calc(100vh - 228px)" }}
+          style={{ minHeight: "calc(100vh - 400px)", maxHeight: "calc(100vh - 400px)" }}
         >
           <p className="text-sm text-muted-foreground">
             These rules are shown to guests on the{" "}
