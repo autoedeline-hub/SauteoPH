@@ -3891,6 +3891,20 @@ function isPaymentTimeoutInvite(invite: { notes: string | null }): boolean {
   return (invite.notes ?? "").toLowerCase().includes("payment timeout");
 }
 
+// When did this invite actually drop out of the active queue (expire, or get
+// requeued after a payment timeout) - used to order the "sunk to the bottom"
+// group so the most recently dropped guest is furthest back, not just grouped
+// with everyone else who's ever expired. A payment-timeout requeue is a fresh
+// booking_invites row, so its own created_at IS the sink moment. An expired
+// invite is nulled in place by WL-04 (no updated_at column exists), so WL-04
+// stamps an ISO timestamp into notes at the moment it expires it - fall back
+// to created_at for any legacy row from before that stamp existed.
+function invitesSunkAtMs(invite: { notes: string | null; created_at: string }): number {
+  const m = (invite.notes ?? "").match(/(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/);
+  if (m) return new Date(m[1]).getTime();
+  return new Date(invite.created_at).getTime();
+}
+
 function WaitlistTab() {
   const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -4139,19 +4153,26 @@ function WaitlistTab() {
       0,
     );
 
-    // Expired invites AND payment-timeout requeues sink to the bottom — both
-    // need attention (re-invite, remove, or just a heads-up they're back)
-    // but shouldn't push active/none-status guests down the list. Stable
-    // sort keeps everything else in its existing (created_at) order.
-    const sinksToBottom = (guestId: string) => {
+    // Expired invites AND payment-timeout requeues sink to the bottom, and
+    // among themselves are ordered by WHEN they actually dropped out of the
+    // active queue (earliest-sunk near the top of that group, most recently
+    // sunk at the very bottom) — a genuine "back of the line" model, not just
+    // grouped together in their original signup order. Active/none-status
+    // guests keep their existing (contact signup) order via a stable sort.
+    const sinkInfo = (guestId: string): { sink: 0 | 1; at: number } => {
       const st = inviteStatusFor(guestId);
-      if (st.state === "expired") return 1;
-      if (st.state === "waiting" && isPaymentTimeoutInvite(st.invite)) return 1;
-      return 0;
+      if (st.state === "expired") return { sink: 1, at: invitesSunkAtMs(st.invite) };
+      if (st.state === "waiting" && isPaymentTimeoutInvite(st.invite)) {
+        return { sink: 1, at: invitesSunkAtMs(st.invite) };
+      }
+      return { sink: 0, at: 0 };
     };
-    const sortedGuests = [...guests].sort(
-      (a, b) => sinksToBottom(a.id) - sinksToBottom(b.id),
-    );
+    const sortedGuests = [...guests].sort((a, b) => {
+      const sa = sinkInfo(a.id);
+      const sb = sinkInfo(b.id);
+      if (sa.sink !== sb.sink) return sa.sink - sb.sink;
+      return sa.sink === 1 ? sa.at - sb.at : 0;
+    });
 
     return (
       <div key={groupKey} className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
