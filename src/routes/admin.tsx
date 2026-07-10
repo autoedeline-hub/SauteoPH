@@ -3884,6 +3884,13 @@ const UNSCHEDULED = "__unscheduled__";
 // day cell regardless of whether any guest requested that slot.
 const CALENDAR_TIMES = ["13:00", "15:00", "17:00", "19:00"];
 
+// Shared by InviteStatusPill (badge text) and renderTimeGroup's sort (bottom-of-line
+// placement) so the two stay in sync — an invite counts as a payment-timeout requeue
+// only when WF08's requeue step actually stamped that reason into notes.
+function isPaymentTimeoutInvite(invite: { notes: string | null }): boolean {
+  return (invite.notes ?? "").toLowerCase().includes("payment timeout");
+}
+
 function WaitlistTab() {
   const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -4132,14 +4139,19 @@ function WaitlistTab() {
       0,
     );
 
-    // Expired invites sink to the bottom — they need attention (re-invite or
-    // remove) but shouldn't push active/none-status guests down the list.
-    // Stable sort keeps everything else in its existing (created_at) order.
-    const sortedGuests = [...guests].sort((a, b) => {
-      const aExpired = inviteStatusFor(a.id).state === "expired" ? 1 : 0;
-      const bExpired = inviteStatusFor(b.id).state === "expired" ? 1 : 0;
-      return aExpired - bExpired;
-    });
+    // Expired invites AND payment-timeout requeues sink to the bottom — both
+    // need attention (re-invite, remove, or just a heads-up they're back)
+    // but shouldn't push active/none-status guests down the list. Stable
+    // sort keeps everything else in its existing (created_at) order.
+    const sinksToBottom = (guestId: string) => {
+      const st = inviteStatusFor(guestId);
+      if (st.state === "expired") return 1;
+      if (st.state === "waiting" && isPaymentTimeoutInvite(st.invite)) return 1;
+      return 0;
+    };
+    const sortedGuests = [...guests].sort(
+      (a, b) => sinksToBottom(a.id) - sinksToBottom(b.id),
+    );
 
     return (
       <div key={groupKey} className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
@@ -4911,9 +4923,7 @@ function InviteStatusPill({
     // (e.g. WF08's payment-timeout requeue stamps this exact notes text)
     // rather than showing a generic "Waiting" that reads the same as any
     // brand-new signup.
-    const isPaymentTimeout = (status.invite.notes ?? "")
-      .toLowerCase()
-      .includes("payment timeout");
+    const isPaymentTimeout = isPaymentTimeoutInvite(status.invite);
     return (
       <span
         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${
