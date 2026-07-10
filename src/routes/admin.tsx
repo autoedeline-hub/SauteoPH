@@ -4172,7 +4172,10 @@ function WaitlistTab() {
     const queuePositionMs = (c: ContactRow): number => {
       const st = inviteStatusFor(c.id);
       if (st.state === "expired") return invitesSunkAtMs(st.invite);
-      if (st.state === "waiting" && isPaymentTimeoutInvite(st.invite)) {
+      if (
+        st.state === "waiting" &&
+        (isPaymentTimeoutInvite(st.invite) || isExpiredRequeueInvite(st.invite))
+      ) {
         return invitesSunkAtMs(st.invite);
       }
       return new Date(c.created_at).getTime();
