@@ -3921,7 +3921,7 @@ function WaitlistTab() {
     if (ids.length > 0) {
       const { data: invRaw } = await supabase
         .from("booking_invites" as any)
-        .select("id, token, channel, customer_name, group_size, expires_at, used_at, contact_id, slot_id, created_at")
+        .select("id, token, channel, customer_name, group_size, notes, expires_at, used_at, contact_id, slot_id, created_at")
         .in("contact_id", ids);
       const m = new Map<string, BookingInvite[]>();
       for (const inv of ((invRaw ?? []) as unknown as BookingInvite[])) {
