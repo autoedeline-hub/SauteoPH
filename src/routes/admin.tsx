@@ -6589,7 +6589,9 @@ function deriveStage(
 ): PipelineStage {
   const latestBooking = bookings[0] ?? null;
   if (latestBooking) {
-    if (latestBooking.status === "cancelled") return "cancelled";
+    // payment_timeout (WF08, 2026-07-10) is a specific reason for cancellation,
+    // not a separate pipeline stage — buckets alongside plain "cancelled".
+    if (latestBooking.status === "cancelled" || latestBooking.status === "payment_timeout") return "cancelled";
     if (latestBooking.completed_at) return "completed";
     if (latestBooking.status === "confirmed") return "confirmed";
     if (latestBooking.status === "pending") return "booked";
