@@ -2717,11 +2717,23 @@ function DineInReservationView({
   const [customerEmail, setCustomerEmail] = useState(invite?.customerEmail ?? "");
   const [customerPhone, setCustomerPhone] = useState(invite?.customerPhone ?? "");
   // Party size comes from the invite (Sautéo captured it on the Messenger
-  // waitlist). Tables seat 2, so an odd party still books a whole extra table
-  // — a party of 3 takes 2 tables. Falls back to 2 on the no-invite preview
-  // path, which returns the invite-only card before this value is ever used.
-  const groupSize = invite?.groupSize ?? 2;
+  // waitlist) but is editable here per Nikko — guests often message an
+  // approximate count and firm it up later. Tables stay fully automatic:
+  // tablesNeeded is always derived from groupSize, never set directly.
+  // Falls back to 2 on the no-invite preview path, which returns the
+  // invite-only card before this value is ever used.
+  const [groupSize, setGroupSize] = useState(invite?.groupSize ?? 2);
+  // Tables seat 2, so an odd party still books a whole extra table — a party
+  // of 3 takes 2 tables.
   const tablesNeeded = Math.max(1, Math.ceil(groupSize / 2));
+  // Bounds the stepper to what the currently selected slot can actually
+  // hold, reusing the same capacity math the slot-picker buttons already
+  // use below (remaining tables × 2 seats). No slot picked yet (or a
+  // locked-slot invite still loading) → fall back to the house's absolute
+  // max (8 tables full house, per the Table Allocation Logic in CLAUDE.md).
+  const maxGuestsForSlot = selectedSlot
+    ? Math.max(1, (selectedSlot.capacity - selectedSlot.seats_taken) * 2)
+    : 16;
 
   // QR display fallback — flips to true when /maya-qr.png 404s so the
   // payment card still renders gracefully without the image.
@@ -2995,16 +3007,42 @@ function DineInReservationView({
             : "Only the dates and times Sautéo has opened are shown."}
         </p>
 
-        {/* Party size comes from the invite; tables = ceil(party / 2), 2 chairs each. */}
-        <div className="mb-4 flex items-center gap-3 bg-muted/40 border border-border rounded-xl px-4 py-3">
-          <Users className="h-4 w-4 text-muted-foreground shrink-0" />
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Reservation
+        {/* Guest count is editable; tables are always auto-derived from it
+            (ceil(party / 2), 2 chairs each) — never set directly. */}
+        <div className="mb-4 flex items-center justify-between gap-3 bg-muted/40 border border-border rounded-xl px-4 py-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <Users className="h-4 w-4 text-muted-foreground shrink-0" />
+            <div className="min-w-0">
+              <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Reservation
+              </div>
+              <div className="text-sm font-medium text-foreground truncate">
+                {tablesNeeded} table{tablesNeeded === 1 ? "" : "s"} — automatic
+              </div>
             </div>
-            <div className="text-sm font-medium text-foreground">
-              {tablesNeeded} table{tablesNeeded === 1 ? "" : "s"} · {groupSize} guest{groupSize === 1 ? "" : "s"}
-            </div>
+          </div>
+          <div className="inline-flex items-center rounded-full border border-border bg-background shrink-0">
+            <button
+              type="button"
+              onClick={() => setGroupSize((n) => Math.max(1, n - 1))}
+              aria-label="Decrease guest count"
+              disabled={groupSize <= 1}
+              className="h-8 w-8 flex items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition"
+            >
+              <Minus className="h-3.5 w-3.5" />
+            </button>
+            <span className="w-20 text-center text-sm font-semibold tabular-nums">
+              {groupSize} guest{groupSize === 1 ? "" : "s"}
+            </span>
+            <button
+              type="button"
+              onClick={() => setGroupSize((n) => Math.min(maxGuestsForSlot, n + 1))}
+              aria-label="Increase guest count"
+              disabled={groupSize >= maxGuestsForSlot}
+              className="h-8 w-8 flex items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
 
