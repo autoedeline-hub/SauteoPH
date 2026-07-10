@@ -149,6 +149,13 @@ function useHandleMap() {
   return map;
 }
 
+const BOOKING_STATUS_LABEL: Record<string, string> = {
+  pending: "Pending",
+  confirmed: "Confirmed",
+  cancelled: "Cancelled",
+  payment_timeout: "Payment Timeout",
+};
+
 const PICKUP_LABEL: Record<string, string> = {
   dine_in: "Dine-in",
   personal_pickup: "Personal Pickup",
@@ -1090,8 +1097,8 @@ function StatusBadge({ status }: { status: string }) {
       ? "bg-destructive/15 text-destructive"
       : "bg-muted text-muted-foreground";
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${styles}`}>
-      {status}
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${styles}`}>
+      {BOOKING_STATUS_LABEL[status] ?? status}
     </span>
   );
 }
@@ -4659,7 +4666,7 @@ function ScheduleTab() {
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-medium truncate">{b.customer_name}</span>
                             <span className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full ${statusColor(b.status)}`}>
-                              {b.status}
+                              {BOOKING_STATUS_LABEL[b.status] ?? b.status}
                             </span>
                           </div>
                           <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-3 flex-wrap">
