@@ -3017,7 +3017,7 @@ function DineInReservationView({
                 Reservation
               </div>
               <div className="text-sm font-medium text-foreground truncate">
-                {tablesNeeded} table{tablesNeeded === 1 ? "" : "s"} — automatic
+                {tablesNeeded} table{tablesNeeded === 1 ? "" : "s"}
               </div>
             </div>
           </div>
