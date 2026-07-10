@@ -3970,6 +3970,7 @@ function WaitlistTab() {
       contactId: string,
     ):
       | { state: "active"; hoursLeft: number; invite: BookingInvite }
+      | { state: "waiting"; invite: BookingInvite }
       | { state: "used"; invite: BookingInvite }
       | { state: "expired"; invite: BookingInvite }
       | { state: "none" } => {
@@ -3987,6 +3988,14 @@ function WaitlistTab() {
         );
         return { state: "active", hoursLeft, invite: active };
       }
+      // A plain "Waiting" row (no token issued yet — e.g. re-queued after a
+      // payment timeout) means the guest is genuinely back in line, even if
+      // an OLDER invite in their history was already used. Check this BEFORE
+      // "used" so a requeued guest doesn't read identically to someone who
+      // already booked and moved on — list is sorted newest-first, so the
+      // most recent invite naturally wins here.
+      const waiting = list.find((i) => !i.used_at && !i.token);
+      if (waiting) return { state: "waiting", invite: waiting };
       const used = list.find((i) => i.used_at);
       if (used) return { state: "used", invite: used };
       return { state: "expired", invite: list[0] };
@@ -4882,6 +4891,7 @@ function InviteStatusPill({
 }: {
   status:
     | { state: "active"; hoursLeft: number; invite: BookingInvite }
+    | { state: "waiting"; invite: BookingInvite }
     | { state: "used"; invite: BookingInvite }
     | { state: "expired"; invite: BookingInvite }
     | { state: "none" };
@@ -4893,6 +4903,27 @@ function InviteStatusPill({
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-semibold uppercase tracking-wider">
         Active · {status.hoursLeft}h
+      </span>
+    );
+  }
+  if (status.state === "waiting") {
+    // Surface WHY a guest with prior invite history is back in the queue
+    // (e.g. WF08's payment-timeout requeue stamps this exact notes text)
+    // rather than showing a generic "Waiting" that reads the same as any
+    // brand-new signup.
+    const isPaymentTimeout = (status.invite.notes ?? "")
+      .toLowerCase()
+      .includes("payment timeout");
+    return (
+      <span
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${
+          isPaymentTimeout
+            ? "bg-amber-500/10 text-amber-600"
+            : "bg-muted text-muted-foreground"
+        }`}
+        title={status.invite.notes ?? undefined}
+      >
+        {isPaymentTimeout ? "Payment Timeout" : "Waiting"}
       </span>
     );
   }
@@ -4941,6 +4972,7 @@ function ContactDrawer({
   onSaved: () => void;
   inviteStatus?:
     | { state: "active"; hoursLeft: number; invite: BookingInvite }
+    | { state: "waiting"; invite: BookingInvite }
     | { state: "used"; invite: BookingInvite }
     | { state: "expired"; invite: BookingInvite }
     | { state: "none" };
