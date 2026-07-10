@@ -4153,26 +4153,26 @@ function WaitlistTab() {
       0,
     );
 
-    // Expired invites AND payment-timeout requeues sink to the bottom, and
-    // among themselves are ordered by WHEN they actually dropped out of the
-    // active queue (earliest-sunk near the top of that group, most recently
-    // sunk at the very bottom) — a genuine "back of the line" model, not just
-    // grouped together in their original signup order. Active/none-status
-    // guests keep their existing (contact signup) order via a stable sort.
-    const sinkInfo = (guestId: string): { sink: 0 | 1; at: number } => {
-      const st = inviteStatusFor(guestId);
-      if (st.state === "expired") return { sink: 1, at: invitesSunkAtMs(st.invite) };
+    // One continuous FIFO line, not a two-tier "active on top / sunk at
+    // bottom" split — a guest's queue position is the last time they were
+    // freshly placed in line: original signup for anyone who hasn't dropped
+    // out, or the actual expiry/payment-timeout moment for anyone who has.
+    // This matters because a brand-new signup should NOT automatically rank
+    // above a guest who was already re-queued before that signup happened —
+    // otherwise every timeout/expiry would permanently sink someone below
+    // all future signups forever, which isn't "back of the line," it's
+    // "off the line." Comparing raw timestamps keeps it a single queue.
+    const queuePositionMs = (c: ContactRow): number => {
+      const st = inviteStatusFor(c.id);
+      if (st.state === "expired") return invitesSunkAtMs(st.invite);
       if (st.state === "waiting" && isPaymentTimeoutInvite(st.invite)) {
-        return { sink: 1, at: invitesSunkAtMs(st.invite) };
+        return invitesSunkAtMs(st.invite);
       }
-      return { sink: 0, at: 0 };
+      return new Date(c.created_at).getTime();
     };
-    const sortedGuests = [...guests].sort((a, b) => {
-      const sa = sinkInfo(a.id);
-      const sb = sinkInfo(b.id);
-      if (sa.sink !== sb.sink) return sa.sink - sb.sink;
-      return sa.sink === 1 ? sa.at - sb.at : 0;
-    });
+    const sortedGuests = [...guests].sort(
+      (a, b) => queuePositionMs(a) - queuePositionMs(b),
+    );
 
     return (
       <div key={groupKey} className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
