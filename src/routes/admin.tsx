@@ -5504,25 +5504,26 @@ function KnowledgeTab() {
       </div>
 
       {/* List */}
-      <div className="max-h-[calc(100vh-320px)] overflow-y-auto pr-1">
+      <div
+        className="bg-muted/50 rounded-2xl overflow-y-auto p-3"
+        style={{ minHeight: "calc(100vh - 368px)", maxHeight: "calc(100vh - 368px)" }}
+      >
       {loading ? (
-        <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">Loading FAQ…</div>
+        <div className="py-16 text-center text-muted-foreground text-sm">Loading FAQ…</div>
       ) : filtered.length === 0 ? (
-        <div className="bg-card border border-border rounded-2xl shadow-sm">
-          <EmptyState
-            icon={items.length === 0 ? BookOpen : Search}
-            title={items.length === 0 ? "No FAQ entries yet" : "No matches"}
-            hint={items.length === 0 ? 'Click "New entry" to add the first answer the chatbot can use.' : "Try a different search or topic filter."}
-            action={items.length === 0 ? (
-              <button
-                onClick={() => { setEditing(null); setEditorOpen(true); }}
-                className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition"
-              >
-                <Plus className="h-4 w-4" /> New entry
-              </button>
-            ) : undefined}
-          />
-        </div>
+        <EmptyState
+          icon={items.length === 0 ? BookOpen : Search}
+          title={items.length === 0 ? "No FAQ entries yet" : "No matches"}
+          hint={items.length === 0 ? 'Click "New entry" to add the first answer the chatbot can use.' : "Try a different search or topic filter."}
+          action={items.length === 0 ? (
+            <button
+              onClick={() => { setEditing(null); setEditorOpen(true); }}
+              className="inline-flex items-center gap-1.5 bg-foreground text-background rounded-full px-4 py-2 text-sm font-medium hover:opacity-90 transition"
+            >
+              <Plus className="h-4 w-4" /> New entry
+            </button>
+          ) : undefined}
+        />
       ) : (
         <ul className="space-y-3">
           {filtered.map(f => (
@@ -7488,7 +7489,10 @@ function RulesTab() {
           Loading…
         </div>
       ) : (
-        <div className="max-h-[calc(100vh-300px)] overflow-y-auto pr-1 space-y-4">
+        <div
+          className="bg-muted/50 rounded-2xl overflow-y-auto p-3 space-y-4"
+          style={{ minHeight: "calc(100vh - 228px)", maxHeight: "calc(100vh - 228px)" }}
+        >
           <p className="text-sm text-muted-foreground">
             These rules are shown to guests on the{" "}
             <span className="text-foreground font-medium">{activeSection.label.toLowerCase()}</span>{" "}
