@@ -6144,6 +6144,11 @@ function InviteRow({
   onRevoke: () => void;
 }) {
   const status = inviteStatus(inv);
+  // A "waiting" row can mean two different things to staff: a brand-new
+  // guest who's never been invited yet, or someone who WAS already invited
+  // and is back in line after a payment timeout. Distinguish them so the
+  // card doesn't say "not invited yet" to someone who clearly was.
+  const isPaymentTimeoutRequeue = status === "waiting" && isPaymentTimeoutInvite(inv);
   // Only meaningful once a token/expiry has actually been issued ("unused").
   // Meaningless for "waiting" (expires_at is null) - never read in that case.
   const hoursLeft =
@@ -6173,7 +6178,9 @@ function InviteRow({
       : status === "used"
       ? "bg-muted text-muted-foreground"
       : status === "waiting"
-      ? "bg-muted text-muted-foreground/80"
+      ? isPaymentTimeoutRequeue
+        ? "bg-amber-500/10 text-amber-600"
+        : "bg-muted text-muted-foreground/80"
       : "bg-destructive/10 text-destructive";
 
   // Countdown color rules for unused invites.
@@ -6216,7 +6223,7 @@ function InviteRow({
             <span
               className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${statusPill}`}
             >
-              {status}
+              {isPaymentTimeoutRequeue ? "Payment Timeout" : status}
             </span>
             {inv.source && inv.source !== "messenger" && (
               <span className="text-[10px] text-muted-foreground/70 uppercase tracking-wide">
@@ -6288,7 +6295,9 @@ function InviteRow({
             )}
             {status === "waiting" && (
               <span className="text-muted-foreground/70">
-                Not invited yet — generate a link from the Waitlist tab
+                {isPaymentTimeoutRequeue
+                  ? "Invited but payment timeout, requeued to the waitlist"
+                  : "Not invited yet, generate a link from the Waitlist tab"}
               </span>
             )}
           </div>
