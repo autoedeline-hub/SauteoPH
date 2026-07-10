@@ -5819,8 +5819,17 @@ function generateInviteToken(): string {
   return Array.from(bytes, (b) => CHARS[b % CHARS.length]).join("");
 }
 
-function inviteStatus(inv: BookingInvite): "used" | "expired" | "unused" {
+function inviteStatus(
+  inv: BookingInvite,
+): "waiting" | "used" | "expired" | "unused" {
   if (inv.used_at) return "used";
+  // No token means no invite link has ever been issued yet - a plain
+  // waitlist signup, or a requeue after payment timeout/expiry. Must check
+  // this BEFORE the expiry comparison: expires_at is null on a waiting row,
+  // and `new Date(null)` evaluates to the Unix epoch (1970-01-01), not
+  // "invalid" - so without this check every waiting row reads as "expired
+  // since 1970" instead of "never invited yet."
+  if (!inv.token) return "waiting";
   if (new Date(inv.expires_at) < new Date()) return "expired";
   return "unused";
 }
@@ -5829,7 +5838,7 @@ function InvitesTab() {
   const [invites, setInvites] = useState<BookingInvite[]>([]);
   const [loading, setLoading] = useState(true);
   const [creatorOpen, setCreatorOpen] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<"all" | "unused" | "used" | "expired">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "waiting" | "unused" | "used" | "expired">("all");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const handleMap = useHandleMap();
 
@@ -5863,7 +5872,7 @@ function InvitesTab() {
   }, [invites, statusFilter]);
 
   const counts = useMemo(() => {
-    const c = { all: invites.length, unused: 0, used: 0, expired: 0 };
+    const c = { all: invites.length, waiting: 0, unused: 0, used: 0, expired: 0 };
     for (const i of invites) c[inviteStatus(i)] += 1;
     return c;
   }, [invites]);
@@ -5970,7 +5979,7 @@ function InvitesTab() {
       {/* Filter row — chromeless segmented control + primary CTA. */}
       <div className="flex items-center justify-between gap-3 px-1">
         <div className="inline-flex bg-muted/60 rounded-full p-1 gap-0.5">
-          {(["all", "unused", "used", "expired"] as const).map((s) => {
+          {(["all", "waiting", "unused", "used", "expired"] as const).map((s) => {
             const active = statusFilter === s;
             return (
               <button
@@ -6092,13 +6101,17 @@ function InviteKpiCard({
 // Per-filter empty-state copy. Lives outside the component so the JSX
 // stays clean and the strings are easy to find / edit.
 const EMPTY_COPY: Record<
-  "all" | "unused" | "used" | "expired",
+  "all" | "waiting" | "unused" | "used" | "expired",
   { title: string; hint: string }
 > = {
   all: {
     title: "No invites issued yet",
     hint:
       "Generate one from the Contacts tab, or hit Manual invite to issue a link for a guest who isn't a contact yet.",
+  },
+  waiting: {
+    title: "Nobody's waiting on an invite",
+    hint: "Guests land here from a fresh waitlist signup, or after a payment timeout requeue — generate their link from the Waitlist tab when a slot opens.",
   },
   unused: {
     title: "Inbox zero",
@@ -6131,6 +6144,8 @@ function InviteRow({
   onRevoke: () => void;
 }) {
   const status = inviteStatus(inv);
+  // Only meaningful once a token/expiry has actually been issued ("unused").
+  // Meaningless for "waiting" (expires_at is null) - never read in that case.
   const hoursLeft =
     (new Date(inv.expires_at).getTime() - Date.now()) / 36e5;
 
@@ -6144,6 +6159,8 @@ function InviteRow({
         : "border-l-2 border-l-emerald-500"
       : status === "used"
       ? "border-l-2 border-l-muted-foreground/30"
+      : status === "waiting"
+      ? "border-l-2 border-l-muted-foreground/20"
       : "border-l-2 border-l-destructive/40";
 
   // Channel icon square — instant left-edge scan of dine-in vs pickup.
@@ -6155,6 +6172,8 @@ function InviteRow({
       ? "bg-emerald-500/10 text-emerald-700"
       : status === "used"
       ? "bg-muted text-muted-foreground"
+      : status === "waiting"
+      ? "bg-muted text-muted-foreground/80"
       : "bg-destructive/10 text-destructive";
 
   // Countdown color rules for unused invites.
@@ -6265,6 +6284,11 @@ function InviteRow({
             {status === "expired" && (
               <span className="text-muted-foreground/70">
                 Expired {format(new Date(inv.expires_at), "MMM d, h:mm a")}
+              </span>
+            )}
+            {status === "waiting" && (
+              <span className="text-muted-foreground/70">
+                Not invited yet — generate a link from the Waitlist tab
               </span>
             )}
           </div>
