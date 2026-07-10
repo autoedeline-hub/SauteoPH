@@ -5504,7 +5504,7 @@ function KnowledgeTab() {
       </div>
 
       {/* List */}
-      <div className="max-h-[calc(100vh-440px)] overflow-y-auto pr-1">
+      <div className="max-h-[calc(100vh-320px)] overflow-y-auto pr-1">
       {loading ? (
         <div className="bg-card border border-border rounded-2xl py-16 text-center text-muted-foreground text-sm shadow-sm">Loading FAQ…</div>
       ) : filtered.length === 0 ? (
