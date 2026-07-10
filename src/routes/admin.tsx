@@ -3891,6 +3891,13 @@ function isPaymentTimeoutInvite(invite: { notes: string | null }): boolean {
   return (invite.notes ?? "").toLowerCase().includes("payment timeout");
 }
 
+// A "waiting" invite whose link merely lapsed (not a payment-timeout
+// requeue) still means the guest WAS invited before. WL-04's daily sweep
+// stamps this exact notes text when it nulls a lapsed token back to Waiting.
+function isExpiredRequeueInvite(invite: { notes: string | null }): boolean {
+  return (invite.notes ?? "").toLowerCase().includes("expired");
+}
+
 // When did this invite actually drop out of the active queue (expire, or get
 // requeued after a payment timeout) - used to order the "sunk to the bottom"
 // group so the most recently dropped guest is furthest back, not just grouped
@@ -4941,20 +4948,23 @@ function InviteStatusPill({
   }
   if (status.state === "waiting") {
     // Surface WHY a guest with prior invite history is back in the queue
-    // (e.g. WF08's payment-timeout requeue stamps this exact notes text)
+    // (e.g. WF08's payment-timeout requeue, or WL-04's daily expiry sweep)
     // rather than showing a generic "Waiting" that reads the same as any
     // brand-new signup.
     const isPaymentTimeout = isPaymentTimeoutInvite(status.invite);
+    const isExpiredRequeue = !isPaymentTimeout && isExpiredRequeueInvite(status.invite);
     return (
       <span
         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${
           isPaymentTimeout
             ? "bg-amber-500/10 text-amber-600"
+            : isExpiredRequeue
+            ? "bg-orange-500/10 text-orange-600"
             : "bg-muted text-muted-foreground"
         }`}
         title={status.invite.notes ?? undefined}
       >
-        {isPaymentTimeout ? "Payment Timeout" : "Waiting"}
+        {isPaymentTimeout ? "Payment Timeout" : isExpiredRequeue ? "Invite Expired" : "Waiting"}
       </span>
     );
   }
@@ -6144,11 +6154,14 @@ function InviteRow({
   onRevoke: () => void;
 }) {
   const status = inviteStatus(inv);
-  // A "waiting" row can mean two different things to staff: a brand-new
-  // guest who's never been invited yet, or someone who WAS already invited
-  // and is back in line after a payment timeout. Distinguish them so the
-  // card doesn't say "not invited yet" to someone who clearly was.
+  // A "waiting" row can mean three different things to staff: a brand-new
+  // guest who's never been invited yet, someone who WAS already invited and
+  // is back in line after a payment timeout, or someone whose invite link
+  // simply lapsed (WL-04's daily sweep). Distinguish them so the card
+  // doesn't say "not invited yet" to someone who clearly was.
   const isPaymentTimeoutRequeue = status === "waiting" && isPaymentTimeoutInvite(inv);
+  const isExpiredRequeue =
+    status === "waiting" && !isPaymentTimeoutRequeue && isExpiredRequeueInvite(inv);
   // Only meaningful once a token/expiry has actually been issued ("unused").
   // Meaningless for "waiting" (expires_at is null) - never read in that case.
   const hoursLeft =
@@ -6180,6 +6193,8 @@ function InviteRow({
       : status === "waiting"
       ? isPaymentTimeoutRequeue
         ? "bg-amber-500/10 text-amber-600"
+        : isExpiredRequeue
+        ? "bg-orange-500/10 text-orange-600"
         : "bg-muted text-muted-foreground/80"
       : "bg-destructive/10 text-destructive";
 
@@ -6223,7 +6238,11 @@ function InviteRow({
             <span
               className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${statusPill}`}
             >
-              {isPaymentTimeoutRequeue ? "Payment Timeout" : status}
+              {isPaymentTimeoutRequeue
+                ? "Payment Timeout"
+                : isExpiredRequeue
+                ? "Invite Expired"
+                : status}
             </span>
             {inv.source && inv.source !== "messenger" && (
               <span className="text-[10px] text-muted-foreground/70 uppercase tracking-wide">
@@ -6297,6 +6316,8 @@ function InviteRow({
               <span className="text-muted-foreground/70">
                 {isPaymentTimeoutRequeue
                   ? "Invited but payment timeout, requeued to the waitlist"
+                  : isExpiredRequeue
+                  ? "Invited, invite link expired, requeued to the waitlist"
                   : "Not invited yet, generate a link from the Waitlist tab"}
               </span>
             )}
