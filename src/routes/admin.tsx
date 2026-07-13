@@ -4092,13 +4092,20 @@ function WaitlistTab() {
     );
   };
 
-  // This tab is single-purpose now — only waitlist guests. Once a guest has
-  // a confirmed booking they've already been seated (visible in Orders /
-  // Pipelines instead), so drop them out here even though bookings_sync_contact
-  // keeps stamping the 'waitlist' tag on every dine-in-channel booking row.
+  // This tab is single-purpose now — only waitlist guests. A guest with a
+  // confirmed booking is normally done (visible in Orders / Pipelines
+  // instead) — but gating on lifetime confirmed_bookings === 0 permanently
+  // hid anyone who dined once and later genuinely re-joined the waitlist,
+  // even after WF-DM-01 correctly re-tagged them and created a fresh Waiting
+  // invite. Use inviteStatusFor's "waiting" state instead — it reflects a
+  // real open booking_invites row, not a lifetime visit count (fixed 2026-07-13,
+  // see the Jenica Oficial waitlist-loop bug in CLAUDE.md).
   const allWaitlist = useMemo(
-    () => contacts.filter((c) => c.tags.includes("waitlist") && c.confirmed_bookings === 0),
-    [contacts],
+    () =>
+      contacts.filter(
+        (c) => c.tags.includes("waitlist") && inviteStatusFor(c.id).state === "waiting",
+      ),
+    [contacts, inviteStatusFor],
   );
 
   const searched = useMemo(() => {
