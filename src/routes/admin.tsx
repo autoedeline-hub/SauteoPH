@@ -4098,8 +4098,7 @@ function WaitlistTab() {
   // hid anyone who dined once and later genuinely re-joined the waitlist,
   // even after WF-DM-01 correctly re-tagged them and created a fresh Waiting
   // invite. Use inviteStatusFor's "waiting" state instead — it reflects a
-  // real open booking_invites row, not a lifetime visit count (fixed 2026-07-13,
-  // see the Jenica Oficial waitlist-loop bug in CLAUDE.md).
+  // real open booking_invites row, not a lifetime visit count (fixed 2026-07-13).
   const allWaitlist = useMemo(
     () =>
       contacts.filter(
