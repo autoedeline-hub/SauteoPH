@@ -8,7 +8,7 @@ import {
 } from "@/lib/siteContent";
 import { addDays, format, subDays, subMonths } from "date-fns";
 import { inviteLinkPath, buildInviteMessage } from "@/lib/invite";
-import { buildReminderMessage } from "@/lib/reminder";
+import { buildReminderMessage, buildNoShowMessage } from "@/lib/reminder";
 import { formatSlotTime12h, localToday } from "@/lib/utils";
 import {
   Area,
@@ -6658,6 +6658,7 @@ type PipelineBooking = {
   completed_at: string | null;
   pickup_mode: string | null;
   total_amount: number;
+  group_size: number | null;
   customer_email: string | null;
   customer_phone: string | null;
   facebook_handle: string | null;
@@ -6763,6 +6764,7 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
   // Separate from copiedContactId (invite-link copy) so the two "Copied!"
   // confirmations on a card — invite link vs reminder text — never cross-fire.
   const [copiedReminderId, setCopiedReminderId] = useState<string | null>(null);
+  const [copiedNoShowId, setCopiedNoShowId] = useState<string | null>(null);
   // Per-card busy flag for the "Mark complete" action so the button can
   // show a spinner without blocking the rest of the board.
   const [completingId, setCompletingId] = useState<string | null>(null);
@@ -6791,7 +6793,7 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
         supabase
           .from("bookings")
           .select(
-            "id, reference_code, status, created_at, confirmed_at, completed_at, pickup_mode, total_amount, customer_email, customer_phone, facebook_handle, time_slots(slot_date, slot_time), payments(id, status)",
+            "id, reference_code, status, created_at, confirmed_at, completed_at, pickup_mode, total_amount, group_size, customer_email, customer_phone, facebook_handle, time_slots(slot_date, slot_time), payments(id, status)",
           )
           .order("created_at", { ascending: false })
           .limit(500),
@@ -6911,6 +6913,36 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
     );
   };
 
+  // Copies a ready-to-paste no-show follow-up for a confirmed dine-in booking
+  // whose slot has already passed, so staff can send it via "Message on
+  // Facebook" — WF04's automated no-show detection was deactivated 2026-07-13
+  // (its Supabase status-write never worked and its staff email was dropped;
+  // see docs/2026-07-13-manual-no-show-followup-design.md).
+  const copyNoShowMessage = async (
+    contactId: string,
+    customerName: string | null | undefined,
+    slotDate: string,
+    slotTime: string | null | undefined,
+    groupSize: number | null | undefined,
+  ) => {
+    const text = buildNoShowMessage(customerName, slotDate, slotTime, groupSize);
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setCopiedNoShowId(contactId);
+    window.setTimeout(
+      () => setCopiedNoShowId((p) => (p === contactId ? null : p)),
+      1500,
+    );
+  };
+
   // Verifies a pending booking directly from the pipeline card. Same
   // two writes the Orders tab's Verify button performs:
   //   1. payments.status → 'verified' (if a shell exists)
@@ -7025,6 +7057,7 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
                   channel={channel}
                   copied={copiedContactId === card.contact.id}
                   copiedReminder={copiedReminderId === card.contact.id}
+                  copiedNoShow={copiedNoShowId === card.contact.id}
                   completing={
                     card.latestBooking
                       ? completingId === card.latestBooking.id
@@ -7050,6 +7083,15 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
                       card.contact.full_name,
                       slotDate,
                       slotTime,
+                    )
+                  }
+                  onCopyNoShow={(slotDate, slotTime, groupSize) =>
+                    copyNoShowMessage(
+                      card.contact.id,
+                      card.contact.full_name,
+                      slotDate,
+                      slotTime,
+                      groupSize,
                     )
                   }
                 />
@@ -7140,6 +7182,7 @@ function PipelineCardView({
   channel,
   copied,
   copiedReminder,
+  copiedNoShow,
   completing,
   verifying,
   onGenerateInvite,
@@ -7148,11 +7191,13 @@ function PipelineCardView({
   onVerify,
   onMarkComplete,
   onCopyReminder,
+  onCopyNoShow,
 }: {
   card: PipelineCard;
   channel: PipelineChannel;
   copied: boolean;
   copiedReminder: boolean;
+  copiedNoShow: boolean;
   completing: boolean;
   verifying: boolean;
   onGenerateInvite: () => void;
@@ -7161,6 +7206,11 @@ function PipelineCardView({
   onVerify: (bookingId: string, paymentId: string | null) => void;
   onMarkComplete: (bookingId: string) => void;
   onCopyReminder: (slotDate: string, slotTime: string | null) => void;
+  onCopyNoShow: (
+    slotDate: string,
+    slotTime: string | null,
+    groupSize: number | null,
+  ) => void;
 }) {
   const { contact, stage, activeInvite, latestBooking } = card;
 
@@ -7180,6 +7230,20 @@ function PipelineCardView({
     !!slotDate &&
     (slotDate === today || slotDate === tomorrow);
   const reminderFbUrl = showReminder
+    ? facebookProfileUrl(latestBooking!.facebook_handle)
+    : null;
+
+  // No-show follow-up eligibility: confirmed dine-in booking whose slot date
+  // has already passed (staff never marked the guest visited). Mutually
+  // exclusive with showReminder (which is today/tomorrow). Replaces WF04's
+  // deactivated automated no-show detection with a manual Facebook message.
+  const showNoShow =
+    channel === "dine_in" &&
+    stage === "confirmed" &&
+    !!latestBooking &&
+    !!slotDate &&
+    slotDate < today;
+  const noShowFbUrl = showNoShow
     ? facebookProfileUrl(latestBooking!.facebook_handle)
     : null;
   return (
@@ -7309,6 +7373,45 @@ function PipelineCardView({
             className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition"
           >
             {copiedReminder ? (
+              <>
+                <CheckCircle2 className="h-3 w-3" /> Copied!
+              </>
+            ) : (
+              <>
+                <Copy className="h-3 w-3" /> Copy text
+              </>
+            )}
+          </button>
+        </div>
+      )}
+      {/* Manual no-show follow-up — replaces WF04's deactivated automated
+          no-show detection. Confirmed dine-in bookings whose slot has passed,
+          only when the guest has a Facebook handle on file to message. */}
+      {showNoShow && noShowFbUrl && latestBooking && (
+        <div className="flex items-center gap-2 pt-0.5">
+          <a
+            href={noShowFbUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            title="Message this guest on Facebook to follow up on a missed reservation (person-to-person — no Messenger time window)"
+            className="inline-flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600 underline underline-offset-2 font-medium"
+          >
+            <Facebook className="h-3 w-3" />
+            Message on Facebook
+          </a>
+          <button
+            onClick={() =>
+              onCopyNoShow(
+                latestBooking.time_slots!.slot_date,
+                latestBooking.time_slots!.slot_time,
+                latestBooking.group_size,
+              )
+            }
+            title="Copy a ready-to-paste no-show follow-up message"
+            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition"
+          >
+            {copiedNoShow ? (
               <>
                 <CheckCircle2 className="h-3 w-3" /> Copied!
               </>
