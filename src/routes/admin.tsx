@@ -88,10 +88,22 @@ type Booking = {
   refund_status?: string | null;
   confirmed_at?: string | null;
   platform_id?: string | null;
+  notes?: string | null;
   time_slots?: { slot_date: string; slot_time: string };
   booking_items?: { item_name: string; quantity: number }[];
   payments?: { id: string; status: string; reference_number: string | null; screenshot_url: string | null }[];
 };
+
+// The order form writes customization detail (set vs à la carte, sauce, drink) as a
+// single "Variants: 1× ITEM — Sauce with Drink; ..." string into bookings.notes --
+// booking_items only has the bare item name + quantity, no sauce/drink. `notes` is
+// reused for unrelated operational messages too (e.g. "Payment timeout, guest did not
+// settle after reminder"), so only parse it when it actually starts with "Variants: ";
+// callers fall back to booking_items otherwise.
+function parseOrderVariants(notes: string | null | undefined): string[] | null {
+  if (!notes || !notes.startsWith("Variants: ")) return null;
+  return notes.slice("Variants: ".length).split(";").map(s => s.trim()).filter(Boolean);
+}
 
 const SOURCE_LABEL: Record<string, string> = {
   web: "Web",
@@ -1831,12 +1843,19 @@ function BookingsTab() {
                     )}
                   </td>
                   <td className="px-3 py-3 tabular-nums text-center">{b.group_size}</td>
-                  <td className="px-3 py-3 text-[11px] max-w-[180px] text-center">
-                    {b.booking_items?.map((bi, i) => (
-                      <div key={i} className="truncate" title={`${bi.quantity}× ${bi.item_name}`}>
-                        {bi.quantity}× {bi.item_name}
-                      </div>
-                    ))}
+                  <td className="px-3 py-3 text-[11px] max-w-[240px] text-left">
+                    {(parseOrderVariants(b.notes) ??
+                      b.booking_items?.map(bi => `${bi.quantity}× ${bi.item_name}`) ??
+                      []
+                    ).map((line, i) => {
+                      const [namePart, detailPart] = line.split(" — ");
+                      return (
+                        <div key={i} className="mb-1 last:mb-0">
+                          <div className="font-medium">{namePart}</div>
+                          {detailPart && <div className="text-muted-foreground">{detailPart}</div>}
+                        </div>
+                      );
+                    })}
                   </td>
                   <td className="px-3 py-3 text-center font-medium whitespace-nowrap tabular-nums">
                     <div>₱{Number(b.total_amount).toFixed(0)}</div>
@@ -1953,11 +1972,19 @@ function BookingsTab() {
                   <div className="mt-0.5 whitespace-pre-line">{b.allergy_notes}</div>
                 </div>
               )}
-              {b.booking_items?.length ? (
+              {(parseOrderVariants(b.notes) ?? b.booking_items?.map(bi => `${bi.quantity}× ${bi.item_name}`) ?? []).length > 0 ? (
                 <div className="col-span-2">
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Items</div>
                   <div className="mt-0.5">
-                    {b.booking_items.map((bi, i) => <div key={i}>{bi.quantity}× {bi.item_name}</div>)}
+                    {(parseOrderVariants(b.notes) ?? b.booking_items!.map(bi => `${bi.quantity}× ${bi.item_name}`)).map((line, i) => {
+                      const [namePart, detailPart] = line.split(" — ");
+                      return (
+                        <div key={i} className="mb-1 last:mb-0">
+                          <div className="font-medium">{namePart}</div>
+                          {detailPart && <div className="text-muted-foreground">{detailPart}</div>}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ) : null}
