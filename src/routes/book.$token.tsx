@@ -137,8 +137,8 @@ const DINE_IN_RULES = [
     body: "100% pre-payment via GCash or Maya is required. Your reservation is only confirmed once payment is verified by our team. Unpaid bookings are automatically released after 30 minutes.",
   },
   {
-    heading: "No refunds — no-shows forfeit payment",
-    body: "All sales are final. Cancellations and no-shows forfeit your payment in full — no cash refunds, regardless of the reason. A no-show is recorded 1 hour after your slot time. Please message us in advance if your plans change.",
+    heading: "Cancellation & no-show policy",
+    body: "In the event of a cancellation or no-show, a refund is issued less a ₱500 cancellation fee per guest, regardless of the reason. A no-show is recorded 30 minutes after your slot time. Please message us in advance if your plans change.",
   },
   {
     heading: "Arrive on time — 15-minute grace",
@@ -279,7 +279,7 @@ function BookingRules({
           <span className="text-sm text-foreground leading-snug">
             {isPickup
               ? "I have read and agree to the Pre-Order Agreement & Terms of Purchase."
-              : "I have read and agree to Sautéo's booking policy. I understand that no cash refunds will be given for cancellations or no-shows, under any circumstances."}
+              : "I have read and agree to Sautéo's booking policy. I understand that cancellations and no-shows are subject to a ₱500 cancellation fee per guest, with the remaining balance refunded via Maya."}
           </span>
         </label>
 

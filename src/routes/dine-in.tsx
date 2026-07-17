@@ -102,7 +102,7 @@ const DINEIN_FALLBACK: DisplayRule[] = [
   { id: "available_days", group_label: "Reservation Rules", title: "Available Wednesday – Sunday", body: "Seatings are 1 PM, 3 PM, 5 PM, and 7 PM on Wed–Sun only. We are closed on Mondays and Tuesdays." },
   { id: "invite_only", group_label: "Reservation Rules", title: "Reservations are invite-only", body: "Dine-in is waitlist-only. Message us to join the waitlist — we'll send a personal, single-use booking link valid for 24 hours when a seat opens for you." },
   { id: "full_payment", group_label: "Reservation Rules", title: "Full payment secures your seat", body: "100% pre-payment via GCash or Maya is required. Send your payment screenshot after booking — your reservation is only confirmed once our team verifies it." },
-  { id: "no_refunds", group_label: "Reservation Rules", title: "No refunds — no-shows forfeit payment", body: "All sales are final. Cancellations and no-shows forfeit your payment in full. A no-show is recorded 1 hour after your slot time. Please book only if you are sure." },
+  { id: "no_refunds", group_label: "Reservation Rules", title: "Cancellation & no-show policy", body: "In the event of a cancellation or no-show, a refund is issued less a ₱500 cancellation fee per guest, regardless of the reason. A no-show is recorded 30 minutes after your slot time. Please book only if you are sure." },
   { id: "arrive_on_time", group_label: "Dining Guidelines", title: "Arrive on time — 15-minute grace", body: "Please arrive on time; we recommend 15 minutes early as parking is limited. Your table is held for 15 minutes past your slot, then may be released to a waitlist or walk-in guest." },
   { id: "party_size", group_label: "Dining Guidelines", title: "Book your exact party size", body: "Reserve only the seats you need and arrive with the exact party size booked. We can't seat extra guests beyond your reservation." },
   { id: "intimate_setting", group_label: "Dining Guidelines", title: "An intimate setting — smart casual", body: "Sautéo is an intimate venue. Dress smart casual, keep voices low, and please bring no outside food or drinks — be considerate of fellow diners." },
@@ -162,9 +162,9 @@ function DineInAgreement({ onAccept }: { onAccept: () => void }) {
             />
             <span className="text-sm text-muted-foreground leading-snug">
               I have read and agree to Sautéo's booking policy. I understand that{" "}
-              <span className="text-foreground font-semibold">no cash refunds</span> will be given for{" "}
-              <span className="text-foreground font-semibold">cancellations</span> or{" "}
-              <span className="text-foreground font-semibold">no-shows</span>, under any circumstances.
+              <span className="text-foreground font-semibold">cancellations</span> and{" "}
+              <span className="text-foreground font-semibold">no-shows</span> are subject to a{" "}
+              <span className="text-foreground font-semibold">₱500 cancellation fee per guest</span>, with the remaining balance refunded via Maya.
             </span>
           </label>
 

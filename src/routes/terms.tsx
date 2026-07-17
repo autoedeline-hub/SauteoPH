@@ -215,18 +215,24 @@ function TermsPage() {
         <section id="refund" className="mb-12 scroll-mt-20">
           <h2 className="font-display text-2xl mb-4">Refund Policy</h2>
           <Prose>
-            <h3>No Refunds</h3>
+            <h3>Cancellation Fee</h3>
             <p>
-              Sautéo operates on a strict no-refund policy. Once a reservation or order has been
-              confirmed and payment received, it is considered final. No cash refunds will be issued
-              for cancellations, no-shows, or changes of mind, regardless of the reason.
+              Once a reservation or order has been confirmed and payment received, it is
+              considered final. Dine-in cancellations and no-shows are subject to a ₱500
+              cancellation fee per guest, as described below. Pick-up orders are non-refundable.
             </p>
 
             <h3>Dine-In Reservations</h3>
             <p>
-              Confirmed dine-in reservations are non-refundable. If you are unable to attend,
-              please message us via our official Messenger channel before your scheduled slot. We
-              will note your absence, but no refund will be processed.
+              In the event of a cancellation or no-show, a refund will be issued less a
+              cancellation fee of ₱500 per guest. This fee applies regardless of the reason,
+              including a change of plans, illness, traffic, weather, or scheduling conflicts.
+              For example, a reservation for 4 guests paying ₱4,000 is eligible for a ₱2,000
+              refund, as ₱2,000 (₱500 × 4 guests) is retained as the cancellation fee. A guest
+              who arrives more than 30 minutes after the reserved time, or fails to arrive, is
+              considered a no-show and the reservation is automatically cancelled under this
+              policy. Please message us via our official Messenger channel as early as possible
+              if your plans change. Refunds are processed via Maya through our official channels.
             </p>
 
             <h3>Pick-Up Orders</h3>
