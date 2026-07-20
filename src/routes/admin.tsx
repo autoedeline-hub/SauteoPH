@@ -1880,6 +1880,11 @@ function BookingsTab() {
                     <div className="text-muted-foreground truncate" title={b.payments?.[0]?.status ?? undefined}>
                       {b.payments?.[0]?.status}
                     </div>
+                    {b.status === "pending" && (b as any).payment_proof_at && (
+                      <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium whitespace-nowrap" title="Payment screenshot received in Messenger. Verify and confirm.">
+                        <CheckCircle2 className="h-3 w-3" /> Proof received
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-3 text-center">
                     <StatusBadge status={b.status} />
@@ -1930,7 +1935,14 @@ function BookingsTab() {
                   )}
                 </div>
               </div>
-              <StatusBadge status={b.status} />
+              <div className="flex flex-col items-end gap-1">
+                <StatusBadge status={b.status} />
+                {b.status === "pending" && (b as any).payment_proof_at && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium whitespace-nowrap" title="Payment screenshot received in Messenger. Verify and confirm.">
+                    <CheckCircle2 className="h-3 w-3" /> Proof received
+                  </span>
+                )}
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3 text-xs">
               <div>
