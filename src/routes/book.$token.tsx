@@ -339,7 +339,7 @@ function InviteBlocked({
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3">
             <a
-              href="https://www.facebook.com/messages/t/1119234891273865"
+              href="https://m.me/1119234891273865"
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-3 text-sm font-semibold hover:opacity-90 transition"

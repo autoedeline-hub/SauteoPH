@@ -16,7 +16,7 @@ import { useBookingRulesDisplay, type DisplayRule } from "@/lib/siteContent";
 // admin issues from the Waitlist tab after the Messenger waitlist clears.
 // This page therefore funnels visitors straight to Messenger; it does NOT
 // render the menu or any checkout UI of its own.
-const MESSENGER_URL = "https://www.facebook.com/messages/t/1119234891273865";
+const MESSENGER_URL = "https://m.me/1119234891273865";
 
 export const Route = createFileRoute("/dine-in")({
   component: DineInPage,
