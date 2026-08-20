@@ -174,6 +174,31 @@ const PICKUP_LABEL: Record<string, string> = {
   courier: "Courier Pickup",
 };
 
+// payment-proofs is a PRIVATE bucket and submit_payment_proof() stores a storage
+// PATH ("bookings/<REF>/payment_<ts>.jpg"), not a URL. Rendering that straight
+// into an href produced a relative link that 404s on the admin origin, so the
+// proof was effectively unopenable. Mint a short-lived signed URL instead, the
+// same way the Senior IDs tab does. Legacy rows that already hold a full URL
+// (from before the bucket was locked down) are opened as-is.
+async function openPaymentProof(pathOrUrl: string): Promise<void> {
+  // Grab the tab synchronously inside the click so the await below doesn't
+  // trip the popup blocker.
+  const win = window.open("", "_blank");
+  if (/^https?:\/\//i.test(pathOrUrl)) {
+    if (win) { win.opener = null; win.location.replace(pathOrUrl); }
+    return;
+  }
+  const { data, error } = await supabase.storage
+    .from("payment-proofs")
+    .createSignedUrl(pathOrUrl, 3600);
+  if (error || !data?.signedUrl) {
+    win?.close();
+    alert("Couldn't open that payment proof. It may have been removed from storage.");
+    return;
+  }
+  if (win) { win.opener = null; win.location.replace(data.signedUrl); }
+}
+
 const REFUND_LABEL: Record<string, string> = {
   available: "Credit available",
   partially_redeemed: "Partially redeemed",
@@ -1873,9 +1898,13 @@ function BookingsTab() {
                       </div>
                     )}
                     {b.payments?.[0]?.screenshot_url && (
-                      <a href={b.payments[0].screenshot_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                      <button
+                        type="button"
+                        onClick={() => void openPaymentProof(b.payments![0].screenshot_url!)}
+                        className="text-primary hover:underline"
+                      >
                         Screenshot
-                      </a>
+                      </button>
                     )}
                     <div className="text-muted-foreground truncate" title={b.payments?.[0]?.status ?? undefined}>
                       {b.payments?.[0]?.status}
@@ -2006,9 +2035,13 @@ function BookingsTab() {
                   <div className="mt-0.5">
                     {b.payments?.[0]?.reference_number && <div>Ref: {b.payments[0].reference_number}</div>}
                     {b.payments?.[0]?.screenshot_url && (
-                      <a href={b.payments[0].screenshot_url} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                      <button
+                        type="button"
+                        onClick={() => void openPaymentProof(b.payments![0].screenshot_url!)}
+                        className="text-primary hover:underline"
+                      >
                         View screenshot
-                      </a>
+                      </button>
                     )}
                     <div className="text-muted-foreground capitalize">{b.payments?.[0]?.status}</div>
                   </div>

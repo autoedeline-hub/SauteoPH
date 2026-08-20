@@ -4415,6 +4415,129 @@ function ClaimantCard({
 // Invite tokens are single-use, so the receipt is a terminal screen — no
 // "New order" CTA. Guests who need to book again message Sautéo on
 // Messenger to get a fresh invite.
+// Guest-facing payment-proof upload, shown on the receipt.
+//
+// The storage bucket, its path-scoped policies and the submit_payment_proof()
+// RPC have existed since 20260514130000 but nothing ever called them: guests
+// were told to go back to Messenger and send a screenshot there. This is that
+// missing step. The Messenger route stays available underneath as a fallback
+// for anyone who would rather chat (or whose upload fails).
+//
+// Constraints come from the bucket + policy, not from taste: jpeg/png/webp,
+// 5 MB, and the object name MUST be bookings/<REFERENCE_CODE>/<file> or both
+// the storage policy and the RPC's prefix check reject it. We validate type
+// and size client-side so the guest gets a sentence instead of an RLS error.
+const PROOF_MIME = ["image/jpeg", "image/png", "image/webp"];
+const PROOF_MAX_BYTES = 5 * 1024 * 1024;
+
+function PaymentProofUpload({ referenceCode }: { referenceCode: string }) {
+  const [status, setStatus] = useState<"idle" | "uploading" | "done" | "error">("idle");
+  const [message, setMessage] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleFile = async (file: File) => {
+    if (!PROOF_MIME.includes(file.type)) {
+      setStatus("error");
+      setMessage("That file type isn't supported. Please upload a JPG, PNG, or WebP screenshot.");
+      return;
+    }
+    if (file.size > PROOF_MAX_BYTES) {
+      setStatus("error");
+      setMessage("That image is over 5 MB. Please upload a smaller screenshot.");
+      return;
+    }
+
+    setStatus("uploading");
+    setMessage(null);
+
+    const ext = file.type.includes("png") ? "png" : file.type.includes("webp") ? "webp" : "jpg";
+    const path = `bookings/${referenceCode}/payment_${Date.now()}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("payment-proofs")
+      .upload(path, file, { contentType: file.type, upsert: false });
+
+    if (uploadError) {
+      // The policy rejects uploads for a booking that is no longer pending or
+      // is past the 60-minute window, which surfaces here as an RLS error.
+      setStatus("error");
+      setMessage(
+        "We couldn't upload that. If your booking is more than an hour old it may have been released. Send it on Messenger and we'll sort it out.",
+      );
+      return;
+    }
+
+    const { error: rpcError } = await (supabase.rpc as any)("submit_payment_proof", {
+      _ref: referenceCode,
+      _path: path,
+    });
+
+    if (rpcError) {
+      setStatus("error");
+      setMessage(
+        "Your image uploaded but we couldn't attach it to this booking. Please send it on Messenger so we don't miss it.",
+      );
+      return;
+    }
+
+    setStatus("done");
+    setMessage(null);
+  };
+
+  if (status === "done") {
+    return (
+      <div className="flex items-start gap-3 rounded-xl bg-primary/10 border border-primary/30 p-4 mb-4 text-left">
+        <CheckCircle2 className="h-5 w-5 text-primary shrink-0 mt-0.5" />
+        <div>
+          <p className="text-sm font-semibold text-foreground">Proof of payment received</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Nikko will verify it and confirm your reservation. You don't need to message us
+            separately.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-4">
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          // Clear the input so picking the same file twice still fires onChange.
+          e.target.value = "";
+          if (file) void handleFile(file);
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={status === "uploading"}
+        className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:opacity-90 transition disabled:opacity-60"
+      >
+        {status === "uploading" ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Uploading...
+          </>
+        ) : (
+          <>
+            <Upload className="h-4 w-4" />
+            Upload proof of payment
+          </>
+        )}
+      </button>
+      {status === "error" && message && (
+        <p className="mt-3 text-xs text-destructive leading-relaxed">{message}</p>
+      )}
+    </div>
+  );
+}
+
 function ReceiptView({
   receipt,
 }: {
@@ -4625,20 +4748,25 @@ function ReceiptView({
       <div className="bg-mustard/20 border border-mustard/40 rounded-2xl p-5 md:p-6 mb-6 text-center print:hidden">
         <p className="text-sm md:text-base text-foreground leading-relaxed mb-4">
           <span className="font-semibold">
-            Please send your Proof of Payment to Messenger
+            Upload your Proof of Payment
           </span>{" "}
-          so the Sautéo team can confirm your order. Include the reference
-          code{" "}
+          so the Sautéo team can confirm your order. Your reference code is{" "}
           <span className="font-mono text-primary font-semibold">
             {receipt.ref}
-          </span>{" "}
-          when you message us.
+          </span>
+          .
+        </p>
+
+        <PaymentProofUpload referenceCode={receipt.ref} />
+
+        <p className="text-xs text-muted-foreground mb-3">
+          Prefer to send it in chat? Message us with your reference code instead.
         </p>
         <a
           href={MESSENGER_URL}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:opacity-90 transition"
+          className="inline-flex items-center justify-center gap-2 rounded-full border border-primary/40 text-primary px-5 py-2.5 text-sm font-semibold hover:bg-primary/10 transition"
         >
           <MessageCircle className="h-4 w-4" />
           Chat on Messenger
