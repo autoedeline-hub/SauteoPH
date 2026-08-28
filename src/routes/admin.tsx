@@ -5487,20 +5487,31 @@ function KnowledgeTab() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  // Rows tagged 'bot-message' back the bot's scripted messages (fetched by row
+  // id in WF-DM-01). They get their own chip instead of polluting the topics.
+  const isBotMessage = (f: FaqEntry) => f.tags.includes("bot-message");
+
   const topicCounts = useMemo(() => {
     const m: Record<string, number> = {};
     for (const f of items) {
+      if (isBotMessage(f)) continue;
       const t = f.topic ?? "Other";
       m[t] = (m[t] ?? 0) + 1;
     }
     return m;
   }, [items]);
 
+  const botCount = useMemo(() => items.filter(isBotMessage).length, [items]);
+
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return items.filter(f => {
       if (!showInactive && !f.active) return false;
-      if (topicFilter !== "all" && (f.topic ?? "Other") !== topicFilter) return false;
+      if (topicFilter === "bot-message") {
+        if (!isBotMessage(f)) return false;
+      } else if (topicFilter !== "all") {
+        if (isBotMessage(f) || (f.topic ?? "Other") !== topicFilter) return false;
+      }
       if (!needle) return true;
       return (
         f.question.toLowerCase().includes(needle) ||
@@ -5578,6 +5589,14 @@ function KnowledgeTab() {
               onClick={() => setTopicFilter(t)}
             />
           ))}
+          {botCount > 0 && (
+            <CategoryChip
+              label="Bot Messages"
+              count={botCount}
+              active={topicFilter === "bot-message"}
+              onClick={() => setTopicFilter("bot-message")}
+            />
+          )}
         </div>
       </div>
 
