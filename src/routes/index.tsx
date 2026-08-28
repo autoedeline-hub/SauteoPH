@@ -4459,10 +4459,14 @@ function PaymentProofUpload({ referenceCode }: { referenceCode: string }) {
 
     if (uploadError) {
       // The policy rejects uploads for a booking that is no longer pending or
-      // is past the 60-minute window, which surfaces here as an RLS error.
+      // is past its window, which surfaces here as an RLS error. Since
+      // 2026-08-28 the binding constraint is status, not age: WF08 flips a
+      // pending booking to payment_timeout after 15 minutes, long before the
+      // policy's own 60-minute age check can bite. Keep this copy on the WF08
+      // number, not the SQL one.
       setStatus("error");
       setMessage(
-        "We couldn't upload that. If your booking is more than an hour old it may have been released. Send it on Messenger and we'll sort it out.",
+        "We couldn't upload that. If your booking is more than 15 minutes old it may have been released. Send it on Messenger and we'll sort it out.",
       );
       return;
     }
@@ -4755,6 +4759,14 @@ function ReceiptView({
             {receipt.ref}
           </span>
           .
+        </p>
+        {/* WF08 rejects an unpaid booking 15 minutes after it is submitted
+            (Nikko final flow, stage 5). The guest was previously never told a
+            clock was running at all, which is indefensible when the outcome is
+            an automatic rejection. If TIMEOUT_MINUTES moves, this moves. */}
+        <p className="text-sm text-foreground/80 leading-relaxed mb-4">
+          Please upload within <span className="font-semibold">15 minutes</span>. After that the
+          table is released, though your booking link stays usable if a slot is still free.
         </p>
 
         <PaymentProofUpload referenceCode={receipt.ref} />
