@@ -64,6 +64,7 @@ import {
   Users,
   UserPlus,
   KeyRound,
+  PackageCheck,
 } from "lucide-react";
 import {
   listTeamMembers,
@@ -87,6 +88,7 @@ type Booking = {
   credit_remaining?: number | null;
   refund_status?: string | null;
   confirmed_at?: string | null;
+  ready_at?: string | null;
   platform_id?: string | null;
   notes?: string | null;
   time_slots?: { slot_date: string; slot_time: string };
@@ -1735,6 +1737,27 @@ function BookingsTab() {
     load();
   };
 
+  // Pickup orders only. Stamping ready_at fires the Supabase DB trigger
+  // pickup_ready_email -> WF-PICKUP-READY-01, which emails the guest that the
+  // order is ready. The workflow only sends when ready_at goes from null to
+  // set, so the button hides once stamped rather than offering a resend.
+  const isPickupOrder = (b: Booking) => !!b.pickup_mode && b.pickup_mode !== "dine_in";
+  const markReady = async (b: Booking) => {
+    if (!confirm(`Mark ${b.reference_code} as ready? The guest will be emailed that their order is ready for pickup.`)) return;
+    // ready_at is not in the generated types (same staleness as completed_at
+    // below), so cast the update payload.
+    const { error } = await supabase
+      .from("bookings")
+      .update({ ready_at: new Date().toISOString() } as any)
+      .eq("id", b.id)
+      .is("ready_at", null);
+    if (error) {
+      alert(`Couldn't mark ready: ${error.message}`);
+      return;
+    }
+    load();
+  };
+
   const hasFilters = !!(from || to || statusFilter !== "all" || sourceFilter !== "all" || query);
 
   const sourceCounts = useMemo(() => {
@@ -1939,6 +1962,19 @@ function BookingsTab() {
                         <CheckCircle2 className="h-3.5 w-3.5" /> Verify
                       </button>
                     )}
+                    {b.status === "confirmed" && isPickupOrder(b) && !b.ready_at && (
+                      <button
+                        onClick={() => markReady(b)}
+                        className="inline-flex items-center gap-1.5 text-xs bg-foreground text-background rounded-full px-3 py-1.5 font-medium hover:opacity-90 transition whitespace-nowrap"
+                      >
+                        <PackageCheck className="h-3.5 w-3.5" /> Mark Ready
+                      </button>
+                    )}
+                    {b.ready_at && (
+                      <div className="text-[11px] text-muted-foreground whitespace-nowrap" title={b.ready_at}>
+                        Ready {format(new Date(b.ready_at), "h:mm a")}
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -2067,6 +2103,19 @@ function BookingsTab() {
               >
                 <CheckCircle2 className="h-3.5 w-3.5" /> Verify payment
               </button>
+            )}
+            {b.status === "confirmed" && isPickupOrder(b) && !b.ready_at && (
+              <button
+                onClick={() => markReady(b)}
+                className="w-full inline-flex items-center justify-center gap-1.5 text-xs bg-foreground text-background rounded-full px-4 py-2.5 font-medium hover:opacity-90 transition"
+              >
+                <PackageCheck className="h-3.5 w-3.5" /> Mark Ready
+              </button>
+            )}
+            {b.ready_at && (
+              <div className="text-[11px] text-muted-foreground text-center" title={b.ready_at}>
+                Ready {format(new Date(b.ready_at), "h:mm a")}
+              </div>
             )}
           </div>
         ))}
