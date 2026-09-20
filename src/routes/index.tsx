@@ -4505,8 +4505,8 @@ function PaymentProofUpload({ referenceCode }: { referenceCode: string }) {
         <div>
           <p className="text-sm font-semibold text-foreground">Proof of payment received</p>
           <p className="text-xs text-muted-foreground mt-1">
-            Nikko will verify it and confirm your reservation. You don't need to message us
-            separately.
+            The Sauteo Team will verify it and confirm your reservation. You don't need to
+            message us separately.
           </p>
         </div>
       </div>
