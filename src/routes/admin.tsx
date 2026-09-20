@@ -180,6 +180,18 @@ const PICKUP_LABEL: Record<string, string> = {
 // proof was effectively unopenable. Mint a short-lived signed URL instead, the
 // same way the Senior IDs tab does. Legacy rows that already hold a full URL
 // (from before the bucket was locked down) are opened as-is.
+// PostgREST embeds `payments` as a single object, not an array, because
+// payments.booking_id is unique (one-to-one). Every reader here indexes
+// `payments[0]`, which is undefined on an object, so the Screenshot link never
+// rendered and Verify skipped the payments update (found 2026-09-20, the day
+// the admins-read-payments policy first returned rows). Normalise at the fetch.
+function withPaymentsArray<T extends { payments?: unknown }>(rows: T[]): T[] {
+  return rows.map((r) => {
+    const p = r.payments;
+    return { ...r, payments: Array.isArray(p) ? p : p ? [p] : [] };
+  });
+}
+
 async function openPaymentProof(pathOrUrl: string): Promise<void> {
   // Grab the tab synchronously inside the click so the await below doesn't
   // trip the popup blocker.
@@ -526,7 +538,7 @@ function OverviewTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
         .select("*, time_slots(slot_date, slot_time), booking_items(menu_item_id, item_name, quantity, unit_price), payments(id, status, reference_number, screenshot_url)")
         .order("created_at", { ascending: false });
 
-      const rows = (bookingsData ?? []) as any as Booking[];
+      const rows = withPaymentsArray((bookingsData ?? []) as any as Booking[]);
 
       const revenueToday = rows
         .filter(b => b.status === "confirmed" && b.time_slots?.slot_date === today)
@@ -1656,7 +1668,7 @@ function BookingsTab() {
     let q = supabase.from("bookings").select("*, time_slots(slot_date, slot_time), booking_items(item_name, quantity), payments(id, status, reference_number, screenshot_url)").order("created_at", { ascending: true });
     if (statusFilter !== "all") q = q.eq("status", statusFilter);
     const { data } = await q;
-    let rows = (data ?? []) as any as Booking[];
+    let rows = withPaymentsArray((data ?? []) as any as Booking[]);
     if (from) rows = rows.filter(b => b.time_slots && b.time_slots.slot_date >= from);
     if (to) rows = rows.filter(b => b.time_slots && b.time_slots.slot_date <= to);
     setBookings(rows);
@@ -5151,7 +5163,7 @@ function ContactDrawer({
           .select("*, time_slots(slot_date, slot_time), booking_items(item_name, quantity), payments(id, status, reference_number, screenshot_url)")
           .or(filters.join(","))
           .order("created_at", { ascending: false });
-        setBookings(((bk ?? []) as unknown) as Booking[]);
+        setBookings(withPaymentsArray(((bk ?? []) as unknown) as Booking[]));
       } else {
         setBookings([]);
       }
@@ -6897,7 +6909,7 @@ function PipelineTab({ onJumpToOrders }: { onJumpToOrders: () => void }) {
       ]);
     setContacts((cData ?? []) as ContactRow[]);
     setAllInvites(((invData ?? []) as unknown) as BookingInvite[]);
-    setAllBookings(((bkData ?? []) as unknown) as PipelineBooking[]);
+    setAllBookings(withPaymentsArray(((bkData ?? []) as unknown) as PipelineBooking[]));
     setLoading(false);
   }, []);
   useEffect(() => {
