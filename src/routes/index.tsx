@@ -4476,7 +4476,7 @@ function PaymentProofUpload({ referenceCode }: { referenceCode: string }) {
       // number, not the SQL one.
       setStatus("error");
       setMessage(
-        "We couldn't upload that. If your booking is more than 15 minutes old it may have been released. Send it on Messenger and we'll sort it out.",
+        "We couldn't upload that. Please try again. If your reservation was submitted more than 15 minutes ago it may have been cancelled; you can book again with your invitation link.",
       );
       return;
     }
@@ -4489,7 +4489,7 @@ function PaymentProofUpload({ referenceCode }: { referenceCode: string }) {
     if (rpcError) {
       setStatus("error");
       setMessage(
-        "Your image uploaded but we couldn't attach it to this booking. Please send it on Messenger so we don't miss it.",
+        "Your image uploaded but we couldn't attach it to this booking. Please try again, or reply to your invitation email with the screenshot attached so we don't miss it.",
       );
       return;
     }
