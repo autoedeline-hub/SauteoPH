@@ -4505,8 +4505,9 @@ function PaymentProofUpload({ referenceCode }: { referenceCode: string }) {
         <div>
           <p className="text-sm font-semibold text-foreground">Proof of payment received</p>
           <p className="text-xs text-muted-foreground mt-1">
-            The Sauteo Team will verify it and confirm your reservation. You don't need to
-            message us separately.
+            The Sauteo Team will verify it and send your confirmation by email. Please make
+            sure to check your spam or junk folder as well. You don't need to message us
+            separately.
           </p>
         </div>
       </div>
@@ -4757,7 +4758,7 @@ function ReceiptView({
 
       {/* Payment reminder — sits outside the receipt card so it doesn't end
           up on the printed copy. Tells the guest the final step they need to
-          take (send proof to Messenger) so the Sautéo team can verify and
+          take (upload proof here) so the Sautéo team can verify and
           confirm the order in the admin Orders dashboard. */}
       <div className="bg-mustard/20 border border-mustard/40 rounded-2xl p-5 md:p-6 mb-6 text-center print:hidden">
         <p className="text-sm md:text-base text-foreground leading-relaxed mb-4">
@@ -4775,24 +4776,15 @@ function ReceiptView({
             clock was running at all, which is indefensible when the outcome is
             an automatic rejection. If TIMEOUT_MINUTES moves, this moves. */}
         <p className="text-sm text-foreground/80 leading-relaxed mb-4">
-          Please upload within <span className="font-semibold">15 minutes</span>. After that the
-          table is released, though your booking link stays usable if a slot is still free.
+          Please upload within <span className="font-semibold">15 minutes</span> to keep your
+          reservation. If we do not receive it in time, your reservation is cancelled
+          automatically, but you can book again with the same invitation link while a slot is
+          still free.
         </p>
 
         <PaymentProofUpload referenceCode={receipt.ref} />
-
-        <p className="text-xs text-muted-foreground mb-3">
-          Prefer to send it in chat? Message us with your reference code instead.
-        </p>
-        <a
-          href={MESSENGER_URL}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center justify-center gap-2 rounded-full border border-primary/40 text-primary px-5 py-2.5 text-sm font-semibold hover:bg-primary/10 transition"
-        >
-          <MessageCircle className="h-4 w-4" />
-          Chat on Messenger
-        </a>
+        {/* "Chat on Messenger" alternative removed 2026-09-20 (Eds): the
+            in-app upload is the one route guests should take. */}
       </div>
 
       <style>{`
