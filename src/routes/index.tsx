@@ -2734,6 +2734,14 @@ function DineInReservationView({
   const maxGuestsForSlot = selectedSlot
     ? Math.max(1, (selectedSlot.capacity - selectedSlot.seats_taken) * 2)
     : 16;
+  // An invited party may shrink but never grow past the size Sautéo vetted on
+  // the waitlist: create_booking() clamps to LEAST(payload, invite.group_size)
+  // (20260718120000_dine_in_reduce_pax_capped), so a stepper that went higher
+  // showed 3 guests and booked 2 with no message (Eds, 2026-09-20).
+  const maxGuests = invite?.groupSize
+    ? Math.min(maxGuestsForSlot, invite.groupSize)
+    : maxGuestsForSlot;
+  const cappedByInvite = !!invite?.groupSize && groupSize >= invite.groupSize;
 
   // QR display fallback — flips to true when /maya-qr.png 404s so the
   // payment card still renders gracefully without the image.
@@ -3036,15 +3044,20 @@ function DineInReservationView({
             </span>
             <button
               type="button"
-              onClick={() => setGroupSize((n) => Math.min(maxGuestsForSlot, n + 1))}
+              onClick={() => setGroupSize((n) => Math.min(maxGuests, n + 1))}
               aria-label="Increase guest count"
-              disabled={groupSize >= maxGuestsForSlot}
+              disabled={groupSize >= maxGuests}
               className="h-8 w-8 flex items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition"
             >
               <Plus className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
+        {cappedByInvite && (
+          <p className="-mt-2 mb-4 text-[11px] text-muted-foreground leading-snug">
+            Your invitation is for {invite!.groupSize} guest{invite!.groupSize === 1 ? "" : "s"}. To bring more, message us and we will update your waitlist entry.
+          </p>
+        )}
 
         {isSlotLocked ? (
           slotsLoading ? (
